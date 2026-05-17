@@ -1099,6 +1099,13 @@
             "type": "string"
           },
           "default": []
+        },
+        "allowTypeOnly": {
+          "description": "Zones that `from` may type-only-import from even when not listed in\n`allow`. Mirrors the `allow` shape: a list of target zone names. A\ntype-only import declaration (`import type {...}`, `import type * as ns`,\nor a per-specifier inline `type` qualifier on every named specifier) to a\nlisted zone is not reported as a boundary violation. Mixed-specifier\nimports (`import { type Foo, Bar }`) that carry at least one value\nsymbol still fire because the runtime dependency on `Bar` is real.\nType-only re-exports (`export type { Foo } from \"...\"`) participate\nin the same allowance because they surface as edges flagged\n`is_type_only: true` and, like type-only imports, are erased at\ncompile time.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [

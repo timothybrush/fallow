@@ -243,6 +243,47 @@ impl ModuleGraph {
         }
         None
     }
+
+    /// Iterate outgoing edges with the data the boundary detector needs in a
+    /// single pass: target file id, whether every symbol on the edge is
+    /// type-only (matches the predicate used by cycle detection), and the
+    /// span start of the first value-carrying symbol (or the first symbol
+    /// when every symbol is type-only).
+    ///
+    /// The span pick differs from `find_import_span_start` (which always
+    /// returns the first symbol's span). When `featureB` has both
+    /// `import type { Foo } from './x'` and `import { bar } from './x'`,
+    /// fallow groups them into ONE edge with the type-only symbol first
+    /// and the value symbol second. The boundary detector needs the span
+    /// of the value symbol so that the violation is anchored on the
+    /// runtime import line; otherwise a `// fallow-ignore-next-line` above
+    /// the type-only line would silently suppress the real violation
+    /// (and conversely, the violation would point at a line that doesn't
+    /// actually carry the offending runtime dependency).
+    ///
+    /// Returns an empty iterator for out-of-range file ids.
+    pub fn outgoing_edge_summaries(
+        &self,
+        file_id: FileId,
+    ) -> impl Iterator<Item = (FileId, bool, Option<u32>)> + '_ {
+        let idx = file_id.0 as usize;
+        let range = if idx < self.modules.len() {
+            self.modules[idx].edge_range.clone()
+        } else {
+            0..0
+        };
+        self.edges[range].iter().map(|edge| {
+            let all_type_only =
+                !edge.symbols.is_empty() && edge.symbols.iter().all(|s| s.is_type_only);
+            let span = edge
+                .symbols
+                .iter()
+                .find(|s| !s.is_type_only)
+                .or_else(|| edge.symbols.first())
+                .map(|s| s.import_span.start);
+            (edge.target, all_type_only, span)
+        })
+    }
 }
 
 #[cfg(test)]

@@ -93,6 +93,7 @@ impl BoundaryPreset {
         BoundaryRule {
             from: from.to_owned(),
             allow: allow.iter().map(|s| (*s).to_owned()).collect(),
+            allow_type_only: Vec::new(),
         }
     }
 
@@ -299,6 +300,19 @@ pub struct BoundaryRule {
     /// An empty list means the zone may not import from any other zone.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Zones that `from` may type-only-import from even when not listed in
+    /// `allow`. Mirrors the `allow` shape: a list of target zone names. A
+    /// type-only import declaration (`import type {...}`, `import type * as ns`,
+    /// or a per-specifier inline `type` qualifier on every named specifier) to a
+    /// listed zone is not reported as a boundary violation. Mixed-specifier
+    /// imports (`import { type Foo, Bar }`) that carry at least one value
+    /// symbol still fire because the runtime dependency on `Bar` is real.
+    /// Type-only re-exports (`export type { Foo } from "..."`) participate
+    /// in the same allowance because they surface as edges flagged
+    /// `is_type_only: true` and, like type-only imports, are erased at
+    /// compile time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_type_only: Vec<String>,
 }
 
 /// Resolved boundary config with pre-compiled glob matchers.
@@ -334,6 +348,9 @@ pub struct ResolvedBoundaryRule {
     pub from_zone: String,
     /// Zones that `from_zone` is allowed to import from.
     pub allowed_zones: Vec<String>,
+    /// Zones that `from_zone` may type-only-import from even when not listed
+    /// in `allowed_zones`. See `BoundaryRule::allow_type_only`.
+    pub allow_type_only_zones: Vec<String>,
 }
 
 impl BoundaryConfig {
@@ -477,12 +494,14 @@ impl BoundaryConfig {
         let mut explicit_rules = Vec::new();
         for rule in original_rules {
             let allow = expand_rule_allow(&rule.allow, &group_expansions);
+            let allow_type_only = expand_rule_allow(&rule.allow_type_only, &group_expansions);
 
             if let Some(from_zones) = group_expansions.get(&rule.from) {
                 for from in from_zones {
                     let expanded_rule = BoundaryRule {
                         from: from.clone(),
                         allow: allow.clone(),
+                        allow_type_only: allow_type_only.clone(),
                     };
                     if from == &rule.from {
                         explicit_rules.push(expanded_rule);
@@ -494,6 +513,7 @@ impl BoundaryConfig {
                 explicit_rules.push(BoundaryRule {
                     from: rule.from,
                     allow,
+                    allow_type_only,
                 });
             }
         }
@@ -552,6 +572,11 @@ impl BoundaryConfig {
 
     /// Validate that all zone names referenced in rules are defined in `zones`.
     /// Returns a list of (rule_index, undefined_zone_name) pairs.
+    ///
+    /// Walks every zone-reference surface on `BoundaryRule`: `from`, `allow`,
+    /// and `allow_type_only`. An unknown zone in `allow_type_only` silently
+    /// behaves as "not allowed" at runtime, so it MUST surface here for parity
+    /// with the existing `allow`-side diagnostic.
     #[must_use]
     pub fn validate_zone_references(&self) -> Vec<(usize, &str)> {
         let zone_names: rustc_hash::FxHashSet<&str> =
@@ -565,6 +590,11 @@ impl BoundaryConfig {
             for allowed in &rule.allow {
                 if !zone_names.contains(allowed.as_str()) {
                     errors.push((i, allowed.as_str()));
+                }
+            }
+            for allowed_type_only in &rule.allow_type_only {
+                if !zone_names.contains(allowed_type_only.as_str()) {
+                    errors.push((i, allowed_type_only.as_str()));
                 }
             }
         }
@@ -609,6 +639,7 @@ impl BoundaryConfig {
             .map(|rule| ResolvedBoundaryRule {
                 from_zone: rule.from.clone(),
                 allowed_zones: rule.allow.clone(),
+                allow_type_only_zones: rule.allow_type_only.clone(),
             })
             .collect();
 
@@ -811,6 +842,22 @@ impl ResolvedBoundaryConfig {
             Some(r) => r.allowed_zones.iter().any(|z| z == to_zone),
         }
     }
+
+    /// Check whether a type-only import from `from_zone` to `to_zone` is
+    /// permitted by the rule's `allowTypeOnly` list. Only consulted by the
+    /// boundary detector after `is_import_allowed` has already returned
+    /// `false`; the caller is responsible for verifying the import is in
+    /// fact type-only (all symbols on the edge carry the type-only flag).
+    /// Returns `false` when no rule exists for `from_zone`, since rule-less
+    /// zones are unrestricted and `is_import_allowed` short-circuits before
+    /// this is called.
+    #[must_use]
+    pub fn is_type_only_allowed(&self, from_zone: &str, to_zone: &str) -> bool {
+        let Some(rule) = self.rules.iter().find(|r| r.from_zone == from_zone) else {
+            return false;
+        };
+        rule.allow_type_only_zones.iter().any(|z| z == to_zone)
+    }
 }
 
 #[cfg(test)]
@@ -895,10 +942,12 @@ allow = ["db"]
                 BoundaryRule {
                     from: "app".to_string(),
                     allow: vec!["features".to_string()],
+                    allow_type_only: vec![],
                 },
                 BoundaryRule {
                     from: "features".to_string(),
                     allow: vec![],
+                    allow_type_only: vec![],
                 },
             ],
         };
@@ -949,10 +998,12 @@ allow = ["db"]
             let explicit_child_rule = BoundaryRule {
                 from: "features/auth".to_string(),
                 allow: vec!["shared".to_string(), "features/billing".to_string()],
+                allow_type_only: vec![],
             };
             let parent_rule = BoundaryRule {
                 from: "features".to_string(),
                 allow: vec!["shared".to_string()],
+                allow_type_only: vec![],
             };
             let rules = if explicit_child_first {
                 vec![explicit_child_rule, parent_rule]
@@ -1023,6 +1074,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec!["db".to_string()],
+                allow_type_only: vec![],
             }],
         };
         assert!(config.validate_zone_references().is_empty());
@@ -1041,6 +1093,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "nonexistent".to_string(),
                 allow: vec!["ui".to_string()],
+                allow_type_only: vec![],
             }],
         };
         let errors = config.validate_zone_references();
@@ -1061,11 +1114,36 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec!["nonexistent".to_string()],
+                allow_type_only: vec![],
             }],
         };
         let errors = config.validate_zone_references();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].1, "nonexistent");
+    }
+
+    #[test]
+    fn validate_zone_references_invalid_allow_type_only() {
+        // An undefined zone in `allowTypeOnly` silently behaves as "not
+        // allowed" at runtime, which the user almost always meant as a typo
+        // for an existing zone. Surface the same diagnostic as `allow`.
+        let config = BoundaryConfig {
+            preset: None,
+            zones: vec![BoundaryZone {
+                name: "ui".to_string(),
+                patterns: vec![],
+                auto_discover: vec![],
+                root: None,
+            }],
+            rules: vec![BoundaryRule {
+                from: "ui".to_string(),
+                allow: vec![],
+                allow_type_only: vec!["nonexistent_type_zone".to_string()],
+            }],
+        };
+        let errors = config.validate_zone_references();
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(errors[0].1, "nonexistent_type_zone");
     }
 
     #[test]
@@ -1141,6 +1219,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec![],
+                allow_type_only: vec![],
             }],
         };
         let resolved = config.resolve();
@@ -1198,6 +1277,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec!["shared".to_string()],
+                allow_type_only: vec![],
             }],
         };
         let resolved = config.resolve();
@@ -1226,6 +1306,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "isolated".to_string(),
                 allow: vec![],
+                allow_type_only: vec![],
             }],
         };
         let resolved = config.resolve();
@@ -1791,6 +1872,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "adapters".to_string(),
                 allow: vec!["ports".to_string(), "domain".to_string()],
+                allow_type_only: vec![],
             }],
         };
         config.expand("src");
@@ -1921,6 +2003,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec!["db".to_string()],
+                allow_type_only: vec![],
             }],
         };
         assert!(config.is_empty());
@@ -1988,10 +2071,12 @@ allow = ["db"]
                 BoundaryRule {
                     from: "nonexistent_from".to_string(),
                     allow: vec!["nonexistent_allow".to_string()],
+                    allow_type_only: vec![],
                 },
                 BoundaryRule {
                     from: "ui".to_string(),
                     allow: vec!["also_nonexistent".to_string()],
+                    allow_type_only: vec![],
                 },
             ],
         };
@@ -2044,6 +2129,7 @@ allow = ["db"]
             rules: vec![BoundaryRule {
                 from: "a".to_string(),
                 allow: vec!["b".to_string()],
+                allow_type_only: vec![],
             }],
         };
         let resolved = config.resolve();

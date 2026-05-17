@@ -63,8 +63,7 @@ pub fn find_boundary_violations(
             continue;
         }
 
-        let targets = graph.edges_for(node.file_id);
-        for target_id in targets {
+        for (target_id, all_type_only, span_start) in graph.outgoing_edge_summaries(node.file_id) {
             let Some(to_zone) = classify(target_id, &mut zone_cache) else {
                 continue; // Unzoned targets always allowed.
             };
@@ -73,8 +72,25 @@ pub fn find_boundary_violations(
                 continue;
             }
 
+            // Type-only escape hatch: if the edge is all-type-only and the
+            // rule lists `to_zone` under `allowTypeOnly`, the import is
+            // permitted. Mixed-specifier imports (`import { type Foo, Bar }`)
+            // still fire because at least one symbol carries a runtime
+            // dependency. Re-exports (`export type { Foo } from "./x"`)
+            // surface as side-effect symbols with the re-export's type-only
+            // flag, so they participate in the same allowance.
+            if all_type_only && boundaries.is_type_only_allowed(&from_zone, &to_zone) {
+                tracing::debug!(
+                    "boundary type-only allowed: '{}' -> '{}' ({} -> {})",
+                    from_zone,
+                    to_zone,
+                    node.path.display(),
+                    graph.modules[target_id.0 as usize].path.display()
+                );
+                continue;
+            }
+
             // Check line-level suppression at the import site.
-            let span_start = graph.find_import_span_start(node.file_id, target_id);
             let (line, col) = span_start.map_or((1, 0), |s| {
                 byte_offset_to_line_col(line_offsets_by_file, node.file_id, s)
             });
@@ -169,7 +185,7 @@ mod tests {
     fn build_graph(
         root: &std::path::Path,
         file_names: &[&str],
-        edges: &[(usize, usize)],
+        edges: &[(usize, usize, bool)],
     ) -> (Vec<DiscoveredFile>, ModuleGraph) {
         let files: Vec<DiscoveredFile> = file_names
             .iter()
@@ -191,7 +207,7 @@ mod tests {
             .map(|f| {
                 let mut rm = resolved_module(f.id, f.path.clone());
                 // Add import edges
-                for &(from, to) in edges {
+                for &(from, to, is_type_only) in edges {
                     if from == f.id.0 as usize {
                         rm.resolved_imports.push(crate::resolve::ResolvedImport {
                             target: crate::resolve::ResolveResult::InternalModule(FileId(
@@ -201,7 +217,7 @@ mod tests {
                                 source: format!("./{}", file_names[to]),
                                 imported_name: fallow_types::extract::ImportedName::Default,
                                 local_name: "x".to_string(),
-                                is_type_only: false,
+                                is_type_only,
                                 from_style: false,
                                 span: oxc_span::Span::new(0, 10),
                                 source_span: oxc_span::Span::new(0, 10),
@@ -221,7 +237,11 @@ mod tests {
     fn no_boundaries_returns_empty() {
         let root = PathBuf::from("/tmp/boundary-test");
         let config = make_config(root.clone(), BoundaryConfig::default());
-        let (_, graph) = build_graph(&root, &["src/ui/Button.tsx", "src/db/query.ts"], &[(0, 1)]);
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/query.ts"],
+            &[(0, 1, false)],
+        );
         let suppressions = SuppressionContext::empty();
         let line_offsets = FxHashMap::default();
 
@@ -251,13 +271,14 @@ mod tests {
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec!["shared".to_string()],
+                allow_type_only: vec![],
             }],
         };
         let config = make_config(root.clone(), boundaries);
         let (_, graph) = build_graph(
             &root,
             &["src/ui/Button.tsx", "src/shared/utils.ts"],
-            &[(0, 1)],
+            &[(0, 1, false)],
         );
         let suppressions = SuppressionContext::empty();
         let line_offsets = FxHashMap::default();
@@ -294,10 +315,15 @@ mod tests {
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec!["shared".to_string()],
+                allow_type_only: vec![],
             }],
         };
         let config = make_config(root.clone(), boundaries);
-        let (_, graph) = build_graph(&root, &["src/ui/Button.tsx", "src/db/query.ts"], &[(0, 1)]);
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/query.ts"],
+            &[(0, 1, false)],
+        );
         let suppressions = SuppressionContext::empty();
         let line_offsets = FxHashMap::default();
 
@@ -321,13 +347,14 @@ mod tests {
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec![],
+                allow_type_only: vec![],
             }],
         };
         let config = make_config(root.clone(), boundaries);
         let (_, graph) = build_graph(
             &root,
             &["src/ui/Button.tsx", "src/ui/helpers.ts"],
-            &[(0, 1)],
+            &[(0, 1, false)],
         );
         let suppressions = SuppressionContext::empty();
         let line_offsets = FxHashMap::default();
@@ -350,11 +377,16 @@ mod tests {
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec![],
+                allow_type_only: vec![],
             }],
         };
         let config = make_config(root.clone(), boundaries);
         // src/utils.ts is unzoned — importing it from ui should be allowed
-        let (_, graph) = build_graph(&root, &["src/ui/Button.tsx", "src/utils.ts"], &[(0, 1)]);
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/utils.ts"],
+            &[(0, 1, false)],
+        );
         let suppressions = SuppressionContext::empty();
         let line_offsets = FxHashMap::default();
 
@@ -384,10 +416,15 @@ mod tests {
             rules: vec![BoundaryRule {
                 from: "ui".to_string(),
                 allow: vec![],
+                allow_type_only: vec![],
             }],
         };
         let config = make_config(root.clone(), boundaries);
-        let (_, graph) = build_graph(&root, &["src/ui/Button.tsx", "src/db/query.ts"], &[(0, 1)]);
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/query.ts"],
+            &[(0, 1, false)],
+        );
 
         // File-level suppression (line 0)
         let supps = vec![Suppression {
@@ -402,5 +439,159 @@ mod tests {
 
         let violations = find_boundary_violations(&graph, &config, &suppressions, &line_offsets);
         assert!(violations.is_empty());
+    }
+
+    // ── allowTypeOnly escape hatch ──────────────────────────────────
+
+    /// Build a ui->db restricted config with an optional `allowTypeOnly`
+    /// list on the `ui` rule. Used by the type-only escape hatch tests.
+    fn ui_db_boundaries(allow_type_only: Vec<String>) -> BoundaryConfig {
+        BoundaryConfig {
+            preset: None,
+            zones: vec![
+                BoundaryZone {
+                    name: "ui".to_string(),
+                    patterns: vec!["src/ui/**".to_string()],
+                    auto_discover: vec![],
+                    root: None,
+                },
+                BoundaryZone {
+                    name: "db".to_string(),
+                    patterns: vec!["src/db/**".to_string()],
+                    auto_discover: vec![],
+                    root: None,
+                },
+            ],
+            rules: vec![BoundaryRule {
+                from: "ui".to_string(),
+                allow: vec![],
+                allow_type_only,
+            }],
+        }
+    }
+
+    #[test]
+    fn type_only_import_allowed_when_zone_listed() {
+        let root = PathBuf::from("/tmp/boundary-test");
+        let config = make_config(root.clone(), ui_db_boundaries(vec!["db".to_string()]));
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/types.ts"],
+            &[(0, 1, true)],
+        );
+        let suppressions = SuppressionContext::empty();
+        let line_offsets = FxHashMap::default();
+
+        let violations = find_boundary_violations(&graph, &config, &suppressions, &line_offsets);
+        assert!(
+            violations.is_empty(),
+            "type-only import to a zone in allowTypeOnly should not fire"
+        );
+    }
+
+    #[test]
+    fn type_only_import_still_blocked_when_zone_not_listed() {
+        let root = PathBuf::from("/tmp/boundary-test");
+        // allowTypeOnly references a different zone, not `db`.
+        let config = make_config(root.clone(), ui_db_boundaries(vec!["other".to_string()]));
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/types.ts"],
+            &[(0, 1, true)],
+        );
+        let suppressions = SuppressionContext::empty();
+        let line_offsets = FxHashMap::default();
+
+        let violations = find_boundary_violations(&graph, &config, &suppressions, &line_offsets);
+        assert_eq!(
+            violations.len(),
+            1,
+            "type-only import to a zone NOT in allowTypeOnly must still fire"
+        );
+    }
+
+    #[test]
+    fn value_import_blocked_even_when_zone_in_allow_type_only() {
+        let root = PathBuf::from("/tmp/boundary-test");
+        let config = make_config(root.clone(), ui_db_boundaries(vec!["db".to_string()]));
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/query.ts"],
+            &[(0, 1, false)],
+        );
+        let suppressions = SuppressionContext::empty();
+        let line_offsets = FxHashMap::default();
+
+        let violations = find_boundary_violations(&graph, &config, &suppressions, &line_offsets);
+        assert_eq!(
+            violations.len(),
+            1,
+            "value import must fire regardless of allowTypeOnly"
+        );
+    }
+
+    #[test]
+    fn empty_allow_type_only_preserves_baseline_behavior() {
+        let root = PathBuf::from("/tmp/boundary-test");
+        // Default (empty) allowTypeOnly. A type-only import must still fire,
+        // since the rule's allow list is empty and allowTypeOnly is empty.
+        let config = make_config(root.clone(), ui_db_boundaries(vec![]));
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/types.ts"],
+            &[(0, 1, true)],
+        );
+        let suppressions = SuppressionContext::empty();
+        let line_offsets = FxHashMap::default();
+
+        let violations = find_boundary_violations(&graph, &config, &suppressions, &line_offsets);
+        assert_eq!(
+            violations.len(),
+            1,
+            "default empty allowTypeOnly must preserve pre-feature behavior"
+        );
+    }
+
+    #[test]
+    fn allow_type_only_is_independent_of_allow() {
+        let root = PathBuf::from("/tmp/boundary-test");
+        // allow already includes `db`; the import must be permitted via the
+        // regular allow path. allowTypeOnly is a no-op here.
+        let boundaries = BoundaryConfig {
+            preset: None,
+            zones: vec![
+                BoundaryZone {
+                    name: "ui".to_string(),
+                    patterns: vec!["src/ui/**".to_string()],
+                    auto_discover: vec![],
+                    root: None,
+                },
+                BoundaryZone {
+                    name: "db".to_string(),
+                    patterns: vec!["src/db/**".to_string()],
+                    auto_discover: vec![],
+                    root: None,
+                },
+            ],
+            rules: vec![BoundaryRule {
+                from: "ui".to_string(),
+                allow: vec!["db".to_string()],
+                allow_type_only: vec!["db".to_string()],
+            }],
+        };
+        let config = make_config(root.clone(), boundaries);
+        let (_, graph) = build_graph(
+            &root,
+            &["src/ui/Button.tsx", "src/db/query.ts"],
+            &[(0, 1, false)],
+        );
+        let suppressions = SuppressionContext::empty();
+        let line_offsets = FxHashMap::default();
+
+        let violations = find_boundary_violations(&graph, &config, &suppressions, &line_offsets);
+        assert!(
+            violations.is_empty(),
+            "import already in `allow` must not fire regardless of allowTypeOnly"
+        );
     }
 }
