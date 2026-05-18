@@ -25,9 +25,53 @@
 
 
 /**
- * Schemas for the JSON output of fallow commands. Bare `fallow --format json` produces a combined envelope with `check`, `dupes`, and `health` keys. Individual commands (`fallow dead-code --format json`, `fallow health --format json`, `fallow dupes --format json`, `fallow audit --format json`, `fallow explain <issue-type> --format json`, `fallow coverage setup --json`) produce their own top-level structure.
+ * Schemas for the JSON output of fallow commands. To identify which envelope you have, check for the unique top-level field: `summary.total_issues` (check), `health_score` (health), `clone_groups` (dupes), `boundaries` (list --boundaries), `command: "audit"` (audit), `body` plus `comments` (review-github / review-gitlab), `schema: "fallow-review-reconcile/v1"` (ci reconcile-review), `framework_detected` plus `members` (coverage setup), `id` plus `how_to_fix` (explain), `check`+`dupes`+`health` keys together (bare combined invocation). `HealthOutput` and `DupesOutput` flatten their body (`HealthReport`/`DuplicationReport`) into top-level fields, so the discriminator field is from the body shape itself, not a wrapper key. Every object-shaped envelope is a variant of `FallowOutput`; `CodeClimateOutput` is a bare JSON array (per the Code Climate / GitLab Code Quality spec) and stays a sibling root branch; `CoverageAnalyzeOutput` is still hand-maintained pending the typed migration in issue #384 item 3.
  */
-export type FallowJsonOutput = (CombinedOutput | CheckOutput | CheckGroupedOutput | HealthOutput | DupesOutput | AuditOutput | ExplainOutput | CoverageSetupOutput | CodeClimateOutput | ReviewEnvelopeOutput | ReviewReconcileOutput)
+export type FallowJsonOutput = (FallowOutput | CodeClimateOutput | CoverageAnalyzeOutput)
+/**
+ * Typed root of every fallow `--format json` envelope shape that
+ * serializes as a JSON object. The schema derived from this enum drives
+ * the document-root `oneOf` in `docs/output-schema.json`, replacing the
+ * previously hand-maintained block.
+ * 
+ * `#[serde(untagged)]` preserves wire compatibility: consumers see exactly
+ * the same top-level keys today (`schema_version`, `version`, plus the
+ * per-envelope shape). The schema's `oneOf` lets agents narrow by trying
+ * variants in order; field sets differ enough that the first matching
+ * variant is the correct one in practice. Note that [`HealthOutput`] and
+ * [`DupesOutput`] flatten their inner body (`HealthReport` /
+ * `DuplicationReport`) into top-level fields, so the actual
+ * discriminators are nested-body keys such as `health_score` (health) and
+ * `clone_groups` (dupes), NOT `report` or `groups`.
+ * 
+ * Variant order is **most-specific first**. Schemars 1 preserves
+ * declaration order in the emitted `oneOf`, and validators that enforce
+ * strict `oneOf` (and any future migration that adds `Deserialize`) will
+ * try branches top-to-bottom. The required-field sets shrink as we move
+ * down the list, with [`CombinedOutput`] last because its three required
+ * fields (`schema_version`, `version`, `elapsed_ms`) are a strict subset
+ * of every other variant's required set; placing it earlier would let a
+ * `CheckOutput` payload silently match `CombinedOutput` first.
+ * 
+ * Two envelopes are intentionally NOT in this enum:
+ * - `CodeClimateOutput` serializes as a bare JSON array
+ *   (`#[serde(transparent)]`) per the Code Climate / GitLab Code Quality
+ *   spec; `#[serde(tag = ...)]` cannot internally tag a non-object
+ *   variant and wrapping the array would break the spec. The root schema
+ *   carries it as a sibling `oneOf` branch alongside `FallowOutput`.
+ * - `CoverageAnalyzeOutput` (`fallow coverage analyze --format json`)
+ *   does not yet have a Rust struct; it lives on the
+ *   `HAND_MAINTAINED_ROOT_ENVELOPES` constant in `schema_emit.rs`
+ *   pending typed migration. The root schema preserves it as a sibling
+ *   `oneOf` branch so the documented union stays complete until the
+ *   migration lands.
+ * 
+ * A future major release plans to switch this to
+ * `#[serde(tag = "kind")]` for true O(1) discriminability on AI / agent
+ * consumers, paired with a one-cycle `--legacy-envelope` opt-out flag.
+ * Tracked under issue #384.
+ */
+export type FallowOutput = (AuditOutput | ExplainOutput | ReviewEnvelopeOutput | ReviewReconcileOutput | CoverageSetupOutput | ListBoundariesOutput | HealthOutput | DupesOutput | CheckGroupedOutput | CheckOutput | CombinedOutput)
 /**
  * Schema version for this output format (independent of tool version). Bump
  * policy: ADDITIVE changes (new optional top-level fields, new optional struct
@@ -56,10 +100,22 @@ export type SchemaVersion = 6
  */
 export type ToolVersion = string
 /**
+ * Singleton `command` discriminator for [`AuditOutput`].
+ */
+export type AuditCommand = "audit"
+/**
+ * Verdict for the audit command.
+ */
+export type AuditVerdict = ("pass" | "warn" | "fail")
+/**
  * Analysis duration in milliseconds. Renders to the JSON wire as a bare
  * integer.
  */
 export type ElapsedMs = number
+/**
+ * Gating mode for `fallow audit`.
+ */
+export type AuditGate = ("new-only" | "all")
 /**
  * A suggested action attached to a finding in the JSON output. Each finding
  * carries an `actions` array; consumers (agents, IDE clients, CI bots) can
@@ -395,56 +451,6 @@ export type RefactoringTargetActionType = ("apply-refactoring" | "suppress-line"
  */
 export type TrendDirection = ("improving" | "declining" | "stable")
 /**
- * Resolver mode label for grouped envelopes (dead-code, dupes, health).
- * 
- * `owner` groups by CODEOWNERS team, `directory` groups by top-level
- * directory prefix, `package` groups by workspace package name, `section`
- * groups by GitLab CODEOWNERS `[Section]` header name.
- */
-export type GroupByMode = ("owner" | "directory" | "package" | "section")
-/**
- * Singleton `command` discriminator for [`AuditOutput`].
- */
-export type AuditCommand = "audit"
-/**
- * Verdict for the audit command.
- */
-export type AuditVerdict = ("pass" | "warn" | "fail")
-/**
- * Gating mode for `fallow audit`.
- */
-export type AuditGate = ("new-only" | "all")
-/**
- * Singleton schema-version discriminator for [`CoverageSetupOutput`].
- */
-export type CoverageSetupSchemaVersion = "1"
-/**
- * Framework label inside coverage setup output.
- */
-export type CoverageSetupFramework = ("nextjs" | "nestjs" | "nuxt" | "sveltekit" | "astro" | "remix" | "vite" | "plain_node" | "unknown")
-/**
- * Package manager label inside coverage setup output.
- */
-export type CoverageSetupPackageManager = ("npm" | "pnpm" | "yarn" | "bun")
-/**
- * Runtime target inside coverage setup output.
- */
-export type CoverageSetupRuntimeTarget = ("node" | "browser")
-/**
- * Discriminator value for [`CodeClimateIssue::kind`].
- */
-export type CodeClimateIssueKind = "issue"
-/**
- * CodeClimate severity scale.
- */
-export type CodeClimateSeverity = ("info" | "minor" | "major" | "critical" | "blocker")
-/**
- * Envelope emitted by `fallow --format codeclimate` and
- * `fallow --format gitlab-codequality`. GitLab Code Quality consumes the
- * same shape. The wire form is a bare JSON array, not an object.
- */
-export type CodeClimateOutput = CodeClimateIssue[]
-/**
  * Singleton GitHub review-event marker.
  */
 export type ReviewEnvelopeEvent = "COMMENT"
@@ -480,42 +486,134 @@ export type ReviewCheckConclusion = ("success" | "neutral" | "failure")
  * Schema-version discriminator for the review reconcile envelope.
  */
 export type ReviewReconcileSchema = "fallow-review-reconcile/v1"
+/**
+ * Singleton schema-version discriminator for [`CoverageSetupOutput`].
+ */
+export type CoverageSetupSchemaVersion = "1"
+/**
+ * Framework label inside coverage setup output.
+ */
+export type CoverageSetupFramework = ("nextjs" | "nestjs" | "nuxt" | "sveltekit" | "astro" | "remix" | "vite" | "plain_node" | "unknown")
+/**
+ * Package manager label inside coverage setup output.
+ */
+export type CoverageSetupPackageManager = ("npm" | "pnpm" | "yarn" | "bun")
+/**
+ * Runtime target inside coverage setup output.
+ */
+export type CoverageSetupRuntimeTarget = ("node" | "browser")
+/**
+ * Discovery outcome for a [`LogicalGroup`]. Discriminates "no children" into
+ * "the directory exists and is empty" versus "at least one `autoDiscover`
+ * path was invalid or unreadable", so consumers can render an actionable
+ * hint instead of "0 children, mystery".
+ */
+export type LogicalGroupStatus = ("ok" | "empty" | "invalid_path")
+/**
+ * Resolver mode label for grouped envelopes (dead-code, dupes, health).
+ * 
+ * `owner` groups by CODEOWNERS team, `directory` groups by top-level
+ * directory prefix, `package` groups by workspace package name, `section`
+ * groups by GitLab CODEOWNERS `[Section]` header name.
+ */
+export type GroupByMode = ("owner" | "directory" | "package" | "section")
+/**
+ * Discriminator value for [`CodeClimateIssue::kind`].
+ */
+export type CodeClimateIssueKind = "issue"
+/**
+ * CodeClimate severity scale.
+ */
+export type CodeClimateSeverity = ("info" | "minor" | "major" | "critical" | "blocker")
+/**
+ * Envelope emitted by `fallow --format codeclimate` and
+ * `fallow --format gitlab-codequality`. GitLab Code Quality consumes the
+ * same shape. The wire form is a bare JSON array, not an object.
+ */
+export type CodeClimateOutput = CodeClimateIssue[]
 
 /**
- * Envelope emitted by bare `fallow --format json` (the combined
- * invocation). Wraps the per-analysis sub-results inside a single envelope
- * with the standard `schema_version` / `version` / `elapsed_ms` header.
+ * Envelope emitted by `fallow audit --format json`. Combines dead code,
+ * complexity, and duplication scoped to changed files with a verdict
+ * (`pass` / `warn` / `fail`), a per-category summary, optional
+ * new-vs-inherited attribution, and full sub-results.
  * 
- * Each sub-result is `Option<...>` so `--only` / `--skip` can suppress a
- * pass without leaving an empty key on the wire. The `check` sub-result is
- * the full [`CheckOutput`] envelope (including its own `schema_version` /
- * `version` / `elapsed_ms`), but `dupes` and `health` are the bare body
- * types: the runtime emit calls `serde_json::to_value(&report)` on
- * `DuplicationReport` / `HealthReport` directly rather than wrapping them
- * in their per-command envelope. The committed schema points `dupes` at
- * `#/definitions/DuplicationReport` and `health` at
+ * Like [`CombinedOutput`], `audit`'s `duplication` and `complexity`
+ * sub-keys hold bare body types (`DuplicationReport` / `HealthReport`)
+ * rather than the per-command envelope shapes; `dead_code` is the full
+ * [`CheckOutput`] envelope. The committed schema points `duplication`
+ * at `#/definitions/DuplicationReport` and `complexity` at
  * `#/definitions/HealthReport` so the documented shape matches the
  * wire; the `committed_property_refs_match_derived_property_refs`
  * drift test enforces the alignment.
  */
-export interface CombinedOutput {
+export interface AuditOutput {
 schema_version: SchemaVersion
 version: ToolVersion
+command: AuditCommand
+verdict: AuditVerdict
+/**
+ * Number of files changed between base ref and HEAD.
+ */
+changed_files_count: number
+/**
+ * Git ref used as comparison base (explicit or auto-detected).
+ */
+base_ref: string
+/**
+ * Short SHA of HEAD. Omitted when git is unavailable.
+ */
+head_sha?: (string | null)
 elapsed_ms: ElapsedMs
 /**
- * Dead-code analysis sub-envelope. Absent when `--skip check`.
+ * Only emitted when --performance is set. true means audit reused the
+ * current run's keys as the base snapshot because every changed file was
+ * either a non-behavioral doc or token-equivalent at the base ref (the
+ * docs-only-diff fast path); false means the regular base worktree
+ * analysis ran.
  */
-check?: (CheckOutput | null)
+base_snapshot_skipped?: (boolean | null)
+summary: AuditSummary
+attribution: AuditAttribution
 /**
- * Duplication analysis body (bare `DuplicationReport`, not the full
- * `DupesOutput` envelope). Absent when `--skip dupes`.
+ * Full dead code results (omitted if no changed files). Issue objects
+ * include introduced: true/false when audit can compare against the base
+ * ref.
  */
-dupes?: (DuplicationReport | null)
+dead_code?: (CheckOutput | null)
 /**
- * Complexity analysis body (bare `HealthReport`, not the full
- * `HealthOutput` envelope). Absent when `--skip health`.
+ * Full duplication results (omitted if no changed files). Clone groups
+ * include introduced: true/false when audit can compare against the base
+ * ref.
  */
-health?: (HealthReport | null)
+duplication?: (DuplicationReport | null)
+/**
+ * Full complexity results (omitted if no changed files). Findings include
+ * introduced: true/false when audit can compare against the base ref.
+ */
+complexity?: (HealthReport | null)
+}
+/**
+ * Per-category summary counts for the audit result.
+ */
+export interface AuditSummary {
+dead_code_issues: number
+dead_code_has_errors: boolean
+complexity_findings: number
+max_cyclomatic?: (number | null)
+duplication_clone_groups: number
+}
+/**
+ * New-vs-inherited issue counts for audit.
+ */
+export interface AuditAttribution {
+gate: AuditGate
+dead_code_introduced: number
+dead_code_inherited: number
+complexity_introduced: number
+complexity_inherited: number
+duplication_introduced: number
+duplication_inherited: number
 }
 /**
  * Envelope emitted by `fallow dead-code --format json` (plus the `check`
@@ -3776,190 +3874,509 @@ reason: string
 scope: string
 }
 /**
- * Envelope emitted by `fallow dead-code --group-by ... --format json`.
+ * Envelope emitted by `fallow explain <issue-type> --format json`.
  * 
- * Issues are partitioned into resolver buckets (CODEOWNERS team, directory
- * prefix, workspace package, or GitLab CODEOWNERS section) instead of flat
- * arrays. Each bucket carries the same issue-array shape as the ungrouped
- * `CheckOutput` body, plus per-group `key` / `owners` / `total_issues`.
+ * Standalone rule explanation. This command does not run project analysis
+ * and intentionally returns a compact object without `schema_version` /
+ * `version` metadata; consumers that need those should call any other
+ * fallow JSON-producing command.
  */
-export interface CheckGroupedOutput {
-schema_version: SchemaVersion
-version: ToolVersion
-elapsed_ms: ElapsedMs
-grouped_by: GroupByMode
+export interface ExplainOutput {
 /**
- * Total number of issues across all groups.
+ * Canonical rule id, for example `fallow/unused-export`.
  */
-total_issues: number
+id: string
 /**
- * One entry per group; each contains the same issue arrays as
- * `CheckOutput` plus the group key and per-group total.
+ * Human-readable rule name.
  */
-groups: CheckGroupedEntry[]
+name: string
 /**
- * `_meta` block with metric / rule definitions, emitted when `--explain`
- * is passed.
+ * Short one-line explanation of the issue.
  */
-_meta?: (Meta | null)
+summary: string
+/**
+ * Why the issue matters and what fallow checks.
+ */
+rationale: string
+/**
+ * Concrete example of the finding.
+ */
+example: string
+/**
+ * Recommended fix or suppression guidance.
+ */
+how_to_fix: string
+/**
+ * Docs URL for the rule.
+ */
+docs: string
 }
 /**
- * Single resolver bucket inside `CheckGroupedOutput`. Carries the group's
- * identifier, optional section owners, and a per-group flattened
- * `AnalysisResults`.
+ * Envelope emitted by `fallow --format review-github` / `review-gitlab`.
+ * Consumed by `action/scripts/review.sh` and `ci/scripts/review.sh` to
+ * post inline PR / MR review comments.
  */
-export interface CheckGroupedEntry {
+export interface ReviewEnvelopeOutput {
 /**
- * Group identifier produced by the resolver. For `package` grouping:
- * workspace package name. For `owner` grouping: the CODEOWNERS team.
- * For `directory` grouping: the top-level directory prefix. For
- * `section` grouping: the GitLab CODEOWNERS section name (or
- * `(no section)` / `(unowned)` for unmatched files).
+ * GitHub review event. Omitted for GitLab.
  */
-key: string
+event?: (ReviewEnvelopeEvent | null)
 /**
- * Section default owners (GitLab CODEOWNERS `[Section] @owner1
- * @owner2`). Emitted only when `grouped_by` is `section`. Empty for
- * the `(no section)` and `(unowned)` buckets.
+ * Review summary body (rendered above per-line comments).
  */
-owners?: (string[] | null)
+body: string
 /**
- * Total number of issues in this group.
+ * Per-line comments. Each is either a [`GitHubReviewComment`] or a
+ * [`GitLabReviewComment`] depending on `meta.provider`.
  */
-total_issues: number
+comments: ReviewComment[]
+meta: ReviewEnvelopeMeta
+}
 /**
- * Files not reachable from any entry point. Wrapped in
- * [`UnusedFileFinding`] so each entry carries a typed `actions` array
- * natively, replacing the pre-2.76 post-pass injection.
+ * GitHub pull-request review comment.
  */
-unused_files: UnusedFileFinding[]
+export interface GitHubReviewComment {
 /**
- * Exports never imported by other modules. Wrapped in
- * [`UnusedExportFinding`] so each entry carries a typed `actions`
- * array natively.
+ * File path the comment targets, repo-root relative.
  */
-unused_exports: UnusedExportFinding[]
+path: string
 /**
- * Type exports never imported by other modules. Wrapped in
- * [`UnusedTypeFinding`]: the inner [`UnusedExport`] struct is shared
- * with `unused_exports` but the wrapper emits a type-targeted fix
- * description.
+ * 1-indexed line number the comment targets.
  */
-unused_types: UnusedTypeFinding[]
+line: number
+side: GitHubReviewSide
 /**
- * Exported symbols whose public signature references same-file private
- * types. Wrapped in [`PrivateTypeLeakFinding`] so each entry carries a
- * typed `actions` array natively.
+ * Markdown body of the comment.
  */
-private_type_leaks: PrivateTypeLeakFinding[]
+body: string
 /**
- * Dependencies listed in package.json but never imported. Wrapped in
- * [`UnusedDependencyFinding`] so each entry carries a typed `actions`
- * array natively. The fix action swaps from `remove-dependency` to
- * `move-dependency` when `used_in_workspaces` is non-empty.
+ * Stable fingerprint for the comment, used by `fallow ci
+ * reconcile-review` to detect carryover comments across PR revisions.
  */
-unused_dependencies: UnusedDependencyFinding[]
+fingerprint: string
+}
 /**
- * Dev dependencies listed in package.json but never imported. Wrapped
- * in [`UnusedDevDependencyFinding`]: same bare struct as
- * `unused_dependencies` with a `devDependencies`-targeted fix
- * description.
+ * GitLab merge-request discussion comment.
  */
-unused_dev_dependencies: UnusedDevDependencyFinding[]
+export interface GitLabReviewComment {
 /**
- * Optional dependencies listed in package.json but never imported.
- * Wrapped in [`UnusedOptionalDependencyFinding`] with an
- * `optionalDependencies`-targeted fix description.
+ * Markdown body of the comment.
  */
-unused_optional_dependencies: UnusedOptionalDependencyFinding[]
+body: string
+position: GitLabReviewPosition
 /**
- * Enum members never accessed. Wrapped in
- * [`UnusedEnumMemberFinding`] so each entry carries a typed `actions`
- * array natively.
+ * Stable fingerprint for the comment.
  */
-unused_enum_members: UnusedEnumMemberFinding[]
+fingerprint: string
+}
 /**
- * Class members never accessed. Wrapped in
- * [`UnusedClassMemberFinding`]: same inner [`UnusedMember`] struct as
- * `unused_enum_members`, with a class-targeted fix description and the
- * `auto_fixable: false` default to reflect dependency-injection
- * patterns.
+ * `position` block inside [`GitLabReviewComment`]. Mirrors the GitLab
+ * merge-request discussion-position API.
  */
-unused_class_members: UnusedClassMemberFinding[]
+export interface GitLabReviewPosition {
 /**
- * Import specifiers that could not be resolved. Wrapped in
- * [`UnresolvedImportFinding`] so each entry carries a typed `actions`
- * array natively.
+ * Merge-request base SHA.
  */
-unresolved_imports: UnresolvedImportFinding[]
+base_sha?: (string | null)
 /**
- * Dependencies used in code but not listed in package.json. Wrapped in
- * [`UnlistedDependencyFinding`].
+ * Merge-request start SHA.
  */
-unlisted_dependencies: UnlistedDependencyFinding[]
+start_sha?: (string | null)
 /**
- * Exports with the same name across multiple modules.
+ * Merge-request head SHA.
  */
-duplicate_exports: DuplicateExport[]
+head_sha?: (string | null)
+position_type: GitLabReviewPositionType
 /**
- * Production dependencies only used via type-only imports (could be
- * devDependencies). Only populated in production mode. Wrapped in
- * [`TypeOnlyDependencyFinding`].
+ * File path on the base side.
  */
-type_only_dependencies: TypeOnlyDependencyFinding[]
+old_path: string
 /**
- * Production dependencies only imported by test files (could be
- * devDependencies). Wrapped in [`TestOnlyDependencyFinding`].
+ * File path on the head side.
  */
-test_only_dependencies?: TestOnlyDependencyFinding[]
+new_path: string
 /**
- * Circular dependency chains detected in the module graph. Wrapped in
- * [`CircularDependencyFinding`] so each entry carries a typed `actions`
- * array natively.
+ * 1-indexed line on the head side.
  */
-circular_dependencies: CircularDependencyFinding[]
+new_line: number
+}
 /**
- * Imports that cross architecture boundary rules. Wrapped in
- * [`BoundaryViolationFinding`] so each entry carries a typed `actions`
- * array natively.
+ * `meta` block inside [`ReviewEnvelopeOutput`].
  */
-boundary_violations?: BoundaryViolationFinding[]
+export interface ReviewEnvelopeMeta {
+schema: ReviewEnvelopeSchema
+provider: ReviewProvider
 /**
- * Suppression comments or JSDoc tags that no longer match any issue.
+ * Check conclusion derived from the underlying findings. Emitted only
+ * for GitHub envelopes today.
  */
-stale_suppressions?: StaleSuppression[]
+check_conclusion?: (ReviewCheckConclusion | null)
+}
 /**
- * Entries in pnpm-workspace.yaml's catalog: or catalogs: sections not
- * referenced by any workspace package via the catalog: protocol.
+ * Envelope emitted by `fallow ci reconcile-review --format json`. Used by
+ * CI integrations to drive comment carry-over and stale-comment cleanup
+ * across PR / MR revisions.
  */
-unused_catalog_entries?: UnusedCatalogEntry[]
+export interface ReviewReconcileOutput {
+schema: ReviewReconcileSchema
+provider: ReviewProvider
 /**
- * Named groups under pnpm-workspace.yaml's catalogs: section that declare
- * no package entries. The top-level catalog: map is not reported.
+ * PR / MR target identifier supplied to `fallow ci reconcile-review`.
+ * `null` when the command ran without an explicit target.
  */
-empty_catalog_groups?: EmptyCatalogGroup[]
+target?: (string | null)
 /**
- * Workspace package.json references to catalogs (`catalog:` or
- * `catalog:<name>`) that do not declare the consumed package. pnpm install
- * will error until the named catalog grows to include the package or the
- * reference is switched / removed.
+ * Whether the reconcile ran in dry-run mode.
  */
-unresolved_catalog_references?: UnresolvedCatalogReference[]
+dry_run: boolean
 /**
- * Entries in pnpm-workspace.yaml's overrides: section, or package.json's
- * pnpm.overrides block, whose target package is not declared by any
- * workspace package and is not present in pnpm-lock.yaml. Default severity
- * is warn because projects without a readable lockfile fall back to
- * manifest-only checks; the hint field flags those conservative cases.
+ * Number of comments in the supplied review envelope.
  */
-unused_dependency_overrides?: UnusedDependencyOverride[]
+comments: number
 /**
- * pnpm.overrides entries whose key or value does not parse as a valid
- * override spec (empty key, empty value, malformed selector, unbalanced
- * parent matcher). pnpm install will reject these. Default severity is
- * error.
+ * Total fingerprints discovered in the supplied envelope.
  */
-misconfigured_dependency_overrides?: MisconfiguredDependencyOverride[]
+current_fingerprints: number
+/**
+ * Existing fingerprints already posted on the PR / MR.
+ */
+existing_fingerprints: number
+/**
+ * Newly-introduced fingerprints (current minus existing).
+ */
+new_fingerprints: number
+/**
+ * Stale fingerprints (existing minus current).
+ */
+stale_fingerprints: number
+/**
+ * Identifiers of the new fingerprints (subset of comments).
+ */
+new: string[]
+/**
+ * Identifiers of the stale fingerprints (subset of existing).
+ */
+stale: string[]
+/**
+ * Optional warning when the provider API was unreachable or
+ * auth-rejected. `null` on the happy path.
+ */
+provider_warning?: (string | null)
+/**
+ * Resolution comments actually posted (zero on dry runs).
+ */
+resolution_comments_posted: number
+/**
+ * Stale review threads actually resolved (zero on dry runs).
+ */
+threads_resolved: number
+/**
+ * Errors collected during apply, one entry per failure.
+ */
+apply_errors: string[]
+}
+/**
+ * Envelope emitted by `fallow coverage setup --json`. Deterministic
+ * agent-readable runtime coverage setup instructions. In workspaces,
+ * `members` carries one entry per detected runtime package; `runtime_targets`
+ * is the union of all member targets.
+ * 
+ * Constructed at runtime by
+ * `crates/cli/src/coverage/mod.rs::build_setup_envelope`; the wire is
+ * `serde_json::to_value(&envelope)`. The drift gate keeps this struct
+ * aligned with `docs/output-schema.json`.
+ */
+export interface CoverageSetupOutput {
+schema_version: CoverageSetupSchemaVersion
+framework_detected: CoverageSetupFramework
+/**
+ * Detected JavaScript package manager. `null` when none could be
+ * resolved.
+ */
+package_manager?: (CoverageSetupPackageManager | null)
+/**
+ * Union of runtime targets across emitted members.
+ */
+runtime_targets: CoverageSetupRuntimeTarget[]
+/**
+ * Per-runtime-workspace setup recipes. Pure aggregator roots and
+ * build-only library packages are omitted.
+ */
+members: CoverageSetupMember[]
+/**
+ * Always `null` today. Reserved for a future "config has been written
+ * to disk" indicator.
+ */
+config_written?: {
+[k: string]: unknown
+}
+/**
+ * Shell commands the agent should run from the workspace root.
+ */
+commands: string[]
+/**
+ * Compatibility copy of the primary member's files, with workspace
+ * prefixes when the primary member is not the root.
+ */
+files_to_edit: CoverageSetupFileToEdit[]
+/**
+ * Compatibility copy of the primary member's snippets, with workspace
+ * prefixes when the primary member is not the root.
+ */
+snippets: CoverageSetupSnippet[]
+/**
+ * Optional Dockerfile RUN/COPY snippet to enable the beacon in
+ * containerised deployments.
+ */
+dockerfile_snippet?: (string | null)
+/**
+ * Ordered next-step instructions for the agent / human operator.
+ */
+next_steps: string[]
+/**
+ * Non-fatal warnings raised during setup detection.
+ */
+warnings: string[]
+/**
+ * `_meta` block emitted only when `--explain` is passed.
+ */
+_meta?: {
+[k: string]: unknown
+}
+}
+/**
+ * Per-workspace setup recipe inside [`CoverageSetupOutput::members`].
+ */
+export interface CoverageSetupMember {
+/**
+ * Workspace package name (or root marker for single-package projects).
+ */
+name: string
+/**
+ * Workspace path relative to the analysed root, or `.` for the root
+ * member.
+ */
+path: string
+framework_detected: CoverageSetupFramework
+/**
+ * Package manager detected for this member.
+ */
+package_manager?: (CoverageSetupPackageManager | null)
+/**
+ * Runtime targets supported by this member's framework.
+ */
+runtime_targets: CoverageSetupRuntimeTarget[]
+/**
+ * Files the agent should edit to wire in the beacon.
+ */
+files_to_edit: CoverageSetupFileToEdit[]
+/**
+ * Code snippets the agent should paste into the edited files.
+ */
+snippets: CoverageSetupSnippet[]
+/**
+ * Optional Dockerfile snippet specific to this member.
+ */
+dockerfile_snippet?: (string | null)
+/**
+ * Member-scoped warnings.
+ */
+warnings: string[]
+}
+/**
+ * Single file to edit inside [`CoverageSetupMember::files_to_edit`] or
+ * [`CoverageSetupOutput::files_to_edit`].
+ */
+export interface CoverageSetupFileToEdit {
+/**
+ * Workspace-relative path to the file to edit.
+ */
+path: string
+/**
+ * Why the file needs editing (e.g. `"Mount the beacon middleware"`).
+ */
+reason: string
+}
+/**
+ * Single code snippet inside [`CoverageSetupMember::snippets`] or
+ * [`CoverageSetupOutput::snippets`].
+ */
+export interface CoverageSetupSnippet {
+/**
+ * Short label identifying the snippet (used by the human renderer).
+ */
+label: string
+/**
+ * Workspace-relative path the snippet should be pasted into.
+ */
+path: string
+/**
+ * Snippet content (literal source text).
+ */
+content: string
+}
+/**
+ * Envelope emitted by `fallow list --boundaries --format json`. Surfaces
+ * the architecture boundary zones, rules, and (issue #373) the user's
+ * pre-expansion `autoDiscover` logical groups so consumers can render
+ * grouping intent that `expand_auto_discover` would otherwise flatten out
+ * of `zones[]`.
+ */
+export interface ListBoundariesOutput {
+boundaries: BoundariesListing
+}
+/**
+ * `boundaries` block carried by [`ListBoundariesOutput`].
+ */
+export interface BoundariesListing {
+/**
+ * `false` when the project has no `boundaries` configured; `true`
+ * otherwise. When `false` every array below is empty and every count
+ * is `0` (parity is enforced so consumers can read the counts without
+ * first branching on this flag).
+ */
+configured: boolean
+/**
+ * Length of [`Self::zones`]; emitted alongside the array for parity
+ * with `rule_count` / `logical_group_count`.
+ */
+zone_count: number
+/**
+ * Boundary zones after preset and `autoDiscover` expansion.
+ */
+zones: BoundariesListZone[]
+/**
+ * Length of [`Self::rules`].
+ */
+rule_count: number
+/**
+ * Boundary import rules, each `from -> allow[]`.
+ */
+rules: BoundariesListRule[]
+/**
+ * Length of [`Self::logical_groups`]. Always present (issue #373).
+ */
+logical_group_count: number
+/**
+ * Pre-expansion `autoDiscover` groups carrying the user-authored parent
+ * name and grouping intent (issue #373).
+ */
+logical_groups: BoundariesListLogicalGroup[]
+}
+/**
+ * A boundary zone after preset and `autoDiscover` expansion. Each entry
+ * classifies files into a single zone via glob patterns.
+ */
+export interface BoundariesListZone {
+/**
+ * Zone identifier as referenced in rules (e.g. `app`, `features/auth`).
+ */
+name: string
+/**
+ * Compiled glob patterns. Children of an `autoDiscover` parent each
+ * carry a single pattern like `src/features/auth/**`.
+ */
+patterns: string[]
+/**
+ * Number of discovered files classified into this zone.
+ */
+file_count: number
+}
+/**
+ * A boundary import rule, expanded to operate on concrete child zone
+ * names after `autoDiscover` flattening. The user's pre-expansion rule
+ * (keyed on the logical parent name, if any) is preserved on the
+ * corresponding [`BoundariesListLogicalGroup::authored_rule`].
+ */
+export interface BoundariesListRule {
+/**
+ * Source zone the rule applies to.
+ */
+from: string
+/**
+ * Target zones [`Self::from`] is allowed to import from. Self-imports
+ * are always allowed implicitly.
+ */
+allow: string[]
+}
+/**
+ * A pre-expansion `autoDiscover` logical group surfaced for observability
+ * (issue #373). Captured during `expand_auto_discover` so consumers can
+ * see the user-authored parent name and grouping intent after expansion
+ * would otherwise flatten it out of [`BoundariesListing::zones`].
+ */
+export interface BoundariesListLogicalGroup {
+/**
+ * Logical parent zone name as authored by the user.
+ */
+name: string
+/**
+ * Discovered child zone names in stable directory-sorted order.
+ */
+children: string[]
+/**
+ * Verbatim `autoDiscover` strings from the user's config (not
+ * normalized) so round-trip tooling can match byte-for-byte.
+ */
+auto_discover: string[]
+status: LogicalGroupStatus
+/**
+ * Position of the parent zone in the user's pre-expansion `zones[]`.
+ */
+source_zone_index: number
+/**
+ * Sum of `file_count` across [`Self::children`] plus the fallback
+ * zone's `file_count` when present.
+ */
+file_count: number
+/**
+ * Pre-expansion rule keyed on the parent name, when the user wrote
+ * one.
+ */
+authored_rule?: (AuthoredRule | null)
+/**
+ * When the parent zone also carried explicit `patterns`, it stayed in
+ * [`BoundariesListing::zones`] as a fallback classifier; this is its
+ * name. Equal to [`Self::name`] when present.
+ */
+fallback_zone?: (string | null)
+/**
+ * Parent zone indices merged into this group when the user declared
+ * the same parent name multiple times.
+ */
+merged_from?: (number[] | null)
+/**
+ * Echo of the parent zone's `root` (subtree scope) as the user wrote
+ * it. `None` when the parent had no `root` field.
+ */
+original_zone_root?: (string | null)
+/**
+ * Parallel to [`Self::children`]: for child at index `i`, the index
+ * into [`Self::auto_discover`] of the path that produced it. Empty
+ * when only one path was authored (every child trivially maps to
+ * index 0). `serde(default)` keeps the schema's `required` array in
+ * step with the runtime's `skip_serializing_if` behavior.
+ */
+child_source_indices?: number[]
+}
+/**
+ * Pre-expansion `from`-rule preserved on a [`LogicalGroup`]. Surfaces the
+ * user's original intent (`{ from: "features", allow: ["shared"] }`) even
+ * after `expand_auto_discover` rewrote it into per-child rules
+ * (`features/auth -> shared`, `features/billing -> shared`).
+ */
+export interface AuthoredRule {
+/**
+ * Pre-expansion `allow` list as the user wrote it.
+ */
+allow: string[]
+/**
+ * Pre-expansion `allowTypeOnly` list as the user wrote it. Omitted
+ * from JSON output when empty; `serde(default)` keeps the derived
+ * schema in lock-step (schemars 1 marks any field with a
+ * `serde(default)` attribute as non-required).
+ */
+allow_type_only?: string[]
 }
 /**
  * Envelope emitted by `fallow health --format json` (plus the `health` block
@@ -4288,265 +4705,226 @@ fragment: string
 owner: string
 }
 /**
- * Envelope emitted by `fallow audit --format json`. Combines dead code,
- * complexity, and duplication scoped to changed files with a verdict
- * (`pass` / `warn` / `fail`), a per-category summary, optional
- * new-vs-inherited attribution, and full sub-results.
+ * Envelope emitted by `fallow dead-code --group-by ... --format json`.
  * 
- * Like [`CombinedOutput`], `audit`'s `duplication` and `complexity`
- * sub-keys hold bare body types (`DuplicationReport` / `HealthReport`)
- * rather than the per-command envelope shapes; `dead_code` is the full
- * [`CheckOutput`] envelope. The committed schema points `duplication`
- * at `#/definitions/DuplicationReport` and `complexity` at
+ * Issues are partitioned into resolver buckets (CODEOWNERS team, directory
+ * prefix, workspace package, or GitLab CODEOWNERS section) instead of flat
+ * arrays. Each bucket carries the same issue-array shape as the ungrouped
+ * `CheckOutput` body, plus per-group `key` / `owners` / `total_issues`.
+ */
+export interface CheckGroupedOutput {
+schema_version: SchemaVersion
+version: ToolVersion
+elapsed_ms: ElapsedMs
+grouped_by: GroupByMode
+/**
+ * Total number of issues across all groups.
+ */
+total_issues: number
+/**
+ * One entry per group; each contains the same issue arrays as
+ * `CheckOutput` plus the group key and per-group total.
+ */
+groups: CheckGroupedEntry[]
+/**
+ * `_meta` block with metric / rule definitions, emitted when `--explain`
+ * is passed.
+ */
+_meta?: (Meta | null)
+}
+/**
+ * Single resolver bucket inside `CheckGroupedOutput`. Carries the group's
+ * identifier, optional section owners, and a per-group flattened
+ * `AnalysisResults`.
+ */
+export interface CheckGroupedEntry {
+/**
+ * Group identifier produced by the resolver. For `package` grouping:
+ * workspace package name. For `owner` grouping: the CODEOWNERS team.
+ * For `directory` grouping: the top-level directory prefix. For
+ * `section` grouping: the GitLab CODEOWNERS section name (or
+ * `(no section)` / `(unowned)` for unmatched files).
+ */
+key: string
+/**
+ * Section default owners (GitLab CODEOWNERS `[Section] @owner1
+ * @owner2`). Emitted only when `grouped_by` is `section`. Empty for
+ * the `(no section)` and `(unowned)` buckets.
+ */
+owners?: (string[] | null)
+/**
+ * Total number of issues in this group.
+ */
+total_issues: number
+/**
+ * Files not reachable from any entry point. Wrapped in
+ * [`UnusedFileFinding`] so each entry carries a typed `actions` array
+ * natively, replacing the pre-2.76 post-pass injection.
+ */
+unused_files: UnusedFileFinding[]
+/**
+ * Exports never imported by other modules. Wrapped in
+ * [`UnusedExportFinding`] so each entry carries a typed `actions`
+ * array natively.
+ */
+unused_exports: UnusedExportFinding[]
+/**
+ * Type exports never imported by other modules. Wrapped in
+ * [`UnusedTypeFinding`]: the inner [`UnusedExport`] struct is shared
+ * with `unused_exports` but the wrapper emits a type-targeted fix
+ * description.
+ */
+unused_types: UnusedTypeFinding[]
+/**
+ * Exported symbols whose public signature references same-file private
+ * types. Wrapped in [`PrivateTypeLeakFinding`] so each entry carries a
+ * typed `actions` array natively.
+ */
+private_type_leaks: PrivateTypeLeakFinding[]
+/**
+ * Dependencies listed in package.json but never imported. Wrapped in
+ * [`UnusedDependencyFinding`] so each entry carries a typed `actions`
+ * array natively. The fix action swaps from `remove-dependency` to
+ * `move-dependency` when `used_in_workspaces` is non-empty.
+ */
+unused_dependencies: UnusedDependencyFinding[]
+/**
+ * Dev dependencies listed in package.json but never imported. Wrapped
+ * in [`UnusedDevDependencyFinding`]: same bare struct as
+ * `unused_dependencies` with a `devDependencies`-targeted fix
+ * description.
+ */
+unused_dev_dependencies: UnusedDevDependencyFinding[]
+/**
+ * Optional dependencies listed in package.json but never imported.
+ * Wrapped in [`UnusedOptionalDependencyFinding`] with an
+ * `optionalDependencies`-targeted fix description.
+ */
+unused_optional_dependencies: UnusedOptionalDependencyFinding[]
+/**
+ * Enum members never accessed. Wrapped in
+ * [`UnusedEnumMemberFinding`] so each entry carries a typed `actions`
+ * array natively.
+ */
+unused_enum_members: UnusedEnumMemberFinding[]
+/**
+ * Class members never accessed. Wrapped in
+ * [`UnusedClassMemberFinding`]: same inner [`UnusedMember`] struct as
+ * `unused_enum_members`, with a class-targeted fix description and the
+ * `auto_fixable: false` default to reflect dependency-injection
+ * patterns.
+ */
+unused_class_members: UnusedClassMemberFinding[]
+/**
+ * Import specifiers that could not be resolved. Wrapped in
+ * [`UnresolvedImportFinding`] so each entry carries a typed `actions`
+ * array natively.
+ */
+unresolved_imports: UnresolvedImportFinding[]
+/**
+ * Dependencies used in code but not listed in package.json. Wrapped in
+ * [`UnlistedDependencyFinding`].
+ */
+unlisted_dependencies: UnlistedDependencyFinding[]
+/**
+ * Exports with the same name across multiple modules.
+ */
+duplicate_exports: DuplicateExport[]
+/**
+ * Production dependencies only used via type-only imports (could be
+ * devDependencies). Only populated in production mode. Wrapped in
+ * [`TypeOnlyDependencyFinding`].
+ */
+type_only_dependencies: TypeOnlyDependencyFinding[]
+/**
+ * Production dependencies only imported by test files (could be
+ * devDependencies). Wrapped in [`TestOnlyDependencyFinding`].
+ */
+test_only_dependencies?: TestOnlyDependencyFinding[]
+/**
+ * Circular dependency chains detected in the module graph. Wrapped in
+ * [`CircularDependencyFinding`] so each entry carries a typed `actions`
+ * array natively.
+ */
+circular_dependencies: CircularDependencyFinding[]
+/**
+ * Imports that cross architecture boundary rules. Wrapped in
+ * [`BoundaryViolationFinding`] so each entry carries a typed `actions`
+ * array natively.
+ */
+boundary_violations?: BoundaryViolationFinding[]
+/**
+ * Suppression comments or JSDoc tags that no longer match any issue.
+ */
+stale_suppressions?: StaleSuppression[]
+/**
+ * Entries in pnpm-workspace.yaml's catalog: or catalogs: sections not
+ * referenced by any workspace package via the catalog: protocol.
+ */
+unused_catalog_entries?: UnusedCatalogEntry[]
+/**
+ * Named groups under pnpm-workspace.yaml's catalogs: section that declare
+ * no package entries. The top-level catalog: map is not reported.
+ */
+empty_catalog_groups?: EmptyCatalogGroup[]
+/**
+ * Workspace package.json references to catalogs (`catalog:` or
+ * `catalog:<name>`) that do not declare the consumed package. pnpm install
+ * will error until the named catalog grows to include the package or the
+ * reference is switched / removed.
+ */
+unresolved_catalog_references?: UnresolvedCatalogReference[]
+/**
+ * Entries in pnpm-workspace.yaml's overrides: section, or package.json's
+ * pnpm.overrides block, whose target package is not declared by any
+ * workspace package and is not present in pnpm-lock.yaml. Default severity
+ * is warn because projects without a readable lockfile fall back to
+ * manifest-only checks; the hint field flags those conservative cases.
+ */
+unused_dependency_overrides?: UnusedDependencyOverride[]
+/**
+ * pnpm.overrides entries whose key or value does not parse as a valid
+ * override spec (empty key, empty value, malformed selector, unbalanced
+ * parent matcher). pnpm install will reject these. Default severity is
+ * error.
+ */
+misconfigured_dependency_overrides?: MisconfiguredDependencyOverride[]
+}
+/**
+ * Envelope emitted by bare `fallow --format json` (the combined
+ * invocation). Wraps the per-analysis sub-results inside a single envelope
+ * with the standard `schema_version` / `version` / `elapsed_ms` header.
+ * 
+ * Each sub-result is `Option<...>` so `--only` / `--skip` can suppress a
+ * pass without leaving an empty key on the wire. The `check` sub-result is
+ * the full [`CheckOutput`] envelope (including its own `schema_version` /
+ * `version` / `elapsed_ms`), but `dupes` and `health` are the bare body
+ * types: the runtime emit calls `serde_json::to_value(&report)` on
+ * `DuplicationReport` / `HealthReport` directly rather than wrapping them
+ * in their per-command envelope. The committed schema points `dupes` at
+ * `#/definitions/DuplicationReport` and `health` at
  * `#/definitions/HealthReport` so the documented shape matches the
  * wire; the `committed_property_refs_match_derived_property_refs`
  * drift test enforces the alignment.
  */
-export interface AuditOutput {
+export interface CombinedOutput {
 schema_version: SchemaVersion
 version: ToolVersion
-command: AuditCommand
-verdict: AuditVerdict
-/**
- * Number of files changed between base ref and HEAD.
- */
-changed_files_count: number
-/**
- * Git ref used as comparison base (explicit or auto-detected).
- */
-base_ref: string
-/**
- * Short SHA of HEAD. Omitted when git is unavailable.
- */
-head_sha?: (string | null)
 elapsed_ms: ElapsedMs
 /**
- * Only emitted when --performance is set. true means audit reused the
- * current run's keys as the base snapshot because every changed file was
- * either a non-behavioral doc or token-equivalent at the base ref (the
- * docs-only-diff fast path); false means the regular base worktree
- * analysis ran.
+ * Dead-code analysis sub-envelope. Absent when `--skip check`.
  */
-base_snapshot_skipped?: (boolean | null)
-summary: AuditSummary
-attribution: AuditAttribution
+check?: (CheckOutput | null)
 /**
- * Full dead code results (omitted if no changed files). Issue objects
- * include introduced: true/false when audit can compare against the base
- * ref.
+ * Duplication analysis body (bare `DuplicationReport`, not the full
+ * `DupesOutput` envelope). Absent when `--skip dupes`.
  */
-dead_code?: (CheckOutput | null)
+dupes?: (DuplicationReport | null)
 /**
- * Full duplication results (omitted if no changed files). Clone groups
- * include introduced: true/false when audit can compare against the base
- * ref.
+ * Complexity analysis body (bare `HealthReport`, not the full
+ * `HealthOutput` envelope). Absent when `--skip health`.
  */
-duplication?: (DuplicationReport | null)
-/**
- * Full complexity results (omitted if no changed files). Findings include
- * introduced: true/false when audit can compare against the base ref.
- */
-complexity?: (HealthReport | null)
-}
-/**
- * Per-category summary counts for the audit result.
- */
-export interface AuditSummary {
-dead_code_issues: number
-dead_code_has_errors: boolean
-complexity_findings: number
-max_cyclomatic?: (number | null)
-duplication_clone_groups: number
-}
-/**
- * New-vs-inherited issue counts for audit.
- */
-export interface AuditAttribution {
-gate: AuditGate
-dead_code_introduced: number
-dead_code_inherited: number
-complexity_introduced: number
-complexity_inherited: number
-duplication_introduced: number
-duplication_inherited: number
-}
-/**
- * Envelope emitted by `fallow explain <issue-type> --format json`.
- * 
- * Standalone rule explanation. This command does not run project analysis
- * and intentionally returns a compact object without `schema_version` /
- * `version` metadata; consumers that need those should call any other
- * fallow JSON-producing command.
- */
-export interface ExplainOutput {
-/**
- * Canonical rule id, for example `fallow/unused-export`.
- */
-id: string
-/**
- * Human-readable rule name.
- */
-name: string
-/**
- * Short one-line explanation of the issue.
- */
-summary: string
-/**
- * Why the issue matters and what fallow checks.
- */
-rationale: string
-/**
- * Concrete example of the finding.
- */
-example: string
-/**
- * Recommended fix or suppression guidance.
- */
-how_to_fix: string
-/**
- * Docs URL for the rule.
- */
-docs: string
-}
-/**
- * Envelope emitted by `fallow coverage setup --json`. Deterministic
- * agent-readable runtime coverage setup instructions. In workspaces,
- * `members` carries one entry per detected runtime package; `runtime_targets`
- * is the union of all member targets.
- * 
- * Constructed at runtime by
- * `crates/cli/src/coverage/mod.rs::build_setup_envelope`; the wire is
- * `serde_json::to_value(&envelope)`. The drift gate keeps this struct
- * aligned with `docs/output-schema.json`.
- */
-export interface CoverageSetupOutput {
-schema_version: CoverageSetupSchemaVersion
-framework_detected: CoverageSetupFramework
-/**
- * Detected JavaScript package manager. `null` when none could be
- * resolved.
- */
-package_manager?: (CoverageSetupPackageManager | null)
-/**
- * Union of runtime targets across emitted members.
- */
-runtime_targets: CoverageSetupRuntimeTarget[]
-/**
- * Per-runtime-workspace setup recipes. Pure aggregator roots and
- * build-only library packages are omitted.
- */
-members: CoverageSetupMember[]
-/**
- * Always `null` today. Reserved for a future "config has been written
- * to disk" indicator.
- */
-config_written?: {
-[k: string]: unknown
-}
-/**
- * Shell commands the agent should run from the workspace root.
- */
-commands: string[]
-/**
- * Compatibility copy of the primary member's files, with workspace
- * prefixes when the primary member is not the root.
- */
-files_to_edit: CoverageSetupFileToEdit[]
-/**
- * Compatibility copy of the primary member's snippets, with workspace
- * prefixes when the primary member is not the root.
- */
-snippets: CoverageSetupSnippet[]
-/**
- * Optional Dockerfile RUN/COPY snippet to enable the beacon in
- * containerised deployments.
- */
-dockerfile_snippet?: (string | null)
-/**
- * Ordered next-step instructions for the agent / human operator.
- */
-next_steps: string[]
-/**
- * Non-fatal warnings raised during setup detection.
- */
-warnings: string[]
-/**
- * `_meta` block emitted only when `--explain` is passed.
- */
-_meta?: {
-[k: string]: unknown
-}
-}
-/**
- * Per-workspace setup recipe inside [`CoverageSetupOutput::members`].
- */
-export interface CoverageSetupMember {
-/**
- * Workspace package name (or root marker for single-package projects).
- */
-name: string
-/**
- * Workspace path relative to the analysed root, or `.` for the root
- * member.
- */
-path: string
-framework_detected: CoverageSetupFramework
-/**
- * Package manager detected for this member.
- */
-package_manager?: (CoverageSetupPackageManager | null)
-/**
- * Runtime targets supported by this member's framework.
- */
-runtime_targets: CoverageSetupRuntimeTarget[]
-/**
- * Files the agent should edit to wire in the beacon.
- */
-files_to_edit: CoverageSetupFileToEdit[]
-/**
- * Code snippets the agent should paste into the edited files.
- */
-snippets: CoverageSetupSnippet[]
-/**
- * Optional Dockerfile snippet specific to this member.
- */
-dockerfile_snippet?: (string | null)
-/**
- * Member-scoped warnings.
- */
-warnings: string[]
-}
-/**
- * Single file to edit inside [`CoverageSetupMember::files_to_edit`] or
- * [`CoverageSetupOutput::files_to_edit`].
- */
-export interface CoverageSetupFileToEdit {
-/**
- * Workspace-relative path to the file to edit.
- */
-path: string
-/**
- * Why the file needs editing (e.g. `"Mount the beacon middleware"`).
- */
-reason: string
-}
-/**
- * Single code snippet inside [`CoverageSetupMember::snippets`] or
- * [`CoverageSetupOutput::snippets`].
- */
-export interface CoverageSetupSnippet {
-/**
- * Short label identifying the snippet (used by the human renderer).
- */
-label: string
-/**
- * Workspace-relative path the snippet should be pasted into.
- */
-path: string
-/**
- * Snippet content (literal source text).
- */
-content: string
+health?: (HealthReport | null)
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].
@@ -4593,166 +4971,18 @@ export interface CodeClimateLines {
 begin: number
 }
 /**
- * Envelope emitted by `fallow --format review-github` / `review-gitlab`.
- * Consumed by `action/scripts/review.sh` and `ci/scripts/review.sh` to
- * post inline PR / MR review comments.
+ * Focused runtime coverage analysis output. Local mode reads --runtime-coverage <path>. Cloud mode requires explicit --cloud / --runtime-coverage-cloud or FALLOW_RUNTIME_COVERAGE_SOURCE=cloud; FALLOW_API_KEY alone does not select cloud mode.
  */
-export interface ReviewEnvelopeOutput {
+export interface CoverageAnalyzeOutput {
 /**
- * GitHub review event. Omitted for GitLab.
+ * Standalone coverage analyze envelope version.
  */
-event?: (ReviewEnvelopeEvent | null)
+schema_version: "1"
 /**
- * Review summary body (rendered above per-line comments).
+ * fallow CLI version.
  */
-body: string
-/**
- * Per-line comments. Each is either a [`GitHubReviewComment`] or a
- * [`GitLabReviewComment`] depending on `meta.provider`.
- */
-comments: ReviewComment[]
-meta: ReviewEnvelopeMeta
-}
-/**
- * GitHub pull-request review comment.
- */
-export interface GitHubReviewComment {
-/**
- * File path the comment targets, repo-root relative.
- */
-path: string
-/**
- * 1-indexed line number the comment targets.
- */
-line: number
-side: GitHubReviewSide
-/**
- * Markdown body of the comment.
- */
-body: string
-/**
- * Stable fingerprint for the comment, used by `fallow ci
- * reconcile-review` to detect carryover comments across PR revisions.
- */
-fingerprint: string
-}
-/**
- * GitLab merge-request discussion comment.
- */
-export interface GitLabReviewComment {
-/**
- * Markdown body of the comment.
- */
-body: string
-position: GitLabReviewPosition
-/**
- * Stable fingerprint for the comment.
- */
-fingerprint: string
-}
-/**
- * `position` block inside [`GitLabReviewComment`]. Mirrors the GitLab
- * merge-request discussion-position API.
- */
-export interface GitLabReviewPosition {
-/**
- * Merge-request base SHA.
- */
-base_sha?: (string | null)
-/**
- * Merge-request start SHA.
- */
-start_sha?: (string | null)
-/**
- * Merge-request head SHA.
- */
-head_sha?: (string | null)
-position_type: GitLabReviewPositionType
-/**
- * File path on the base side.
- */
-old_path: string
-/**
- * File path on the head side.
- */
-new_path: string
-/**
- * 1-indexed line on the head side.
- */
-new_line: number
-}
-/**
- * `meta` block inside [`ReviewEnvelopeOutput`].
- */
-export interface ReviewEnvelopeMeta {
-schema: ReviewEnvelopeSchema
-provider: ReviewProvider
-/**
- * Check conclusion derived from the underlying findings. Emitted only
- * for GitHub envelopes today.
- */
-check_conclusion?: (ReviewCheckConclusion | null)
-}
-/**
- * Envelope emitted by `fallow ci reconcile-review --format json`. Used by
- * CI integrations to drive comment carry-over and stale-comment cleanup
- * across PR / MR revisions.
- */
-export interface ReviewReconcileOutput {
-schema: ReviewReconcileSchema
-provider: ReviewProvider
-/**
- * PR / MR target identifier supplied to `fallow ci reconcile-review`.
- * `null` when the command ran without an explicit target.
- */
-target?: (string | null)
-/**
- * Whether the reconcile ran in dry-run mode.
- */
-dry_run: boolean
-/**
- * Number of comments in the supplied review envelope.
- */
-comments: number
-/**
- * Total fingerprints discovered in the supplied envelope.
- */
-current_fingerprints: number
-/**
- * Existing fingerprints already posted on the PR / MR.
- */
-existing_fingerprints: number
-/**
- * Newly-introduced fingerprints (current minus existing).
- */
-new_fingerprints: number
-/**
- * Stale fingerprints (existing minus current).
- */
-stale_fingerprints: number
-/**
- * Identifiers of the new fingerprints (subset of comments).
- */
-new: string[]
-/**
- * Identifiers of the stale fingerprints (subset of existing).
- */
-stale: string[]
-/**
- * Optional warning when the provider API was unreachable or
- * auth-rejected. `null` on the happy path.
- */
-provider_warning?: (string | null)
-/**
- * Resolution comments actually posted (zero on dry runs).
- */
-resolution_comments_posted: number
-/**
- * Stale review threads actually resolved (zero on dry runs).
- */
-threads_resolved: number
-/**
- * Errors collected during apply, one entry per failure.
- */
-apply_errors: string[]
+version: string
+elapsed_ms: number
+runtime_coverage: RuntimeCoverageReport
+_meta?: Meta
 }
