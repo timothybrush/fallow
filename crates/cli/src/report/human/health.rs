@@ -732,6 +732,100 @@ fn render_large_functions(
     lines.push(String::new());
 }
 
+/// Append per-finding-kind suppression hints to the findings section footer.
+///
+/// External `.html` templates take a file-level HTML comment; inline
+/// `@Component` templates take a line-level TS comment placed directly above
+/// the decorator. `<component>` rollups suppress through the worst class
+/// method (the rollup anchors at that method's line). Generic function
+/// findings get the catch-all hint above a `>=3` noise threshold. Extracted
+/// from `render_findings` to keep that function under the SIG unit-size
+/// threshold.
+fn append_suppression_hints(lines: &mut Vec<String>, report: &crate::health_types::HealthReport) {
+    let has_html_template = report.findings.iter().any(|finding| {
+        finding.name == "<template>"
+            && finding
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+    });
+    let has_inline_template = report.findings.iter().any(|finding| {
+        finding.name == "<template>"
+            && finding
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_none_or(|ext| !ext.eq_ignore_ascii_case("html"))
+    });
+    let has_component_rollup = report
+        .findings
+        .iter()
+        .any(|finding| finding.name == "<component>");
+    let has_function_finding = report
+        .findings
+        .iter()
+        .any(|finding| finding.name != "<template>" && finding.name != "<component>");
+    if has_html_template {
+        lines.push(format!(
+            "  {}",
+            "To suppress HTML templates: <!-- fallow-ignore-file complexity -->".dimmed()
+        ));
+    }
+    if has_inline_template {
+        lines.push(format!(
+            "  {}",
+            "To suppress inline templates: // fallow-ignore-next-line complexity (above @Component)"
+                .dimmed()
+        ));
+    }
+    if has_component_rollup {
+        lines.push(format!(
+            "  {}",
+            "To suppress a <component> rollup: suppress the worst class method (// fallow-ignore-next-line complexity above it hides both)"
+                .dimmed()
+        ));
+    }
+    if has_function_finding && report.findings.len() >= 3 {
+        lines.push(format!(
+            "  {}",
+            "To suppress: // fallow-ignore-next-line complexity".dimmed()
+        ));
+    }
+}
+
+/// Render the breakdown line for a synthetic `<component>` rollup finding.
+///
+/// Returns `Some(line)` when the finding carries a `component_rollup` payload
+/// (the rollup's cyc/cog totals are `worst_class_function + template`, so this
+/// line names the pre-summation numbers + the worst-class-function identifier
+/// so readers can see why the component ranks high without re-deriving the
+/// link from the JSON payload), `None` otherwise. Extracted from
+/// `render_findings` to keep that function under the SIG unit-size threshold.
+fn render_component_rollup_breakdown(
+    finding: &crate::health_types::HealthFinding,
+) -> Option<String> {
+    let rollup = finding.component_rollup.as_ref()?;
+    let template_basename = rollup.template_path.file_name().map_or_else(
+        || rollup.template_path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Some(format!(
+        "         {}",
+        format!(
+            "rolled up: {}cyc {}cog on `{}.{}` + {}cyc {}cog on {}",
+            rollup.class_cyclomatic,
+            rollup.class_cognitive,
+            rollup.component,
+            rollup.class_worst_function,
+            rollup.template_cyclomatic,
+            rollup.template_cognitive,
+            template_basename,
+        )
+        .dimmed(),
+    ))
+}
+
 fn render_findings(
     lines: &mut Vec<String>,
     report: &crate::health_types::HealthReport,
@@ -811,6 +905,11 @@ fn render_findings(
             cog_colored,
             format!("{:>3}", finding.line_count).dimmed(),
         ));
+        // Line 2b: component rollup breakdown for synthetic <component>
+        // findings.
+        if let Some(line) = render_component_rollup_breakdown(finding) {
+            lines.push(line);
+        }
         // Line 3: CRAP score. Only set on findings that exceeded the CRAP
         // threshold (merge_crap_findings guards insertion), so the score is
         // always at/above threshold and always colored red+bold.
@@ -851,51 +950,7 @@ fn render_findings(
         )
         .dimmed()
     ));
-    let has_html_template = report.findings.iter().any(|finding| {
-        finding.name == "<template>"
-            && finding
-                .path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
-    });
-    let has_inline_template = report.findings.iter().any(|finding| {
-        finding.name == "<template>"
-            && finding
-                .path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_none_or(|ext| !ext.eq_ignore_ascii_case("html"))
-    });
-    let has_function_finding = report
-        .findings
-        .iter()
-        .any(|finding| finding.name != "<template>");
-    // Show the template-suppression hints whenever any synthetic <template>
-    // finding is present (the syntax is non-obvious for both flavors). External
-    // .html templates take a file-level HTML comment; inline @Component
-    // templates take a line-level TS comment placed directly above the
-    // decorator. Keep the existing >=3 threshold for the generic function hint
-    // to avoid noise on tiny reports.
-    if has_html_template {
-        lines.push(format!(
-            "  {}",
-            "To suppress HTML templates: <!-- fallow-ignore-file complexity -->".dimmed()
-        ));
-    }
-    if has_inline_template {
-        lines.push(format!(
-            "  {}",
-            "To suppress inline templates: // fallow-ignore-next-line complexity (above @Component)"
-                .dimmed()
-        ));
-    }
-    if has_function_finding && report.findings.len() >= 3 {
-        lines.push(format!(
-            "  {}",
-            "To suppress: // fallow-ignore-next-line complexity".dimmed()
-        ));
-    }
+    append_suppression_hints(lines, report);
     if report.findings.len() < report.summary.functions_above_threshold {
         let total = report.summary.functions_above_threshold;
         lines.push(format!(
@@ -1838,6 +1893,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 10,
@@ -1878,6 +1934,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 100,
@@ -1914,6 +1971,7 @@ mod tests {
                     coverage_tier: None,
                     coverage_source: None,
                     inherited_from: None,
+                    component_rollup: None,
                 },
                 crate::health_types::HealthFinding {
                     path: root.join("src/parser.ts"),
@@ -1931,6 +1989,7 @@ mod tests {
                     coverage_tier: None,
                     coverage_source: None,
                     inherited_from: None,
+                    component_rollup: None,
                 },
             ],
             summary: crate::health_types::HealthSummary {
@@ -3308,6 +3367,7 @@ mod tests {
             coverage_tier: None,
             coverage_source: None,
             inherited_from: None,
+            component_rollup: None,
         }];
         report.health_score = Some(crate::health_types::HealthScore {
             formula_version: crate::health_types::HEALTH_SCORE_FORMULA_VERSION,
@@ -3406,6 +3466,7 @@ mod tests {
             coverage_tier: None,
             coverage_source: None,
             inherited_from: None,
+            component_rollup: None,
         }];
         let lines = build_health_human_lines(&report, &root);
         let text = plain(&lines);
@@ -3434,6 +3495,7 @@ mod tests {
             coverage_tier: None,
             coverage_source: None,
             inherited_from: None,
+            component_rollup: None,
         }];
         let lines = build_health_human_lines(&report, &root);
         let text = plain(&lines);
@@ -3463,6 +3525,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             },
             crate::health_types::HealthFinding {
                 path: root.join("src/b.ts"),
@@ -3480,6 +3543,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             },
         ];
         let lines = build_health_human_lines(&report, &root);
@@ -3510,6 +3574,7 @@ mod tests {
             coverage_tier: None,
             coverage_source: None,
             inherited_from: None,
+            component_rollup: None,
         }];
         let lines = build_health_human_lines(&report, &root);
         let text = plain(&lines);

@@ -503,6 +503,22 @@ fn execute_health_inner(
             max_cognitive,
         );
     }
+    // Synthesise per-component rollup findings for Angular components that
+    // contribute BOTH a class function finding AND a template finding. The
+    // rollup folds `worst_class_function + template` into a single
+    // `<component>` finding so `--targets` and the headline rank surface a
+    // template-heavy component as one unit; the per-function and
+    // per-`<template>` entries stay where they are so existing suppression
+    // sites and per-finding references keep working.
+    let template_owner_lookup = score_output
+        .as_ref()
+        .map(|o| &o.template_inherit_provenance);
+    append_component_rollup_findings(
+        &mut findings,
+        template_owner_lookup,
+        max_cyclomatic,
+        max_cognitive,
+    );
     sort_findings(&mut findings, &opts.sort);
     let total_above_threshold = findings.len();
 
@@ -1819,6 +1835,7 @@ fn collect_findings(
                     coverage_tier: None,
                     coverage_source: None,
                     inherited_from: None,
+                    component_rollup: None,
                 });
             }
         }
@@ -1993,11 +2010,188 @@ fn merge_crap_findings(
                         path.as_path(),
                         template_inherit_provenance,
                     ),
+                    component_rollup: None,
                 });
             }
         }
     }
     findings.extend(new_findings);
+}
+
+/// Synthesise per-Angular-component rollup findings.
+///
+/// For each Angular component that has both at least one class-function
+/// finding above threshold AND a synthetic `<template>` finding, emit a new
+/// `<component>` `HealthFinding` whose `cyclomatic` / `cognitive` totals are
+/// `max(class) + template`. The rollup is anchored at the worst class
+/// function's `(path, line, col)` so an existing
+/// `// fallow-ignore-next-line complexity` placed above that function (or
+/// the `@Component` decorator on inline-template components) continues to
+/// hide both the per-function finding AND the rollup. Per-function and
+/// per-`<template>` findings are NOT removed; the rollup is strictly
+/// additive, with [`ComponentRollup`] carrying the breakdown.
+///
+/// Component-owner resolution has two branches:
+/// - `<template>` finding on an `.html` file: look up the owner `.ts` in
+///   the inverse-`templateUrl` provenance map populated by
+///   `scoring::build_template_inherit_contexts` (the same walker that drives
+///   `coverage_source: "estimated_component_inherited"` for CRAP).
+/// - `<template>` finding on a `.ts` / `.tsx` / `.mts` / `.cts` file
+///   (inline `@Component({ template: \`...\` })` literals): the owner IS
+///   the file (`template_complexity.rs` remaps inline-template line/col
+///   onto the decorator on the same `.ts`).
+///
+/// "Class function" is approximated as any finding whose name contains a
+/// `.` (the `ClassName.methodName` shape `complexity.rs` emits for class
+/// methods). Free functions and anonymous arrows do not participate in
+/// rollups; only methods owned by a class do.
+///
+/// A `.ts` file carrying TWO synthetic `<template>` findings is treated
+/// defensively: rollups are skipped (a `.ts` with multiple `@Component`
+/// decorators would need AST-level class attribution to map each template
+/// to its owning class, which is out of scope for the first cut). Fallow
+/// emits a single rollup per owner per pass.
+///
+/// `[`ComponentRollup`]`: crate::health_types::ComponentRollup
+fn append_component_rollup_findings(
+    findings: &mut Vec<crate::health_types::HealthFinding>,
+    template_owner_lookup: Option<&rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>>,
+    max_cyclomatic: u16,
+    max_cognitive: u16,
+) {
+    use crate::health_types::{ComponentRollup, ExceededThreshold, HealthFinding};
+
+    // Group: owner .ts path -> (class function finding indices, template finding indices).
+    let mut by_owner: rustc_hash::FxHashMap<std::path::PathBuf, (Vec<usize>, Vec<usize>)> =
+        rustc_hash::FxHashMap::default();
+    for (idx, f) in findings.iter().enumerate() {
+        if f.name == "<template>" {
+            let ext = f
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase);
+            let owner = match ext.as_deref() {
+                Some("html") => template_owner_lookup.and_then(|m| m.get(&f.path)).cloned(),
+                Some("ts" | "tsx" | "mts" | "cts") => Some(f.path.clone()),
+                _ => None,
+            };
+            if let Some(owner) = owner {
+                by_owner.entry(owner).or_default().1.push(idx);
+            }
+        } else if f.name != "<component>" {
+            // Treat every non-template, non-component finding on a .ts /
+            // .tsx / .mts / .cts file as a candidate "class method": the
+            // complexity emitter writes bare method names (`handleClick`),
+            // not `ClassName.handleClick`, so there's no syntactic way to
+            // distinguish class methods from free functions at this layer.
+            // For the typical Angular convention (one component per .ts
+            // file, no free helpers), every candidate IS a method of the
+            // component class. Free helpers on the same file would inflate
+            // the rollup; that case is rare in Angular codebases and the
+            // first-cut behaviour is to accept it.
+            let is_ts = f
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "ts" | "tsx" | "mts" | "cts"
+                    )
+                });
+            if is_ts {
+                by_owner.entry(f.path.clone()).or_default().0.push(idx);
+            }
+        }
+    }
+
+    let mut to_push: Vec<HealthFinding> = Vec::new();
+    for (owner, (class_idxs, template_idxs)) in by_owner {
+        if class_idxs.is_empty() || template_idxs.is_empty() {
+            continue;
+        }
+        if template_idxs.len() > 1 {
+            // Defensive: multi-`@Component` `.ts` would need AST-level class
+            // attribution to map each template to its owning class. Skip
+            // rather than guess; per-finding entries still surface the work.
+            continue;
+        }
+        let template = &findings[template_idxs[0]];
+        let Some(worst_idx) = class_idxs
+            .iter()
+            .copied()
+            .max_by_key(|&i| findings[i].cyclomatic)
+        else {
+            continue;
+        };
+        let worst = &findings[worst_idx];
+        // Component identifier: derive from the .ts owner's file stem
+        // (e.g., `host-game.component.ts` -> `host-game.component`). fallow's
+        // complexity emitter writes bare method names, so the actual class
+        // name (`HostGameComponent`) isn't recoverable here; the file stem
+        // is the next-best stable identifier and lets agents grep the
+        // matching `path` for the @Component decorator. A follow-up that
+        // teaches `FunctionComplexity` to carry class scope can populate
+        // this with the actual class name without a schema bump.
+        let component = owner.file_stem().map_or_else(
+            || "<unknown-component>".to_string(),
+            |stem| stem.to_string_lossy().into_owned(),
+        );
+        let worst_method = worst.name.clone();
+        let rollup_cyc = worst.cyclomatic.saturating_add(template.cyclomatic);
+        let rollup_cog = worst.cognitive.saturating_add(template.cognitive);
+        let exceeds_cyclomatic = rollup_cyc > max_cyclomatic;
+        let exceeds_cognitive = rollup_cog > max_cognitive;
+        if !exceeds_cyclomatic && !exceeds_cognitive {
+            // Defensive: should not occur in production (each input was a
+            // finding already above threshold, so the sum is too), but the
+            // ExceededThreshold discriminator requires at least one bit
+            // set. Skip rather than panic.
+            continue;
+        }
+        let severity = compute_finding_severity(
+            rollup_cog,
+            rollup_cyc,
+            None,
+            DEFAULT_COGNITIVE_HIGH,
+            DEFAULT_COGNITIVE_CRITICAL,
+            DEFAULT_CYCLOMATIC_HIGH,
+            DEFAULT_CYCLOMATIC_CRITICAL,
+        );
+        to_push.push(HealthFinding {
+            path: owner,
+            name: "<component>".to_string(),
+            line: worst.line,
+            col: worst.col,
+            cyclomatic: rollup_cyc,
+            cognitive: rollup_cog,
+            // Combined span proxy: the rollup isn't a contiguous span but
+            // `worst_class_method.line_count + template.line_count` is an
+            // honest aggregate that keeps `--sort lines` from pushing rollup
+            // findings to the bottom (the prior `0` caused CI table rows to
+            // render `0 lines` and made the lines-sort axis nonsensical).
+            line_count: worst.line_count.saturating_add(template.line_count),
+            param_count: 0,
+            exceeded: ExceededThreshold::from_bools(exceeds_cyclomatic, exceeds_cognitive, false),
+            severity,
+            crap: None,
+            coverage_pct: None,
+            coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
+            component_rollup: Some(ComponentRollup {
+                component,
+                class_worst_function: worst_method,
+                class_cyclomatic: worst.cyclomatic,
+                class_cognitive: worst.cognitive,
+                template_path: template.path.clone(),
+                template_cyclomatic: template.cyclomatic,
+                template_cognitive: template.cognitive,
+            }),
+        });
+    }
+    findings.extend(to_push);
 }
 
 /// Resolve the `inherited_from` provenance path for a CRAP finding.
@@ -2375,6 +2569,7 @@ mod tests {
             coverage_tier: None,
             coverage_source: None,
             inherited_from: None,
+            component_rollup: None,
         }
     }
 
@@ -3682,5 +3877,201 @@ mod tests {
             group_resolver: None,
         };
         assert!(health_action_opts(&result).omit_suppress_line);
+    }
+
+    // ── append_component_rollup_findings ─────────────────────────
+
+    fn make_class_finding(
+        path: &str,
+        name: &str,
+        line: u32,
+        cyclomatic: u16,
+        cognitive: u16,
+    ) -> HealthFinding {
+        HealthFinding {
+            path: PathBuf::from(path),
+            name: name.to_string(),
+            line,
+            col: 0,
+            cyclomatic,
+            cognitive,
+            line_count: 20,
+            param_count: 0,
+            exceeded: ExceededThreshold::Both,
+            severity: FindingSeverity::Moderate,
+            crap: None,
+            coverage_pct: None,
+            coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
+            component_rollup: None,
+        }
+    }
+
+    fn make_template_finding(
+        path: &str,
+        line: u32,
+        cyclomatic: u16,
+        cognitive: u16,
+    ) -> HealthFinding {
+        HealthFinding {
+            path: PathBuf::from(path),
+            name: "<template>".to_string(),
+            line,
+            col: 0,
+            cyclomatic,
+            cognitive,
+            line_count: 30,
+            param_count: 0,
+            exceeded: ExceededThreshold::Both,
+            severity: FindingSeverity::Moderate,
+            crap: None,
+            coverage_pct: None,
+            coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
+            component_rollup: None,
+        }
+    }
+
+    #[test]
+    fn rollup_external_template_via_provenance_lookup() {
+        let component_ts = PathBuf::from("/proj/src/host-game.component.ts");
+        let template_html = PathBuf::from("/proj/src/host-game.component.html");
+        let mut findings = vec![
+            make_class_finding(component_ts.to_str().unwrap(), "handleClick", 42, 3, 4),
+            make_template_finding(template_html.to_str().unwrap(), 1, 6, 10),
+        ];
+        let mut lookup = rustc_hash::FxHashMap::default();
+        lookup.insert(template_html.clone(), component_ts.clone());
+        append_component_rollup_findings(&mut findings, Some(&lookup), 8, 8);
+
+        assert_eq!(findings.len(), 3, "rollup is strictly additive");
+        let rollup = findings
+            .iter()
+            .find(|f| f.name == "<component>")
+            .expect("rollup must be present");
+        assert_eq!(rollup.path, component_ts);
+        assert_eq!(rollup.cyclomatic, 9, "9 = worst class 3 + template 6");
+        assert_eq!(rollup.cognitive, 14, "14 = worst class 4 + template 10");
+        assert_eq!(rollup.line, 42, "anchored at worst class function line");
+        let breakdown = rollup.component_rollup.as_ref().expect("breakdown present");
+        assert_eq!(
+            breakdown.component, "host-game.component",
+            "component identifier is the .ts owner's file stem"
+        );
+        assert_eq!(breakdown.class_worst_function, "handleClick");
+        assert_eq!(breakdown.class_cyclomatic, 3);
+        assert_eq!(breakdown.template_cyclomatic, 6);
+        assert_eq!(breakdown.template_path, template_html);
+    }
+
+    #[test]
+    fn rollup_inline_template_owner_is_same_ts_file() {
+        let component_ts = PathBuf::from("/proj/src/inline.component.ts");
+        let mut findings = vec![
+            make_class_finding(component_ts.to_str().unwrap(), "ngOnInit", 25, 5, 8),
+            // Inline template: <template> finding is on the .ts itself at the @Component decorator line.
+            make_template_finding(component_ts.to_str().unwrap(), 10, 4, 6),
+        ];
+        append_component_rollup_findings(&mut findings, None, 8, 8);
+
+        let rollup = findings
+            .iter()
+            .find(|f| f.name == "<component>")
+            .expect("rollup must be present for inline-template case without provenance lookup");
+        assert_eq!(rollup.cyclomatic, 9);
+        assert_eq!(rollup.cognitive, 14);
+        let breakdown = rollup.component_rollup.as_ref().unwrap();
+        assert_eq!(breakdown.template_path, component_ts);
+        assert_eq!(breakdown.component, "inline.component");
+    }
+
+    #[test]
+    fn rollup_picks_worst_class_function_by_cyclomatic() {
+        let component_ts = PathBuf::from("/proj/src/multi.component.ts");
+        let template = PathBuf::from("/proj/src/multi.component.html");
+        let mut findings = vec![
+            make_class_finding(component_ts.to_str().unwrap(), "first", 10, 3, 4),
+            make_class_finding(component_ts.to_str().unwrap(), "worst", 20, 8, 9),
+            make_class_finding(component_ts.to_str().unwrap(), "middle", 30, 5, 6),
+            make_template_finding(template.to_str().unwrap(), 1, 4, 6),
+        ];
+        let mut lookup = rustc_hash::FxHashMap::default();
+        lookup.insert(template, component_ts);
+        append_component_rollup_findings(&mut findings, Some(&lookup), 8, 8);
+
+        let rollup = findings.iter().find(|f| f.name == "<component>").unwrap();
+        assert_eq!(rollup.cyclomatic, 12, "8 (worst.cyc) + 4 (template.cyc)");
+        let breakdown = rollup.component_rollup.as_ref().unwrap();
+        assert_eq!(breakdown.class_worst_function, "worst");
+        assert_eq!(breakdown.class_cyclomatic, 8);
+    }
+
+    #[test]
+    fn rollup_skipped_when_no_template_finding() {
+        let component_ts = "/proj/src/only-class.component.ts";
+        let mut findings = vec![make_class_finding(component_ts, "Foo.method", 10, 5, 7)];
+        let before = findings.len();
+        append_component_rollup_findings(&mut findings, None, 30, 25);
+        assert_eq!(findings.len(), before, "no template means no rollup");
+    }
+
+    #[test]
+    fn rollup_skipped_when_no_class_findings() {
+        let template_html = PathBuf::from("/proj/src/orphan.component.html");
+        let component_ts = PathBuf::from("/proj/src/orphan.component.ts");
+        let mut findings = vec![make_template_finding(
+            template_html.to_str().unwrap(),
+            1,
+            6,
+            10,
+        )];
+        let mut lookup = rustc_hash::FxHashMap::default();
+        lookup.insert(template_html, component_ts);
+        let before = findings.len();
+        append_component_rollup_findings(&mut findings, Some(&lookup), 8, 8);
+        assert_eq!(
+            findings.len(),
+            before,
+            "no class methods above threshold means no rollup"
+        );
+    }
+
+    #[test]
+    fn rollup_skipped_when_multiple_templates_on_one_owner() {
+        // Defensive: a .ts hosting TWO @Component decorators (each with an
+        // inline template) would need AST-level class attribution to map
+        // each template to its owning class. Skip rather than guess.
+        let component_ts = PathBuf::from("/proj/src/twin.component.ts");
+        let mut findings = vec![
+            make_class_finding(component_ts.to_str().unwrap(), "TwinA.fn", 10, 5, 7),
+            make_template_finding(component_ts.to_str().unwrap(), 5, 3, 4),
+            make_template_finding(component_ts.to_str().unwrap(), 50, 4, 5),
+        ];
+        let before = findings.len();
+        append_component_rollup_findings(&mut findings, None, 30, 25);
+        assert_eq!(
+            findings.len(),
+            before,
+            "two templates on one owner is defensively skipped"
+        );
+    }
+
+    #[test]
+    fn rollup_external_template_skipped_when_lookup_missing() {
+        // External .html template needs an owner entry in the provenance
+        // lookup (built only when --score / --max-crap runs). When the
+        // lookup is None or has no entry, the rollup degrades gracefully
+        // for external-template components; inline templates still work.
+        let template_html = PathBuf::from("/proj/src/no-owner.component.html");
+        let component_ts = "/proj/src/no-owner.component.ts";
+        let mut findings = vec![
+            make_class_finding(component_ts, "NoOwner.fn", 10, 5, 7),
+            make_template_finding(template_html.to_str().unwrap(), 1, 6, 10),
+        ];
+        let before = findings.len();
+        append_component_rollup_findings(&mut findings, None, 30, 25);
+        assert_eq!(findings.len(), before);
     }
 }

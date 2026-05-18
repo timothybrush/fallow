@@ -2303,6 +2303,17 @@
           ],
           "description": "Owning component file that contributed reachability when\n`coverage_source == \"estimated_component_inherited\"`. Always paired\nwith that variant of `coverage_source` and absent otherwise. The\nvalue is the `.ts` file fallow walked to via the inverse `templateUrl`\nedge (e.g. `permissions.component.ts`); the JSON serializer strips it\nto project-relative form just like other path fields. Lets human and\nAI consumers explain \"the template scored partial because the\ncomponent it belongs to is tested\" without re-deriving the link."
         },
+        "component_rollup": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComponentRollup"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Breakdown of a synthetic `<component>` rollup finding into its\nworst-class-function and template contributions. Present only on\nfindings whose [`name`](Self::name) is the literal string\n`\"<component>\"` (Angular components whose class AND template both\ncontributed to a per-component complexity rollup); absent on every\nother finding kind.\n\nThe owning [`HealthFinding`]'s [`cyclomatic`](Self::cyclomatic) /\n[`cognitive`](Self::cognitive) totals are\n`class_worst_function + template`, so consumers ranking by complexity\nsee the component as one unit. The breakdown carries the\npre-summation numbers plus the worst class function's name so\nconsumers can explain \"this component ranked high because the\ntemplate added 6 cyclomatic on top of the worst class function's 3\"."
+        },
         "actions": {
           "type": "array",
           "items": {
@@ -3461,7 +3472,7 @@
             "string",
             "null"
           ],
-          "description": "Where to insert the suppress comment\n(e.g., `above-function-declaration`, `above-angular-decorator`, or\n`top-of-template`). Present on `suppress-line` and `suppress-file`\naction variants."
+          "description": "Where to insert the suppress comment\n(e.g., `above-function-declaration`, `above-angular-decorator`,\n`above-component-worst-method`, or `top-of-template`). Present on\n`suppress-line` and `suppress-file` action variants."
         },
         "target_path": {
           "type": [
@@ -8225,6 +8236,49 @@
         }
       ],
       "description": "Provenance of a CRAP finding's coverage signal.\n\nDiscriminates whether the `coverage_tier` and `crap` score were derived\nfrom real Istanbul data, the graph-based estimated model evaluated against\nthe finding's own file, or the graph-based estimated model evaluated\nagainst a different file (today: an Angular component `.ts` reached via\nthe inverse `templateUrl` edge from a synthetic `<template>` finding on\nthe component's `.html` template).\n\nConsumers reading this field:\n- AI agents picking remediation actions (\"the score is inherited, the fix\n  may need to land on the component file, not the template\").\n- Dashboards plotting CRAP trends (\"the discriminator changed shape;\n  absorb the rollout rather than flagging a step change\").\n- Future tier 2 (AOT source-map back-mapping) will introduce\n  `MeasuredAotSourceMap` so consumers can distinguish measured-AOT from\n  inherited-JIT without parsing the score itself."
+    },
+    "ComponentRollup": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "type": "string",
+          "description": "Angular component class name (e.g. `\"HostGameComponent\"`). Derived\nfrom the worst class function's `ClassName.methodName` identifier."
+        },
+        "class_worst_function": {
+          "type": "string",
+          "description": "Name of the worst class function/method whose individual cyclomatic\nis the largest among the component's class findings (e.g.\n`\"ngOnInit\"`). When two methods tie on cyclomatic the first by\niteration order wins; consumers should treat the choice as\nrepresentative, not authoritative."
+        },
+        "class_cyclomatic": {
+          "type": "integer",
+          "description": "Cyclomatic complexity of the worst class function alone (the\n`class_worst_function`)."
+        },
+        "class_cognitive": {
+          "type": "integer",
+          "description": "Cognitive complexity of the worst class function alone."
+        },
+        "template_path": {
+          "type": "string",
+          "description": "Path of the Angular template that contributed to the rollup.\nExternal-template components use the `.html` template file path;\ninline-template components use the owning `.ts` itself (since the\n`<template>` finding for inline templates is anchored at the\ncomponent's `@Component` decorator on the same file). Stored\nabsolute internally; the JSON output strips it to project-relative\nform via the global `strip_root_prefix` post-pass (as with every\nother `PathBuf` field in this crate)."
+        },
+        "template_cyclomatic": {
+          "type": "integer",
+          "description": "Cyclomatic complexity contributed by the template alone (control\nflow on `*ngIf` / `*ngFor` / `@if` / `@for` / `@switch` etc.)."
+        },
+        "template_cognitive": {
+          "type": "integer",
+          "description": "Cognitive complexity contributed by the template alone (nesting +\nbranching penalty on the same constructs as `template_cyclomatic`)."
+        }
+      },
+      "required": [
+        "component",
+        "class_worst_function",
+        "class_cyclomatic",
+        "class_cognitive",
+        "template_path",
+        "template_cyclomatic",
+        "template_cognitive"
+      ],
+      "description": "Per-component breakdown attached to a synthetic `<component>`\n[`HealthFinding`]. See [`HealthFinding::component_rollup`] for the\nowning-finding contract."
     },
     "DuplicateExportFinding": {
       "type": "object",

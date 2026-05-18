@@ -297,6 +297,60 @@ pub struct HealthFinding {
     /// component it belongs to is tested" without re-deriving the link.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inherited_from: Option<std::path::PathBuf>,
+    /// Breakdown of a synthetic `<component>` rollup finding into its
+    /// worst-class-function and template contributions. Present only on
+    /// findings whose [`name`](Self::name) is the literal string
+    /// `"<component>"` (Angular components whose class AND template both
+    /// contributed to a per-component complexity rollup); absent on every
+    /// other finding kind.
+    ///
+    /// The owning [`HealthFinding`]'s [`cyclomatic`](Self::cyclomatic) /
+    /// [`cognitive`](Self::cognitive) totals are
+    /// `class_worst_function + template`, so consumers ranking by complexity
+    /// see the component as one unit. The breakdown carries the
+    /// pre-summation numbers plus the worst class function's name so
+    /// consumers can explain "this component ranked high because the
+    /// template added 6 cyclomatic on top of the worst class function's 3".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_rollup: Option<ComponentRollup>,
+}
+
+/// Per-component breakdown attached to a synthetic `<component>`
+/// [`HealthFinding`]. See [`HealthFinding::component_rollup`] for the
+/// owning-finding contract.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ComponentRollup {
+    /// Angular component class name (e.g. `"HostGameComponent"`). Derived
+    /// from the worst class function's `ClassName.methodName` identifier.
+    pub component: String,
+    /// Name of the worst class function/method whose individual cyclomatic
+    /// is the largest among the component's class findings (e.g.
+    /// `"ngOnInit"`). When two methods tie on cyclomatic the first by
+    /// iteration order wins; consumers should treat the choice as
+    /// representative, not authoritative.
+    pub class_worst_function: String,
+    /// Cyclomatic complexity of the worst class function alone (the
+    /// `class_worst_function`).
+    pub class_cyclomatic: u16,
+    /// Cognitive complexity of the worst class function alone.
+    pub class_cognitive: u16,
+    /// Path of the Angular template that contributed to the rollup.
+    /// External-template components use the `.html` template file path;
+    /// inline-template components use the owning `.ts` itself (since the
+    /// `<template>` finding for inline templates is anchored at the
+    /// component's `@Component` decorator on the same file). Stored
+    /// absolute internally; the JSON output strips it to project-relative
+    /// form via the global `strip_root_prefix` post-pass (as with every
+    /// other `PathBuf` field in this crate).
+    #[serde(serialize_with = "fallow_types::serde_path::serialize")]
+    pub template_path: std::path::PathBuf,
+    /// Cyclomatic complexity contributed by the template alone (control
+    /// flow on `*ngIf` / `*ngFor` / `@if` / `@for` / `@switch` etc.).
+    pub template_cyclomatic: u16,
+    /// Cognitive complexity contributed by the template alone (nesting +
+    /// branching penalty on the same constructs as `template_cyclomatic`).
+    pub template_cognitive: u16,
 }
 
 /// Which complexity threshold was exceeded.

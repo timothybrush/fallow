@@ -78,9 +78,9 @@ pub struct HealthFindingAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     /// Where to insert the suppress comment
-    /// (e.g., `above-function-declaration`, `above-angular-decorator`, or
-    /// `top-of-template`). Present on `suppress-line` and `suppress-file`
-    /// action variants.
+    /// (e.g., `above-function-declaration`, `above-angular-decorator`,
+    /// `above-component-worst-method`, or `top-of-template`). Present on
+    /// `suppress-line` and `suppress-file` action variants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<String>,
     /// Project-relative path the action should target when the finding's

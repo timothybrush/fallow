@@ -1919,6 +1919,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 5,
@@ -1967,6 +1968,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 3,
@@ -2009,6 +2011,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 1,
@@ -2048,6 +2051,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 1,
@@ -2087,6 +2091,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 1,

@@ -2493,10 +2493,77 @@ coverage_source?: (CoverageSource | null)
  */
 inherited_from?: (string | null)
 /**
+ * Breakdown of a synthetic `<component>` rollup finding into its
+ * worst-class-function and template contributions. Present only on
+ * findings whose [`name`](Self::name) is the literal string
+ * `"<component>"` (Angular components whose class AND template both
+ * contributed to a per-component complexity rollup); absent on every
+ * other finding kind.
+ *
+ * The owning [`HealthFinding`]'s [`cyclomatic`](Self::cyclomatic) /
+ * [`cognitive`](Self::cognitive) totals are
+ * `class_worst_function + template`, so consumers ranking by complexity
+ * see the component as one unit. The breakdown carries the
+ * pre-summation numbers plus the worst class function's name so
+ * consumers can explain "this component ranked high because the
+ * template added 6 cyclomatic on top of the worst class function's 3".
+ */
+component_rollup?: (ComponentRollup | null)
+/**
  * Suggested actions to resolve this issue.
  */
 actions: HealthFindingAction[]
 introduced?: AuditIntroduced
+}
+/**
+ * Per-component breakdown attached to a synthetic `<component>`
+ * [`HealthFinding`]. See [`HealthFinding::component_rollup`] for the
+ * owning-finding contract.
+ */
+export interface ComponentRollup {
+/**
+ * Angular component class name (e.g. `"HostGameComponent"`). Derived
+ * from the worst class function's `ClassName.methodName` identifier.
+ */
+component: string
+/**
+ * Name of the worst class function/method whose individual cyclomatic
+ * is the largest among the component's class findings (e.g.
+ * `"ngOnInit"`). When two methods tie on cyclomatic the first by
+ * iteration order wins; consumers should treat the choice as
+ * representative, not authoritative.
+ */
+class_worst_function: string
+/**
+ * Cyclomatic complexity of the worst class function alone (the
+ * `class_worst_function`).
+ */
+class_cyclomatic: number
+/**
+ * Cognitive complexity of the worst class function alone.
+ */
+class_cognitive: number
+/**
+ * Path of the Angular template that contributed to the rollup.
+ * External-template components use the `.html` template file path;
+ * inline-template components use the owning `.ts` itself (since the
+ * `<template>` finding for inline templates is anchored at the
+ * component's `@Component` decorator on the same file). Stored
+ * absolute internally; the JSON output strips it to project-relative
+ * form via the global `strip_root_prefix` post-pass (as with every
+ * other `PathBuf` field in this crate).
+ */
+template_path: string
+/**
+ * Cyclomatic complexity contributed by the template alone (control
+ * flow on `*ngIf` / `*ngFor` / `@if` / `@for` / `@switch` etc.).
+ */
+template_cyclomatic: number
+/**
+ * Cognitive complexity contributed by the template alone (nesting +
+ * branching penalty on the same constructs as `template_cyclomatic`).
+ */
+template_cognitive: number
 }
 /**
  * Suggested action attached to a [`HealthFinding`].
@@ -2543,9 +2610,9 @@ note?: (string | null)
 comment?: (string | null)
 /**
  * Where to insert the suppress comment
- * (e.g., `above-function-declaration`, `above-angular-decorator`, or
- * `top-of-template`). Present on `suppress-line` and `suppress-file`
- * action variants.
+ * (e.g., `above-function-declaration`, `above-angular-decorator`,
+ * `above-component-worst-method`, or `top-of-template`). Present on
+ * `suppress-line` and `suppress-file` action variants.
  */
 placement?: (string | null)
 /**

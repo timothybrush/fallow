@@ -701,8 +701,37 @@ fn build_health_finding_actions(
         && cyclomatic >= max_cyclomatic_threshold.saturating_sub(SECONDARY_REFACTOR_BAND)
         && cognitive >= cognitive_floor;
     let is_template = name == "<template>";
+    let is_component = name == "<component>";
+    let component_rollup = item.get("component_rollup");
     if !crap_only || crap_only_needs_complexity_reduction || near_cyclomatic_threshold {
-        let (description, note) = if is_template {
+        let (description, note): (String, &str) = if is_component {
+            // Component rollup: name is the literal "<component>"; the
+            // breakdown lives in `component_rollup`. Direct AI agents at the
+            // component as the unit so they consider splitting the template
+            // OR refactoring the worst class method, not just one of them.
+            let class_name = component_rollup
+                .and_then(|r| r.get("component"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("the component");
+            let worst_method = component_rollup
+                .and_then(|r| r.get("class_worst_function"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("the worst class method");
+            let class_cyc = component_rollup
+                .and_then(|r| r.get("class_cyclomatic"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let template_cyc = component_rollup
+                .and_then(|r| r.get("template_cyclomatic"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            (
+                format!(
+                    "Refactor `{class_name}` to reduce component complexity (rolled-up cyclomatic {cyclomatic} = {class_cyc} on `{worst_method}` + {template_cyc} on the template)"
+                ),
+                "Consider splitting the template into smaller components OR extracting helpers from the worst class method; the rollup reflects the component as one complexity unit",
+            )
+        } else if is_template {
             (
                 format!(
                     "Refactor `{name}` to reduce template complexity (simplify control flow and bindings)"
@@ -745,6 +774,19 @@ fn build_health_finding_actions(
                 "description": "Suppress with an inline comment above the Angular decorator",
                 "comment": "// fallow-ignore-next-line complexity",
                 "placement": "above-angular-decorator",
+            }));
+        } else if is_component {
+            // Rollup anchors at the worst class function's line; the same
+            // suppression that hides the worst function also hides the
+            // rollup, but the description tells the user which line it
+            // lands on so they don't expect the comment above the
+            // @Component decorator (which would NOT match the rollup's line).
+            actions.push(serde_json::json!({
+                "type": "suppress-line",
+                "auto_fixable": false,
+                "description": "Suppress with an inline comment above the worst class method (the rollup is anchored at that method's line, so a comment above it hides both the function finding and the rollup)",
+                "comment": "// fallow-ignore-next-line complexity",
+                "placement": "above-component-worst-method",
             }));
         } else {
             actions.push(serde_json::json!({

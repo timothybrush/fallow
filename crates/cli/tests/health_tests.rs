@@ -244,6 +244,125 @@ fn health_reports_angular_template_complexity() {
     );
 }
 
+// Issue #234: synthetic `<component>` rollup finding sums the worst class
+// method's complexity with the template's, so an Angular component whose
+// class scores moderately and whose template scores moderately is ranked
+// as one heavy component-level finding rather than two scattered medium
+// ones. The per-function and per-`<template>` entries stay alongside the
+// rollup; the rollup is strictly additive.
+#[test]
+fn health_emits_component_rollup_for_angular_component() {
+    let output = run_fallow(
+        "health",
+        "angular-component-rollup",
+        &[
+            "--complexity",
+            "--max-cyclomatic",
+            "3",
+            "--max-cognitive",
+            "3",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&output);
+    let findings = json["findings"].as_array().expect("findings array");
+
+    // Per-function class finding is still emitted (rollup is strictly additive).
+    let class_fn = findings
+        .iter()
+        .find(|finding| {
+            finding["name"] == "handleClick"
+                && finding["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("host-game.component.ts"))
+        })
+        .unwrap_or_else(|| panic!("expected class function finding, got: {findings:#?}"));
+    let class_cyc = class_fn["cyclomatic"].as_u64().expect("class cyclomatic");
+    let class_cog = class_fn["cognitive"].as_u64().expect("class cognitive");
+
+    // Per-template synthetic finding is still emitted.
+    let template = findings
+        .iter()
+        .find(|finding| {
+            finding["name"] == "<template>"
+                && finding["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("host-game.component.html"))
+        })
+        .unwrap_or_else(|| panic!("expected template finding, got: {findings:#?}"));
+    let template_cyc = template["cyclomatic"]
+        .as_u64()
+        .expect("template cyclomatic");
+    let template_cog = template["cognitive"].as_u64().expect("template cognitive");
+
+    // The new <component> rollup: cyc = class + template, cog = class + template.
+    let rollup = findings
+        .iter()
+        .find(|finding| {
+            finding["name"] == "<component>"
+                && finding["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("host-game.component.ts"))
+        })
+        .unwrap_or_else(|| panic!("expected <component> rollup, got: {findings:#?}"));
+    assert_eq!(
+        rollup["cyclomatic"].as_u64().unwrap(),
+        class_cyc + template_cyc,
+        "rollup cyclomatic must equal worst class cyc + template cyc"
+    );
+    assert_eq!(
+        rollup["cognitive"].as_u64().unwrap(),
+        class_cog + template_cog,
+        "rollup cognitive must equal worst class cog + template cog"
+    );
+
+    // Breakdown payload carries the pre-summation numbers so consumers can
+    // explain the score without re-deriving the link.
+    let breakdown = rollup["component_rollup"]
+        .as_object()
+        .unwrap_or_else(|| panic!("expected component_rollup payload, got: {rollup:#?}"));
+    assert_eq!(
+        breakdown["class_worst_function"].as_str().unwrap(),
+        "handleClick"
+    );
+    assert_eq!(breakdown["class_cyclomatic"].as_u64().unwrap(), class_cyc);
+    assert_eq!(
+        breakdown["template_cyclomatic"].as_u64().unwrap(),
+        template_cyc
+    );
+    let template_path = breakdown["template_path"]
+        .as_str()
+        .expect("template_path field");
+    assert!(
+        template_path.ends_with("host-game.component.html"),
+        "template_path must point at the .html template, got: {template_path:?}"
+    );
+    // Stronger: the path must be project-relative, not absolute (regression
+    // guard for strip_root_prefix coverage of nested objects).
+    assert!(
+        !template_path.starts_with('/') && !template_path.contains("/var/folders/"),
+        "template_path must be project-relative (no absolute prefix), got: {template_path:?}"
+    );
+
+    // Suppression action sits above the worst class method so the same
+    // `// fallow-ignore-next-line complexity` placement hides both the
+    // per-function finding and the rollup.
+    let actions = rollup["actions"].as_array().expect("rollup actions array");
+    let suppress = actions
+        .iter()
+        .find(|a| a["type"] == "suppress-line")
+        .unwrap_or_else(|| panic!("expected suppress-line on rollup, got: {actions:#?}"));
+    assert_eq!(
+        suppress["placement"].as_str().unwrap(),
+        "above-component-worst-method",
+        "rollup suppression must declare its placement so consumers can render the right hint"
+    );
+}
+
 // Tier 1 of #186: synthetic <template> findings on Angular .html files
 // inherit their CRAP coverage signal from the owning .component.ts via the
 // inverse templateUrl edge. The score itself can match today's accidental

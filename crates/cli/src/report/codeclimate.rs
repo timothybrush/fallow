@@ -1786,6 +1786,7 @@ mod tests {
                 coverage_tier: None,
                 coverage_source: None,
                 inherited_from: None,
+                component_rollup: None,
             }],
             summary: HealthSummary {
                 functions_analyzed: 10,
