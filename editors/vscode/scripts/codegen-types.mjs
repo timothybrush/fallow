@@ -180,6 +180,16 @@ function pinSchemaVersion(contents, version) {
   return contents.replace(target, `export type SchemaVersion = ${version}`);
 }
 
+/**
+ * Strip trailing whitespace from each line. jstt's JSDoc renderer emits
+ * paragraph breaks as `   * ` (asterisk + space + EOL), which trips
+ * `git diff --check`'s whitespace gate and CI's repo-hygiene lint. The
+ * downstream type semantics are unchanged.
+ */
+function stripTrailingWhitespace(contents) {
+  return contents.replace(/[ \t]+$/gm, "");
+}
+
 async function generate() {
   const raw = await readFile(SCHEMA_PATH, "utf8");
   const parsed = JSON.parse(raw);
@@ -189,7 +199,7 @@ async function generate() {
   // top-level union type.
   const raw_ts = await compile(parsed, "FallowJsonOutput", OPTIONS);
   const version = await readRustSchemaVersion();
-  return pinSchemaVersion(raw_ts, version);
+  return stripTrailingWhitespace(pinSchemaVersion(raw_ts, version));
 }
 
 async function writeAll(contents) {

@@ -430,6 +430,7 @@ mod tests {
                 member_accesses: vec![],
                 whole_object_uses: vec![],
                 has_cjs_exports: false,
+                has_angular_component_template_url: false,
                 unused_import_bindings: rustc_hash::FxHashSet::default(),
                 type_referenced_import_bindings: vec![],
                 value_referenced_import_bindings: vec![],

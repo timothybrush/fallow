@@ -180,6 +180,7 @@ pub(crate) fn parse_html_to_module_with_complexity(
         member_accesses,
         whole_object_uses: Vec::new(),
         has_cjs_exports: false,
+        has_angular_component_template_url: false,
         content_hash,
         suppressions,
         unused_import_bindings: Vec::new(),

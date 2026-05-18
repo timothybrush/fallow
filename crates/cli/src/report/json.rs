@@ -1051,9 +1051,21 @@ fn build_health_finding_actions(
 
     let mut actions: Vec<serde_json::Value> = Vec::new();
 
-    // Coverage-leaning action: only emitted when CRAP contributed.
+    // Coverage-leaning action: only emitted when CRAP contributed. For
+    // synthetic <template> findings whose CRAP was inherited from the
+    // owning .component.ts via the inverse templateUrl edge, the action
+    // description must point AI agents at the component file rather than
+    // the .html template, otherwise agents will hallucinate Angular
+    // template test harnesses or try to scaffold a spec for the .html
+    // path directly (which is structurally impossible). The inherited_from
+    // string is the project-relative .ts path emitted alongside the
+    // coverage_source discriminator.
+    let inherited_from = item
+        .get("inherited_from")
+        .and_then(serde_json::Value::as_str);
     if includes_crap {
-        let coverage_action = build_crap_coverage_action(name, tier, full_coverage_can_clear_crap);
+        let coverage_action =
+            build_crap_coverage_action(name, tier, full_coverage_can_clear_crap, inherited_from);
         if let Some(action) = coverage_action {
             actions.push(action);
         }
@@ -1149,9 +1161,25 @@ fn build_crap_coverage_action(
     name: &str,
     tier: Option<&str>,
     full_coverage_can_clear_crap: bool,
+    inherited_from: Option<&str>,
 ) -> Option<serde_json::Value> {
     if !full_coverage_can_clear_crap {
         return None;
+    }
+
+    // Inherited-coverage path: when the CRAP score on a `<template>` finding
+    // was derived from the owning Angular component .ts file, the test
+    // surface to act on is the component, not the .html. Override the
+    // description so agents do not try to scaffold tests against the
+    // template path directly.
+    if let Some(owner) = inherited_from {
+        return Some(serde_json::json!({
+            "type": "increase-coverage",
+            "auto_fixable": false,
+            "description": format!("Increase test coverage on `{owner}` (the CRAP score on `{name}` is inherited from this Angular component; add component tests there rather than against the template)"),
+            "note": "CRAP = CC^2 * (1 - cov/100)^3 + CC; .html templates are exercised through their @Component class, so the test target is the .ts file referenced by `inherited_from`",
+            "target_path": owner,
+        }));
     }
 
     match tier {

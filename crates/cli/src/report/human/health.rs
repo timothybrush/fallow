@@ -816,10 +816,28 @@ fn render_findings(
         // always at/above threshold and always colored red+bold.
         if let Some(crap) = finding.crap {
             let crap_colored = format!("{crap:>5.1}").red().bold().to_string();
-            let coverage_suffix = finding
-                .coverage_pct
-                .map(|pct| format!("  ({pct:.0}% tested)"))
-                .unwrap_or_default();
+            // Provenance suffix order: prefer the observed-coverage pct when
+            // Istanbul matched; otherwise show the inherited-from owner when
+            // the score was redirected from an Angular component .ts via
+            // the inverse templateUrl edge; otherwise nothing. The two
+            // states are mutually exclusive on the wire (Istanbul match
+            // implies coverage_pct = Some, inherit implies coverage_pct =
+            // None), so a single if/else chain captures the contract.
+            let coverage_suffix = if let Some(pct) = finding.coverage_pct {
+                format!("  ({pct:.0}% tested)")
+            } else if matches!(
+                finding.coverage_source,
+                Some(crate::health_types::CoverageSource::EstimatedComponentInherited)
+            ) && let Some(ref owner) = finding.inherited_from
+            {
+                let owner_display = owner.file_name().map_or_else(
+                    || owner.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                format!("  (inherited from {owner_display})")
+            } else {
+                String::new()
+            };
             lines.push(format!(
                 "         {crap_colored} CRAP{}",
                 coverage_suffix.dimmed(),
@@ -1818,6 +1836,8 @@ mod tests {
                 crap: None,
                 coverage_pct: None,
                 coverage_tier: None,
+                coverage_source: None,
+                inherited_from: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 10,
@@ -1856,6 +1876,8 @@ mod tests {
                 crap: None,
                 coverage_pct: None,
                 coverage_tier: None,
+                coverage_source: None,
+                inherited_from: None,
             }],
             summary: crate::health_types::HealthSummary {
                 files_analyzed: 100,
@@ -1890,6 +1912,8 @@ mod tests {
                     crap: None,
                     coverage_pct: None,
                     coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
                 },
                 crate::health_types::HealthFinding {
                     path: root.join("src/parser.ts"),
@@ -1905,6 +1929,8 @@ mod tests {
                     crap: None,
                     coverage_pct: None,
                     coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
                 },
             ],
             summary: crate::health_types::HealthSummary {
@@ -3280,6 +3306,8 @@ mod tests {
             crap: None,
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }];
         report.health_score = Some(crate::health_types::HealthScore {
             formula_version: crate::health_types::HEALTH_SCORE_FORMULA_VERSION,
@@ -3376,6 +3404,8 @@ mod tests {
             crap: None,
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }];
         let lines = build_health_human_lines(&report, &root);
         let text = plain(&lines);
@@ -3402,6 +3432,8 @@ mod tests {
             crap: None,
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }];
         let lines = build_health_human_lines(&report, &root);
         let text = plain(&lines);
@@ -3429,6 +3461,8 @@ mod tests {
                 crap: None,
                 coverage_pct: None,
                 coverage_tier: None,
+                coverage_source: None,
+                inherited_from: None,
             },
             crate::health_types::HealthFinding {
                 path: root.join("src/b.ts"),
@@ -3444,6 +3478,8 @@ mod tests {
                 crap: None,
                 coverage_pct: None,
                 coverage_tier: None,
+                coverage_source: None,
+                inherited_from: None,
             },
         ];
         let lines = build_health_human_lines(&report, &root);
@@ -3472,6 +3508,8 @@ mod tests {
             crap: None,
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }];
         let lines = build_health_human_lines(&report, &root);
         let text = plain(&lines);

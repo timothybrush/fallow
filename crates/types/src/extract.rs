@@ -29,6 +29,17 @@ pub struct ModuleInfo {
     pub whole_object_uses: Vec<String>,
     /// Whether this module uses `CommonJS` exports (`module.exports` or `exports.*`).
     pub has_cjs_exports: bool,
+    /// True when this module declares at least one Angular `@Component({
+    /// templateUrl: ... })` (the visitor emits a SideEffect import for each
+    /// such templateUrl, and this flag is set in the same branch). Used by
+    /// the CRAP-inherit walker (`crates/cli/src/health/scoring.rs::build_template_inherit_contexts`)
+    /// to gate the discriminator `coverage_source == "estimated_component_inherited"`:
+    /// a `.ts` file that imports an `.html` via plain `import './x.html'` is
+    /// NOT a component owner and must not trigger the inherit path. Without
+    /// this gate, the contract documented on `HealthFinding.inherited_from`
+    /// (Angular component `.ts` reached via the inverse `templateUrl` edge)
+    /// is silently violated for any non-Angular file importing an `.html`.
+    pub has_angular_component_template_url: bool,
     /// xxh3 hash of the file content for incremental caching.
     pub content_hash: u64,
     /// Inline suppression directives parsed from comments.

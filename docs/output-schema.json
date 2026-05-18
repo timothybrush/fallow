@@ -2285,6 +2285,24 @@
           ],
           "description": "Bucketed coverage tier used to drive action selection. Present whenever\nCRAP triggered the finding (Istanbul or estimated), absent otherwise.\n`none` = coverage is at most 0% (file not test-reachable, or Istanbul\nreports 0); `partial` = coverage is in `(0, 70)`; `high` = coverage is\nat or above the high watermark (default `>= 70`, or the estimated 85%\nband)."
         },
+        "coverage_source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoverageSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Provenance of the coverage signal. Present whenever CRAP triggered the\nfinding. `istanbul` = direct fnMap match; `estimated` = graph-based\nestimate against the finding's own file; `estimated_component_inherited`\n= graph-based estimate inherited from an Angular component `.ts`\nreached via the inverse `templateUrl` edge (synthetic `<template>`\nfindings on `.html` files only)."
+        },
+        "inherited_from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Owning component file that contributed reachability when\n`coverage_source == \"estimated_component_inherited\"`. Always paired\nwith that variant of `coverage_source` and absent otherwise. The\nvalue is the `.ts` file fallow walked to via the inverse `templateUrl`\nedge (e.g. `permissions.component.ts`); the JSON serializer strips it\nto project-relative form just like other path fields. Lets human and\nAI consumers explain \"the template scored partial because the\ncomponent it belongs to is tested\" without re-deriving the link."
+        },
         "actions": {
           "type": "array",
           "items": {
@@ -3437,6 +3455,13 @@
             "null"
           ],
           "description": "Where to insert the suppress comment\n(e.g., `above-function-declaration`, `above-angular-decorator`, or\n`top-of-template`). Present on `suppress-line` and `suppress-file`\naction variants."
+        },
+        "target_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Project-relative path the action should target when the finding's\nremediation lives in a different file from where the finding is\nanchored. Currently populated on the `increase-coverage` action for\nsynthetic Angular `<template>` findings whose CRAP is inherited from\nthe owning `.component.ts`: the action points at the component file\n(where the user actually adds tests) rather than the `.html` template\n(where the finding is anchored but which is not directly testable).\nAbsent when the action's target is the finding's own file."
         }
       },
       "required": [
@@ -8249,6 +8274,26 @@
         }
       ],
       "description": "Runtime coverage JSON contract version. This is scoped to the\n`runtime_coverage` block and is independent of the top-level fallow\nJSON `schema_version`."
+    },
+    "CoverageSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "istanbul",
+          "description": "Direct match against Istanbul `fnMap` data for this function."
+        },
+        {
+          "type": "string",
+          "const": "estimated",
+          "description": "Graph-based estimated model evaluated against the finding's own file\n(current default for any CRAP finding that did not match Istanbul)."
+        },
+        {
+          "type": "string",
+          "const": "estimated_component_inherited",
+          "description": "Graph-based estimated model evaluated against the owning component's\n`.ts` file (reached via the inverse `templateUrl` edge from a\nsynthetic `<template>` finding on an Angular `.html` template). Emitted\nbecause JIT-compiled Angular tests do not produce Istanbul entries for\n`.html` files; tier 2 will replace this with measured coverage for\nAOT-compiled tests."
+        }
+      ],
+      "description": "Provenance of a CRAP finding's coverage signal.\n\nDiscriminates whether the `coverage_tier` and `crap` score were derived\nfrom real Istanbul data, the graph-based estimated model evaluated against\nthe finding's own file, or the graph-based estimated model evaluated\nagainst a different file (today: an Angular component `.ts` reached via\nthe inverse `templateUrl` edge from a synthetic `<template>` finding on\nthe component's `.html` template).\n\nConsumers reading this field:\n- AI agents picking remediation actions (\"the score is inherited, the fix\n  may need to land on the component file, not the template\").\n- Dashboards plotting CRAP trends (\"the discriminator changed shape;\n  absorb the rollout rather than flagging a step change\").\n- Future tier 2 (AOT source-map back-mapping) will introduce\n  `MeasuredAotSourceMap` so consumers can distinguish measured-AOT from\n  inherited-JIT without parsing the score itself."
     }
   }
 }

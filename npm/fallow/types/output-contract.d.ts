@@ -33,7 +33,7 @@ export type FallowJsonOutput = (FallowOutput | CodeClimateOutput | CoverageAnaly
  * serializes as a JSON object. The schema derived from this enum drives
  * the document-root `oneOf` in `docs/output-schema.json`, replacing the
  * previously hand-maintained block.
- * 
+ *
  * `#[serde(untagged)]` preserves wire compatibility: consumers see exactly
  * the same top-level keys today (`schema_version`, `version`, plus the
  * per-envelope shape). The schema's `oneOf` lets agents narrow by trying
@@ -43,7 +43,7 @@ export type FallowJsonOutput = (FallowOutput | CodeClimateOutput | CoverageAnaly
  * `DuplicationReport`) into top-level fields, so the actual
  * discriminators are nested-body keys such as `health_score` (health) and
  * `clone_groups` (dupes), NOT `report` or `groups`.
- * 
+ *
  * Variant order is **most-specific first**. Schemars 1 preserves
  * declaration order in the emitted `oneOf`, and validators that enforce
  * strict `oneOf` (and any future migration that adds `Deserialize`) will
@@ -52,7 +52,7 @@ export type FallowJsonOutput = (FallowOutput | CodeClimateOutput | CoverageAnaly
  * fields (`schema_version`, `version`, `elapsed_ms`) are a strict subset
  * of every other variant's required set; placing it earlier would let a
  * `CheckOutput` payload silently match `CombinedOutput` first.
- * 
+ *
  * Two envelopes are intentionally NOT in this enum:
  * - `CodeClimateOutput` serializes as a bare JSON array
  *   (`#[serde(transparent)]`) per the Code Climate / GitLab Code Quality
@@ -65,7 +65,7 @@ export type FallowJsonOutput = (FallowOutput | CodeClimateOutput | CoverageAnaly
  *   pending typed migration. The root schema preserves it as a sibling
  *   `oneOf` branch so the documented union stays complete until the
  *   migration lands.
- * 
+ *
  * A future major release plans to switch this to
  * `#[serde(tag = "kind")]` for true O(1) discriminability on AI / agent
  * consumers, paired with a one-cycle `--legacy-envelope` opt-out flag.
@@ -120,21 +120,21 @@ export type AuditGate = ("new-only" | "all")
  * A suggested action attached to a finding in the JSON output. Each finding
  * carries an `actions` array; consumers (agents, IDE clients, CI bots) can
  * dispatch on the `type` discriminant to choose the right remediation.
- * 
+ *
  * The discriminator is `type` (snake_case `type` field), the payload uses the
  * matching kebab-case identifier per variant.
- * 
+ *
  * ## `auto_fixable` is per-finding, not per action type
- * 
+ *
  * Every action variant carries an `auto_fixable: bool` field. The value is
  * evaluated PER FINDING, not per action type: the same action type may
  * appear with `auto_fixable: true` on one finding and `auto_fixable: false`
  * on another, depending on per-instance guards in the `fallow fix` applier.
  * Agents that filter on `auto_fixable: true` must branch on the bool of
  * each individual finding's action, not on the action `type` alone.
- * 
+ *
  * Current per-instance flips:
- * 
+ *
  * - `remove-catalog-entry` (`unused-catalog-entries`): `true` only when the
  *   finding's `hardcoded_consumers` array is empty. When a workspace
  *   package still pins a hardcoded version of the same package, `fallow fix`
@@ -159,7 +159,7 @@ export type AuditGate = ("new-only" | "all")
  *   `false` today (the catalog-switching applier is not wired in yet); the
  *   field is non-singleton so that future enablement does not require a
  *   schema change.
- * 
+ *
  * All `suppress-line` and `suppress-file` actions are uniformly
  * `auto_fixable: false`. The field is non-singleton on the wire so that a
  * future auto-applier (e.g. an LLM-driven suppression writer) can promote
@@ -200,19 +200,19 @@ export type AddToConfigValue = (string | IgnoreExportsRule[] | {
  * runs with a base ref. `true` means the finding's structural key was not
  * present at the base ref (introduced by the current changeset); `false`
  * means it was inherited.
- * 
+ *
  * Outside of audit sub-results the field is omitted, so call sites typically
  * hold `Option<AuditIntroduced>`. Renders to the JSON wire as a bare boolean.
  */
 export type AuditIntroduced = boolean
 /**
  * Where in package.json a dependency is listed.
- * 
+ *
  * # Examples
- * 
+ *
  * ```
  * use fallow_types::results::DependencyLocation;
- * 
+ *
  * // All three variants are constructible
  * let loc = DependencyLocation::Dependencies;
  * let dev = DependencyLocation::DevDependencies;
@@ -226,12 +226,12 @@ export type AuditIntroduced = boolean
 export type DependencyLocation = ("dependencies" | "devDependencies" | "optionalDependencies")
 /**
  * The kind of member.
- * 
+ *
  * # Examples
- * 
+ *
  * ```
  * use fallow_types::extract::MemberKind;
- * 
+ *
  * let kind = MemberKind::EnumMember;
  * assert_eq!(kind, MemberKind::EnumMember);
  * assert_ne!(kind, MemberKind::ClassMethod);
@@ -289,14 +289,14 @@ export type RefactoringKind = ("ExtractFunction" | "ExtractModule")
 export type ExceededThreshold = ("cyclomatic" | "cognitive" | "both" | "crap" | "cyclomatic_crap" | "cognitive_crap" | "all")
 /**
  * Severity tier indicating how far a function exceeds complexity thresholds.
- * 
+ *
  * Determined by the highest tier reached across both cognitive and cyclomatic
  * scores. Default thresholds: cognitive 25/40, cyclomatic 30/50.
  */
 export type FindingSeverity = ("moderate" | "high" | "critical")
 /**
  * Coverage tier classification for CRAP findings.
- * 
+ *
  * Bucketed coverage signal that lets action consumers (AI agents, IDE
  * extensions, CI integrations) pick the right remediation without knowing
  * the underlying coverage values:
@@ -310,11 +310,31 @@ export type FindingSeverity = ("moderate" | "high" | "critical")
  *   85% band, or Istanbul shows >= 70%). Action selection still checks
  *   the CRAP formula before deciding whether coverage or refactoring is
  *   the better remediation.
- * 
+ *
  * The high watermark default is 70 (matches Istanbul `lines: 70`).
  * Partial is anything in `(0, 70)`. None is `<= 0`.
  */
 export type CoverageTier = ("none" | "partial" | "high")
+/**
+ * Provenance of a CRAP finding's coverage signal.
+ *
+ * Discriminates whether the `coverage_tier` and `crap` score were derived
+ * from real Istanbul data, the graph-based estimated model evaluated against
+ * the finding's own file, or the graph-based estimated model evaluated
+ * against a different file (today: an Angular component `.ts` reached via
+ * the inverse `templateUrl` edge from a synthetic `<template>` finding on
+ * the component's `.html` template).
+ *
+ * Consumers reading this field:
+ * - AI agents picking remediation actions ("the score is inherited, the fix
+ *   may need to land on the component file, not the template").
+ * - Dashboards plotting CRAP trends ("the discriminator changed shape;
+ *   absorb the rollout rather than flagging a step change").
+ * - Future tier 2 (AOT source-map back-mapping) will introduce
+ *   `MeasuredAotSourceMap` so consumers can distinguish measured-AOT from
+ *   inherited-JIT without parsing the score itself.
+ */
+export type CoverageSource = ("istanbul" | "estimated" | "estimated_component_inherited")
 /**
  * Discriminant for [`HealthFindingAction::kind`]. Mirrors the action types
  * emitted by `build_health_finding_actions`. A single finding's `actions`
@@ -413,29 +433,29 @@ export type RuntimeCoverageWatermark = ("trial-expired" | "license-expired-grace
 export type RecommendationCategory = ("urgent_churn_complexity" | "break_circular_dependency" | "split_high_impact" | "remove_dead_code" | "extract_complex_functions" | "extract_dependencies" | "add_test_coverage")
 /**
  * A ranked refactoring recommendation for a file.
- * 
+ *
  * ## Priority Formula
- * 
+ *
  * ```text
  * priority = min(density, 1) × 30 + hotspot_boost × 25 + dead_code × 20 + fan_in_norm × 15 + fan_out_norm × 10
  * ```
- * 
+ *
  * Fan-in and fan-out normalization uses adaptive percentile-based thresholds
  * (p95 of the project distribution, with floors) instead of fixed constants.
- * 
+ *
  * ## Efficiency (default sort)
- * 
+ *
  * ```text
  * efficiency = priority / effort_numeric   (Low=1, Medium=2, High=3)
  * ```
- * 
+ *
  * Surfaces quick wins: high-priority, low-effort targets rank first.
  * Effort estimate for a refactoring target.
  */
 export type EffortEstimate = ("low" | "medium" | "high")
 /**
  * Confidence level for a refactoring recommendation.
- * 
+ *
  * Based on the data source reliability:
  * - **High**: deterministic graph/AST analysis (dead code, circular deps, complexity)
  * - **Medium**: heuristic thresholds (fan-in/fan-out coupling)
@@ -511,7 +531,7 @@ export type CoverageSetupRuntimeTarget = ("node" | "browser")
 export type LogicalGroupStatus = ("ok" | "empty" | "invalid_path")
 /**
  * Resolver mode label for grouped envelopes (dead-code, dupes, health).
- * 
+ *
  * `owner` groups by CODEOWNERS team, `directory` groups by top-level
  * directory prefix, `package` groups by workspace package name, `section`
  * groups by GitLab CODEOWNERS `[Section]` header name.
@@ -537,7 +557,7 @@ export type CodeClimateOutput = CodeClimateIssue[]
  * complexity, and duplication scoped to changed files with a verdict
  * (`pass` / `warn` / `fail`), a per-category summary, optional
  * new-vs-inherited attribution, and full sub-results.
- * 
+ *
  * Like [`CombinedOutput`], `audit`'s `duplication` and `complexity`
  * sub-keys hold bare body types (`DuplicationReport` / `HealthReport`)
  * rather than the per-command envelope shapes; `dead_code` is the full
@@ -618,7 +638,7 @@ duplication_inherited: number
 /**
  * Envelope emitted by `fallow dead-code --format json` (plus the `check`
  * block inside the combined and audit envelopes).
- * 
+ *
  * The body is the full `AnalysisResults` flattened into the envelope so
  * every issue array (`unused_files`, `unused_exports`, ...) lives at the
  * top level, matching the existing wire shape. `entry_points` lifts the
@@ -1673,7 +1693,7 @@ origin: SuppressionOrigin
 /**
  * A pnpm catalog entry declared in pnpm-workspace.yaml that no workspace package
  * references via the `catalog:` protocol.
- * 
+ *
  * The default catalog (top-level `catalog:` key) uses `catalog_name: "default"`.
  * Named catalogs (under `catalogs.<name>:`) use their declared name.
  */
@@ -1733,11 +1753,11 @@ introduced?: AuditIntroduced
 /**
  * A workspace package.json reference (`catalog:` or `catalog:<name>`) that points
  * at a catalog which does not declare the consumed package.
- * 
+ *
  * `pnpm install` errors at install time with `ERR_PNPM_CATALOG_ENTRY_NOT_FOUND_FOR_CATALOG_PROTOCOL`
  * when this happens. fallow surfaces it statically so the failure is caught at
  * `fallow check` time, before any install.
- * 
+ *
  * The default catalog (bare `catalog:` references the top-level `catalog:` map)
  * uses `catalog_name: "default"`. Named catalogs (`catalog:react17`) use the
  * declared catalog name.
@@ -2120,7 +2140,7 @@ comment?: string
 }
 /**
  * A clone family: a set of clone groups that share the same file set.
- * 
+ *
  * When multiple clone groups are all duplicated between the same set of files,
  * they form a family — indicating a deeper structural relationship that should
  * be refactored together rather than group-by-group.
@@ -2292,7 +2312,7 @@ health_score?: (HealthScore | null)
 file_scores?: FileHealthScore[]
 /**
  * Static coverage gaps.
- * 
+ *
  * Populated when coverage gaps are explicitly requested, or when the
  * top-level `health` command allows config severity to surface them in the
  * default report.
@@ -2400,6 +2420,26 @@ coverage_pct?: (number | null)
  */
 coverage_tier?: (CoverageTier | null)
 /**
+ * Provenance of the coverage signal. Present whenever CRAP triggered the
+ * finding. `istanbul` = direct fnMap match; `estimated` = graph-based
+ * estimate against the finding's own file; `estimated_component_inherited`
+ * = graph-based estimate inherited from an Angular component `.ts`
+ * reached via the inverse `templateUrl` edge (synthetic `<template>`
+ * findings on `.html` files only).
+ */
+coverage_source?: (CoverageSource | null)
+/**
+ * Owning component file that contributed reachability when
+ * `coverage_source == "estimated_component_inherited"`. Always paired
+ * with that variant of `coverage_source` and absent otherwise. The
+ * value is the `.ts` file fallow walked to via the inverse `templateUrl`
+ * edge (e.g. `permissions.component.ts`); the JSON serializer strips it
+ * to project-relative form just like other path fields. Lets human and
+ * AI consumers explain "the template scored partial because the
+ * component it belongs to is tested" without re-deriving the link.
+ */
+inherited_from?: (string | null)
+/**
  * Suggested actions to resolve this issue.
  */
 actions: HealthFindingAction[]
@@ -2407,19 +2447,19 @@ introduced?: AuditIntroduced
 }
 /**
  * Suggested action attached to a [`HealthFinding`].
- * 
+ *
  * Each complexity finding carries an array of these on the JSON wire
  * (`findings[].actions[]`). The action selector in
  * `crates/cli/src/report/json.rs::build_health_finding_actions` picks the
  * primary action based on which thresholds triggered the finding and the
  * bucketed coverage tier. See [`HealthFindingActionType`] for the full
  * discriminant list.
- * 
+ *
  * `note`, `comment`, and `placement` are populated per-variant: refactor
  * actions carry a `note`, suppress-line / suppress-file actions carry
  * `comment` plus `placement`, and the coverage-leaning actions
  * (`add-tests`, `increase-coverage`) carry only `note`.
- * 
+ *
  * [`HealthFinding`]: ../../fallow-cli/src/health_types/scores.rs
  */
 export interface HealthFindingAction {
@@ -2455,6 +2495,17 @@ comment?: (string | null)
  * action variants.
  */
 placement?: (string | null)
+/**
+ * Project-relative path the action should target when the finding's
+ * remediation lives in a different file from where the finding is
+ * anchored. Currently populated on the `increase-coverage` action for
+ * synthetic Angular `<template>` findings whose CRAP is inherited from
+ * the owning `.component.ts`: the action points at the component file
+ * (where the user actually adds tests) rather than the `.html` template
+ * (where the finding is anchored but which is not directly testable).
+ * Absent when the action's target is the finding's own file.
+ */
+target_path?: (string | null)
 }
 /**
  * Summary statistics for the health report.
@@ -2535,7 +2586,7 @@ severity_moderate_count: number
 }
 /**
  * Project-wide vital signs — a fixed set of metrics for trend tracking.
- * 
+ *
  * Metrics are `Option` when the data source was not available in the current run
  * (e.g., `duplication_pct` is `None` unless the duplication pipeline was run,
  * `hotspot_count` is `None` without git history).
@@ -2634,7 +2685,7 @@ total_loc?: number
 }
 /**
  * Raw counts backing the vital signs percentages.
- * 
+ *
  * Stored alongside `VitalSigns` in snapshots so that Phase 2b trend reporting
  * can decompose percentage changes into numerator vs denominator shifts.
  */
@@ -2656,11 +2707,11 @@ total_deps: number
 }
 /**
  * Risk profile: percentage of functions in each risk bin.
- * 
+ *
  * Bins are defined by thresholds that depend on the measured property:
  * - **Unit size**: low risk (1-15 LOC), medium risk (16-30), high risk (31-60), very high risk (>60)
  * - **Unit interfacing**: low risk (0-2 params), medium risk (3-4), high risk (5-6), very high risk (>=7)
- * 
+ *
  * Percentages sum to approximately 100.0 (subject to rounding).
  */
 export interface RiskProfile {
@@ -2708,7 +2759,7 @@ penalties: HealthScorePenalties
 }
 /**
  * Per-component penalty breakdown for the health score.
- * 
+ *
  * Each field shows how many points were subtracted for that component.
  * `None` means the metric was not available (pipeline didn't run).
  */
@@ -2772,11 +2823,11 @@ duplication?: (number | null)
 }
 /**
  * Per-file health score combining complexity, coupling, and dead code metrics.
- * 
+ *
  * Files with zero functions (barrel files, re-export files) are excluded by default.
- * 
+ *
  * ## Maintainability Index Formula
- * 
+ *
  * ```text
  * dampening = min(lines / 50, 1.0)
  * fan_out_penalty = min(ln(fan_out + 1) × 4, 15)
@@ -2785,10 +2836,10 @@ duplication?: (number | null)
  *     - (dead_code_ratio × 20)
  *     - fan_out_penalty
  * ```
- * 
+ *
  * Clamped to \[0, 100\]. Higher is better. The dampening factor prevents
  * complexity density from dominating the score on small files (< 50 lines).
- * 
+ *
  * - **complexity_density**: total cyclomatic complexity / lines of code
  * - **dead_code_ratio**: fraction of value exports (excluding type-only exports) with zero references (0.0–1.0)
  * - **fan_out_penalty**: logarithmic scaling with cap at 15 points; reflects diminishing marginal risk of additional imports
@@ -2917,14 +2968,14 @@ actions: UntestedFileAction[]
 }
 /**
  * Suggested action attached to an [`UntestedFile`] coverage-gap finding.
- * 
+ *
  * `inject_health_actions` emits a two-entry array on every untested-file
  * item: an `add-tests` primary action (scaffold tests for the runtime
  * file) and a `suppress-file` action (`// fallow-ignore-file coverage-gaps`).
  * Both variants share the same struct shape; the field that is populated
  * (`note` for `add-tests`, `comment` for `suppress-file`) depends on the
  * `kind`.
- * 
+ *
  * [`UntestedFile`]: ../../fallow-cli/src/health_types/coverage.rs
  */
 export interface UntestedFileAction {
@@ -2980,14 +3031,14 @@ actions: UntestedExportAction[]
 /**
  * Suggested action attached to an [`UntestedExport`] coverage-gap
  * finding.
- * 
+ *
  * `inject_health_actions` emits a two-entry array on every untested-export
  * item: an `add-test-import` primary action (import the export from a
  * test-reachable module) and a `suppress-file` action
  * (`// fallow-ignore-file coverage-gaps`). The export-specific variant
  * `add-test-import` reflects that a test-reachable reference chain, not
  * just any test coverage, is what closes the gap.
- * 
+ *
  * [`UntestedExport`]: ../../fallow-cli/src/health_types/coverage.rs
  */
 export interface UntestedExportAction {
@@ -3016,15 +3067,15 @@ comment?: (string | null)
 }
 /**
  * A hotspot: a file that is both complex and frequently changing.
- * 
+ *
  * ## Score Formula
- * 
+ *
  * ```text
  * normalized_churn = weighted_commits / max_weighted_commits   (0..1)
  * normalized_complexity = complexity_density / max_density      (0..1)
  * score = normalized_churn × normalized_complexity × 100       (0..100)
  * ```
- * 
+ *
  * Score uses within-project max normalization. Higher score = higher risk.
  * Fan-in is shown separately as "blast radius" — not baked into the score.
  */
@@ -3144,7 +3195,7 @@ export interface ContributorEntry {
  * Display string per the configured email mode: raw email
  * (`alice@example.com`), local-part handle (`alice`), or stable hash
  * pseudonym (`xxh3:<16hex>`). The format depends on `format`.
- * 
+ *
  * Renamed from `email` because in `handle` and `hash` modes the value
  * is no longer an email address; consumers tempted to use it as one
  * (e.g. `mailto:`) would be wrong.
@@ -3166,12 +3217,12 @@ commits: number
 }
 /**
  * Suggested action attached to a [`HotspotEntry`].
- * 
+ *
  * The action list always begins with `refactor-file` plus `add-tests`.
  * Ownership-derived variants (`low-bus-factor`, `unowned-hotspot`,
  * `ownership-drift`) are appended only when `--ownership` is active AND
  * the corresponding signal fires for the hotspot.
- * 
+ *
  * [`HotspotEntry`]: ../../fallow-cli/src/health_types/scores.rs
  */
 export interface HotspotAction {
@@ -3638,7 +3689,7 @@ detail: string
 }
 /**
  * Evidence linking a target back to specific analysis data.
- * 
+ *
  * Provides enough detail for an AI agent to act on a recommendation
  * without a second tool call.
  */
@@ -3675,12 +3726,12 @@ cognitive: number
 }
 /**
  * Suggested action attached to a [`RefactoringTarget`].
- * 
+ *
  * The list always begins with `apply-refactoring`. A trailing
  * `suppress-line` is appended only when the target carries `evidence`
  * linking to specific functions (e.g., `extract_complex_functions`,
  * `add_test_coverage`).
- * 
+ *
  * Unlike [`HealthFindingAction`], the `suppress-line` variant emitted
  * here does NOT carry a `placement` field: the parent
  * [`RefactoringTarget`] points at a file (not a specific function
@@ -3688,7 +3739,7 @@ cognitive: number
  * referent. Consumers that want the placement metadata should follow
  * the target's `evidence.complex_functions` back to the matching
  * `HealthFinding` and read placement from THAT action instead.
- * 
+ *
  * [`RefactoringTarget`]: ../../fallow-cli/src/health_types/targets.rs
  */
 export interface RefactoringTargetAction {
@@ -3719,7 +3770,7 @@ comment?: (string | null)
 }
 /**
  * Adaptive thresholds used for refactoring target scoring.
- * 
+ *
  * Derived from the project's metric distribution (percentile-based with floors).
  * Exposed in JSON output so consumers can interpret scores in context.
  */
@@ -3840,18 +3891,18 @@ total: number
 /**
  * Auditable breadcrumb recording when health-finding `suppress-line`
  * action hints were omitted from the report.
- * 
+ *
  * Emitted at the report root by `inject_health_actions` when it was
  * called with `omit_suppress_line: true`. Lets consumers see "where did
  * the suppress-line hints go?" without having to grep the config or CLI
  * history.
- * 
+ *
  * Stable `reason` codes:
  * - `baseline-active`: a baseline is active and inline ignores would
  *   become dead annotations once the baseline regenerates.
  * - `config-disabled`: `health.suggestInlineSuppression` is `false`.
  * - `unspecified`: the caller did not record a reason.
- * 
+ *
  * The runtime path constructs this breadcrumb as a `serde_json::Value`
  * post-pass in `inject_health_actions` rather than on the typed envelope,
  * because the suppression context lives inside the report builder. The
@@ -3875,7 +3926,7 @@ scope: string
 }
 /**
  * Envelope emitted by `fallow explain <issue-type> --format json`.
- * 
+ *
  * Standalone rule explanation. This command does not run project analysis
  * and intentionally returns a compact object without `schema_version` /
  * `version` metadata; consumers that need those should call any other
@@ -4080,7 +4131,7 @@ apply_errors: string[]
  * agent-readable runtime coverage setup instructions. In workspaces,
  * `members` carries one entry per detected runtime package; `runtime_targets`
  * is the union of all member targets.
- * 
+ *
  * Constructed at runtime by
  * `crates/cli/src/coverage/mod.rs::build_setup_envelope`; the wire is
  * `serde_json::to_value(&envelope)`. The drift gate keeps this struct
@@ -4381,7 +4432,7 @@ allow_type_only?: string[]
 /**
  * Envelope emitted by `fallow health --format json` (plus the `health` block
  * inside the combined and audit envelopes).
- * 
+ *
  * The body is `HealthReport` flattened into the envelope so every report
  * field (`findings`, `summary`, `vital_signs`, `hotspots`, `actions_meta`,
  * ...) lives at the top level. Grouped runs populate `grouped_by` +
@@ -4417,7 +4468,7 @@ health_score?: (HealthScore | null)
 file_scores?: FileHealthScore[]
 /**
  * Static coverage gaps.
- * 
+ *
  * Populated when coverage gaps are explicitly requested, or when the
  * top-level `health` command allows config severity to surface them in the
  * default report.
@@ -4486,11 +4537,11 @@ _meta?: (Meta | null)
 }
 /**
  * A health report scoped to a single group.
- * 
+ *
  * `key` is the group label produced by the resolver (workspace package name,
  * CODEOWNERS owner, directory, or section). `owners` is populated only for
  * `--group-by section` (mirrors dead-code grouped output).
- * 
+ *
  * Per-group `vital_signs` and `health_score` are recomputed from the
  * files in the group, so they answer "what is the health of workspace X" in
  * a single invocation. `files_analyzed` and `functions_above_threshold`
@@ -4564,7 +4615,7 @@ actions_meta?: (HealthActionsMeta | null)
 /**
  * Envelope emitted by `fallow dupes --format json` (plus the `dupes` block
  * inside the combined and audit envelopes).
- * 
+ *
  * The body is the full `DuplicationReport` flattened into the envelope so
  * the wire shape stays `{ schema_version, version, elapsed_ms, clone_groups,
  * clone_families, stats, ... }` exactly as the existing JSON layer emits.
@@ -4608,7 +4659,7 @@ total_issues?: (number | null)
  * attributed to its largest-owner key (most instances; alphabetical
  * tiebreak). Sort: most clone groups first, then alphabetical, with
  * `(unowned)` pinned last.
- * 
+ *
  * Runtime emission still goes through a `serde_json::Value` post-pass in
  * `crates/cli/src/report/json.rs::build_grouped_duplication_json` so the
  * per-group `actions` augmentation can run on every `AttributedCloneGroup`
@@ -4667,7 +4718,7 @@ actions: CloneGroupAction[]
 /**
  * A clone instance plus its per-instance owner key (for inline JSON / SARIF
  * rendering).
- * 
+ *
  * Each instance carries its own `owner` field alongside the standard
  * `CloneInstance` shape (file / start_line / end_line / start_col / end_col /
  * fragment), so consumers can attribute instances to resolver keys without
@@ -4706,7 +4757,7 @@ owner: string
 }
 /**
  * Envelope emitted by `fallow dead-code --group-by ... --format json`.
- * 
+ *
  * Issues are partitioned into resolver buckets (CODEOWNERS team, directory
  * prefix, workspace package, or GitLab CODEOWNERS section) instead of flat
  * arrays. Each bucket carries the same issue-array shape as the ungrouped
@@ -4894,7 +4945,7 @@ misconfigured_dependency_overrides?: MisconfiguredDependencyOverride[]
  * Envelope emitted by bare `fallow --format json` (the combined
  * invocation). Wraps the per-analysis sub-results inside a single envelope
  * with the standard `schema_version` / `version` / `elapsed_ms` header.
- * 
+ *
  * Each sub-result is `Option<...>` so `--only` / `--skip` can suppress a
  * pass without leaving an empty key on the wire. The `check` sub-result is
  * the full [`CheckOutput`] envelope (including its own `schema_version` /

@@ -202,6 +202,7 @@ pub fn resolve_all_imports(
                 member_accesses: module.member_accesses.clone(),
                 whole_object_uses: module.whole_object_uses.clone(),
                 has_cjs_exports: module.has_cjs_exports,
+                has_angular_component_template_url: module.has_angular_component_template_url,
                 unused_import_bindings: module.unused_import_bindings.iter().cloned().collect(),
                 type_referenced_import_bindings: module.type_referenced_import_bindings.clone(),
                 value_referenced_import_bindings: module.value_referenced_import_bindings.clone(),

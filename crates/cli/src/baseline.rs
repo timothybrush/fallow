@@ -1652,6 +1652,8 @@ mod tests {
             crap: None,
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }
     }
 

@@ -244,6 +244,235 @@ fn health_reports_angular_template_complexity() {
     );
 }
 
+// Tier 1 of #186: synthetic <template> findings on Angular .html files
+// inherit their CRAP coverage signal from the owning .component.ts via the
+// inverse templateUrl edge. The score itself can match today's accidental
+// fallback when the .html stays test-reachable, so the regression target is
+// the new `coverage_source` discriminator and `inherited_from` provenance:
+// without the redirect, the template's per-function CRAP entry would carry
+// `coverage_source: "estimated"` (or absent under non-Istanbul paths) and
+// no `inherited_from`. With the redirect, it carries
+// `coverage_source: "estimated_component_inherited"` and points at the
+// component .ts. The integration_test asserts on both fields and on the
+// `coverage_tier` they imply.
+#[test]
+fn health_angular_template_crap_inherits_from_component_ts() {
+    let dir = tempdir().unwrap();
+    let fixture = fixture_path("angular-template-complexity");
+    copy_dir_recursive(&fixture, dir.path());
+
+    // Replace package.json so jest activates (jest plugin gates `**/*.spec.ts`
+    // as Test entry points; without it the spec file we drop in below would
+    // not seed test reachability into the component .ts).
+    write_file(
+        &dir.path().join("package.json"),
+        r#"{
+            "name": "issue-186-tier1-inherit",
+            "main": "src/main.ts",
+            "dependencies": {
+                "@angular/core": "^19.0.0",
+                "@angular/platform-browser": "^19.0.0"
+            },
+            "devDependencies": {
+                "jest": "^29.0.0"
+            }
+        }"#,
+    );
+
+    // A spec that imports the component class makes PermissionsComponent
+    // test-reachable; the templateUrl SideEffect edge would normally cascade
+    // reachability to the .html too, so today's accidental fallback already
+    // produces `coverage_tier: "partial"` on the template. The fix's
+    // observable delta is the `coverage_source` / `inherited_from` pair.
+    write_file(
+        &dir.path().join("src/permissions.component.spec.ts"),
+        "import { PermissionsComponent } from './permissions.component';\n\
+         describe('PermissionsComponent', () => {\n  \
+           it('exists', () => { expect(PermissionsComponent).toBeDefined(); });\n\
+         });\n",
+    );
+
+    let component_ts = dir.path().join("src/permissions.component.ts");
+    // Istanbul coverage keyed on the .ts component, NOT the .html: the
+    // template path never matches Istanbul's fnMap, so the fix must walk
+    // the inverse templateUrl edge to find this entry.
+    let coverage_path = dir.path().join("coverage/coverage-final.json");
+    let mut coverage = serde_json::Map::new();
+    coverage.insert(
+        component_ts.to_string_lossy().into_owned(),
+        serde_json::json!({
+            "path": component_ts.to_string_lossy().into_owned(),
+            "statementMap": {},
+            "fnMap": {},
+            "branchMap": {},
+            "s": {},
+            "f": {},
+            "b": {}
+        }),
+    );
+    write_file(
+        &coverage_path,
+        &serde_json::to_string(&coverage).expect("serialize coverage"),
+    );
+
+    let output = run_fallow_in_root(
+        "health",
+        dir.path(),
+        &[
+            "--complexity",
+            "--coverage",
+            "coverage/coverage-final.json",
+            "--max-cyclomatic",
+            "3",
+            "--max-cognitive",
+            "3",
+            // Keep --max-crap above the fixture's template cyclomatic (25)
+            // so full_coverage_can_clear_crap stays true and the inherited
+            // override emits an `increase-coverage` action with `target_path`
+            // pointing at the .ts owner. A more aggressive threshold would
+            // short-circuit to refactor-function and silently skip the
+            // action-ladder pivot half of the contract.
+            "--max-crap",
+            "30",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&output);
+    let findings = json["findings"].as_array().expect("findings array");
+    let template = findings
+        .iter()
+        .find(|finding| {
+            finding["name"] == "<template>"
+                && finding["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("permissions.component.html"))
+        })
+        .unwrap_or_else(|| panic!("expected <template> finding, got: {findings:#?}"));
+
+    let coverage_source = template["coverage_source"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected coverage_source field, got: {template:#?}"));
+    assert_eq!(
+        coverage_source, "estimated_component_inherited",
+        "<template> finding must carry the inherit-from-component discriminator (regression guard for #186 tier 1): {template:#?}"
+    );
+
+    let inherited_from = template["inherited_from"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected inherited_from field, got: {template:#?}"));
+    assert!(
+        inherited_from.ends_with("permissions.component.ts"),
+        "inherited_from must point at the owning component .ts, got: {inherited_from:?}"
+    );
+
+    let tier = template["coverage_tier"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected coverage_tier field, got: {template:#?}"));
+    assert!(
+        matches!(tier, "partial" | "high"),
+        "<template> coverage_tier inherited from the tested component .ts must be partial or high, got: {tier:?}"
+    );
+
+    // Action-ladder pivot: the inherited-coverage finding must emit an
+    // `increase-coverage` action whose `target_path` points at the .ts
+    // owner, not the .html template. Without this pivot, AI agents
+    // following the action description would scaffold tests against the
+    // structurally untestable .html path instead of the component file.
+    let actions = template["actions"]
+        .as_array()
+        .expect("actions array present on health finding");
+    let coverage_action = actions
+        .iter()
+        .find(|a| a["type"] == "increase-coverage")
+        .unwrap_or_else(|| panic!("expected an increase-coverage action, got: {actions:#?}"));
+    let target_path = coverage_action["target_path"].as_str().unwrap_or_else(|| {
+        panic!("expected target_path on increase-coverage action, got: {coverage_action:#?}")
+    });
+    assert!(
+        target_path.ends_with("permissions.component.ts"),
+        "increase-coverage action's target_path must point at the owning .ts, got: {target_path:?}"
+    );
+}
+
+// Negative regression for tier 1 of #186: a plain `import "./tpl.html"` from
+// a non-Angular `.ts` file ALSO produces a SideEffect graph edge identical to
+// the one Angular emits for `@Component({ templateUrl })`. Without the
+// `has_angular_component_template_url` gate on the owner candidate, the
+// CRAP-inherit walker would credit the non-component owner and emit
+// `coverage_source: "estimated_component_inherited"` plus
+// `inherited_from: "src/main.ts"`, violating the documented contract that
+// inherited_from points at an Angular component .ts. This test reproduces
+// the bug shape (template-complex .html imported by a plain main.ts with no
+// @Component decorator) and asserts the discriminator stays `"estimated"`
+// (the standard fallback) and inherited_from stays absent.
+#[test]
+fn health_angular_template_inherit_rejects_non_component_owner() {
+    let dir = tempdir().unwrap();
+    write_file(
+        &dir.path().join("package.json"),
+        r#"{"name":"issue-186-negative","main":"src/main.ts"}"#,
+    );
+    // main.ts imports the template purely as a side-effect URL; it carries
+    // no @Component decorator, so it is NOT a template owner.
+    write_file(
+        &dir.path().join("src/main.ts"),
+        "import \"./template.html\";\nexport const tag = \"plain\";\n",
+    );
+    // Same template shape the angular-template-complexity fixture uses so the
+    // template-complexity scanner produces a `<template>` finding.
+    write_file(
+        &dir.path().join("src/template.html"),
+        "@if (user) {\n  @if (user.isAdmin) {\n    @for (item of user.permissions; track item.id) {\n      @switch (item.status) {\n        @case ('active') { <a/> }\n        @case ('pending') { <b/> }\n        @default { <c/> }\n      }\n    }\n  }\n}\n",
+    );
+
+    let output = run_fallow_in_root(
+        "health",
+        dir.path(),
+        &[
+            "--complexity",
+            "--max-cyclomatic",
+            "3",
+            "--max-cognitive",
+            "3",
+            "--max-crap",
+            "30",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&output);
+    let findings = json["findings"].as_array().expect("findings array");
+    let template = findings
+        .iter()
+        .find(|finding| {
+            finding["name"] == "<template>"
+                && finding["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("template.html"))
+        })
+        .unwrap_or_else(|| panic!("expected <template> finding, got: {findings:#?}"));
+
+    // The crucial assertion: a non-Angular `.ts` importer must NOT be
+    // credited as an inherit owner. The discriminator stays `estimated`
+    // and inherited_from stays absent.
+    let source = template
+        .get("coverage_source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none");
+    assert_ne!(
+        source, "estimated_component_inherited",
+        "plain main.ts importing the template must not be credited as an Angular component owner: {template:#?}"
+    );
+    assert!(
+        template.get("inherited_from").is_none()
+            || template.get("inherited_from") == Some(&serde_json::Value::Null),
+        "inherited_from must be absent when the owner is not an Angular component: {template:#?}"
+    );
+}
+
 #[test]
 fn health_reports_angular_inline_template_complexity() {
     let output = run_fallow(

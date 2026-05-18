@@ -62,6 +62,10 @@ pub struct ResolvedModule {
     pub whole_object_uses: Vec<String>,
     /// Whether this module uses `CommonJS` exports.
     pub has_cjs_exports: bool,
+    /// Whether this module declares at least one Angular `@Component({
+    /// templateUrl: ... })` decorator. Mirrors `ModuleInfo.has_angular_component_template_url`;
+    /// see that field for the contract this gate enforces.
+    pub has_angular_component_template_url: bool,
     /// Local names of import bindings that are never referenced in this file.
     pub unused_import_bindings: FxHashSet<String>,
     /// Local import bindings referenced from type positions.
@@ -86,6 +90,7 @@ impl Default for ResolvedModule {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             unused_import_bindings: FxHashSet::default(),
             type_referenced_import_bindings: vec![],
             value_referenced_import_bindings: vec![],

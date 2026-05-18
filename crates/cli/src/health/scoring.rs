@@ -37,6 +37,13 @@ pub(super) struct FileScoreOutput {
     /// Absolute paths match `FileHealthScore.path`. Absent entries indicate the
     /// file had zero functions.
     pub per_function_crap: rustc_hash::FxHashMap<std::path::PathBuf, Vec<PerFunctionCrap>>,
+    /// Provenance map for synthetic Angular `<template>` findings whose CRAP
+    /// was inherited from the owning `.component.ts` via the inverse
+    /// `templateUrl` edge. Keys are the template `.html` absolute paths,
+    /// values are the owner `.ts` absolute paths (the path used for the
+    /// `inherited from foo.component.ts` human-output suffix). Absent for
+    /// non-template files and for templates with no `.ts` owner.
+    pub template_inherit_provenance: rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
 }
 
 /// Per-path snapshot of analysis-pipeline findings, retained alongside the
@@ -259,6 +266,13 @@ pub(super) struct PerFunctionCrap {
     /// Populated for both Istanbul-matched and estimated CRAP rows so the
     /// action builder does not need to recompute reachability state.
     pub coverage_tier: crate::health_types::CoverageTier,
+    /// Provenance of `coverage_tier` and `crap`. `Istanbul` for direct fnMap
+    /// matches, `Estimated` for graph-based fallbacks against the finding's
+    /// own file, `EstimatedComponentInherited` for the template-inherit path
+    /// that reaches the owning Angular `.component.ts` through the inverse
+    /// `templateUrl` edge. Threaded into `HealthFinding.coverage_source` by
+    /// `merge_crap_findings`.
+    pub coverage_source: crate::health_types::CoverageSource,
 }
 
 /// Istanbul CRAP result: CRAP scores plus match statistics.
@@ -311,22 +325,31 @@ fn compute_crap_scores_istanbul(
         // Coverage tier is the source-of-truth for action selection: with an
         // Istanbul match we bucket the observed pct; without a match we fall
         // back to file reachability so the action signal stays meaningful
-        // even when only some functions matched.
-        let (crap, coverage_pct, tier) = if let Some(cov_pct) = lookup {
+        // even when only some functions matched. A missed lookup is the
+        // estimated model evaluated against this same file, so the source
+        // discriminator becomes `Estimated` rather than `Istanbul`.
+        let (crap, coverage_pct, tier, source) = if let Some(cov_pct) = lookup {
             matched += 1;
             (
                 crap_formula(cc, cov_pct),
                 Some(cov_pct),
                 crate::health_types::CoverageTier::from_pct(cov_pct),
+                crate::health_types::CoverageSource::Istanbul,
             )
         } else if is_test_reachable {
             (
                 cc,
                 None,
                 crate::health_types::CoverageTier::from_pct(INDIRECT_TEST_COVERAGE_ESTIMATE),
+                crate::health_types::CoverageSource::Estimated,
             )
         } else {
-            (cc * cc + cc, None, crate::health_types::CoverageTier::None)
+            (
+                cc * cc + cc,
+                None,
+                crate::health_types::CoverageTier::None,
+                crate::health_types::CoverageSource::Estimated,
+            )
         };
         let crap_rounded = (crap * 10.0).round() / 10.0;
         max = max.max(crap);
@@ -339,6 +362,7 @@ fn compute_crap_scores_istanbul(
             crap: crap_rounded,
             coverage_pct,
             coverage_tier: tier,
+            coverage_source: source,
         });
     }
     IstanbulCrapResult {
@@ -379,6 +403,7 @@ fn compute_crap_scores_estimated(
     complexity: &[fallow_types::extract::FunctionComplexity],
     test_referenced_exports: &rustc_hash::FxHashSet<String>,
     is_test_reachable: bool,
+    coverage_source: crate::health_types::CoverageSource,
 ) -> EstimatedCrapResult {
     if complexity.is_empty() {
         return EstimatedCrapResult {
@@ -416,6 +441,7 @@ fn compute_crap_scores_estimated(
             crap: crap_rounded,
             coverage_pct: None,
             coverage_tier: crate::health_types::CoverageTier::from_pct(estimated_coverage),
+            coverage_source,
         });
     }
     EstimatedCrapResult {
@@ -423,6 +449,156 @@ fn compute_crap_scores_estimated(
         above_threshold: above,
         per_function,
     }
+}
+
+/// Inherited CRAP context for a synthetic `<template>` finding on an Angular
+/// `.html` template. Populated by `build_template_inherit_contexts` for every
+/// `.html` module that has a `<template>` `FunctionComplexity` entry AND is
+/// reached by at least one non-test `.ts` importer via the `templateUrl`
+/// `SideEffect` edge.
+///
+/// The reachability bit is the OR across all non-test `.ts` owners (any
+/// tested owner makes the template tested); the `test_referenced_exports`
+/// set is the union of each owner's directly-test-referenced export names;
+/// the provenance path points at the chosen owner for human output. When
+/// multiple owners exist, prefer the first test-reachable one so the
+/// "inherited from" suffix points at a meaningful owner rather than an
+/// arbitrary first match.
+#[derive(Debug, Clone)]
+pub(super) struct TemplateInheritContext {
+    pub is_test_reachable: bool,
+    pub test_referenced_exports: rustc_hash::FxHashSet<String>,
+    /// The owning `.ts` file path used for human-output provenance
+    /// (`coverage: partial (inherited from foo.component.ts)`). Set to the
+    /// first test-reachable owner when one exists, otherwise the first
+    /// non-test owner. Absolute path; the human formatter strips it.
+    pub provenance_owner: std::path::PathBuf,
+}
+
+/// Build the inverse `templateUrl` redirect map: for every `.html` module
+/// carrying a synthetic `<template>` `FunctionComplexity` entry, walk
+/// `reverse_deps` to find every `.ts` (or `.component.ts`) importer that is
+/// NOT a test entry point, and compute an aggregate `TemplateInheritContext`
+/// that the CRAP scoring loop can use to redirect reachability + test refs
+/// to the owning component file.
+///
+/// Test-file owners are excluded because Angular spec files do not declare
+/// `templateUrl`; if a `.spec.ts` is the only importer of a `.html`, the
+/// template is genuinely orphaned and the existing fallback (estimated
+/// against the `.html`'s own reachability) is the right answer.
+///
+/// The `.ts` / `.tsx` / `.mts` / `.cts` extension gate intentionally lets
+/// `.d.ts` ambient declarations through, but Angular component classes are
+/// not emitted into `.d.ts` files (which model APIs, not runtime behaviour)
+/// and `templateUrl` SideEffect edges flow only from concrete `@Component`
+/// decorators. A `.d.ts` importer of a `.html` would be a structural
+/// anomaly upstream, not a meaningful owner, so the gate stays simple.
+///
+/// Templates with zero non-test `.ts` owners receive no entry, so the
+/// scoring loop falls through to the existing path unchanged.
+fn build_template_inherit_contexts(
+    graph: &fallow_core::graph::ModuleGraph,
+    module_by_id: &rustc_hash::FxHashMap<
+        fallow_core::discover::FileId,
+        &fallow_core::extract::ModuleInfo,
+    >,
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+) -> rustc_hash::FxHashMap<fallow_core::discover::FileId, TemplateInheritContext> {
+    let mut out = rustc_hash::FxHashMap::default();
+    for node in &graph.modules {
+        let Some(path) = file_paths.get(&node.file_id) else {
+            continue;
+        };
+        if !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        {
+            continue;
+        }
+        let Some(module) = module_by_id.get(&node.file_id) else {
+            continue;
+        };
+        if !module
+            .complexity
+            .iter()
+            .any(|f| f.name.as_str() == "<template>")
+        {
+            continue;
+        }
+        let Some(importers) = graph.reverse_deps.get(node.file_id.0 as usize) else {
+            continue;
+        };
+
+        let mut any_reachable = false;
+        let mut combined_refs: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+        let mut provenance: Option<std::path::PathBuf> = None;
+        let mut first_owner: Option<std::path::PathBuf> = None;
+        for &importer_id in importers {
+            let Some(owner_node) = graph.modules.get(importer_id.0 as usize) else {
+                continue;
+            };
+            let Some(owner_path) = file_paths.get(&importer_id) else {
+                continue;
+            };
+            if !owner_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "ts" | "tsx" | "mts" | "cts"
+                    )
+                })
+            {
+                continue;
+            }
+            if graph.test_entry_points.contains(&importer_id) {
+                continue;
+            }
+            // Contract gate: only credit `.ts` importers that actually own an
+            // Angular `@Component({ templateUrl: ... })`. A plain
+            // `import './tpl.html'` from a non-Angular `main.ts` also produces
+            // a SideEffect edge to the `.html`, but it is NOT an Angular
+            // component owner; emitting `coverage_source ==
+            // "estimated_component_inherited"` + `inherited_from: "src/main.ts"`
+            // for that case would silently violate the discriminator's
+            // documented meaning. The visitor sets
+            // `has_angular_component_template_url` in the same branch that
+            // emits the `templateUrl` SideEffect import, so the gate is
+            // precise: only Angular component files pass.
+            let owner_has_component = module_by_id
+                .get(&importer_id)
+                .is_some_and(|m| m.has_angular_component_template_url);
+            if !owner_has_component {
+                continue;
+            }
+            if first_owner.is_none() {
+                first_owner = Some((**owner_path).clone());
+            }
+            let owner_reachable = owner_node.is_test_reachable();
+            if owner_reachable {
+                any_reachable = true;
+                if provenance.is_none() {
+                    provenance = Some((**owner_path).clone());
+                }
+                let refs = build_test_referenced_exports(&owner_node.exports, &graph.modules);
+                combined_refs.extend(refs);
+            }
+        }
+        let Some(provenance_owner) = provenance.or(first_owner) else {
+            continue;
+        };
+        out.insert(
+            node.file_id,
+            TemplateInheritContext {
+                is_test_reachable: any_reachable,
+                test_referenced_exports: combined_refs,
+                provenance_owner,
+            },
+        );
+    }
+    out
 }
 
 /// Build the set of export names that have at least one test-reachable reference.
@@ -1085,6 +1261,15 @@ pub(super) fn compute_file_scores(
     let mut per_function_crap: rustc_hash::FxHashMap<std::path::PathBuf, Vec<PerFunctionCrap>> =
         rustc_hash::FxHashMap::default();
 
+    // Build the inverse `templateUrl` map for Angular `.html` templates so
+    // synthetic `<template>` findings can inherit CRAP reachability from the
+    // owning `.component.ts`. The Istanbul `fnMap` never carries entries
+    // keyed at `.html:N`, so without this redirect a tested template would
+    // be scored against the `.html` node directly (which gives the right
+    // answer by accident when the `templateUrl` edge survives BFS, but
+    // emits no provenance for consumers). See issue #186.
+    let template_inherit = build_template_inherit_contexts(&graph, &module_by_id, file_paths);
+
     for node in &graph.modules {
         let Some(path) = file_paths.get(&node.file_id) else {
             continue;
@@ -1164,9 +1349,27 @@ pub(super) fn compute_file_scores(
             )
         });
         let is_test_reachable = node.is_test_reachable() || is_coverage_suppressed;
-        let (crap_max, crap_above_threshold, per_function) = if let Some(istanbul) =
-            istanbul_coverage
+        let (crap_max, crap_above_threshold, per_function) = if let Some(inherit_ctx) =
+            template_inherit.get(&node.file_id)
         {
+            // Template-inherit path: a `.html` template module redirects to
+            // the owning `.component.ts`'s reachability + test refs so the
+            // synthetic `<template>` finding's CRAP reflects the component
+            // file's tested state. Istanbul never has a key for `.html`, so
+            // skipping the Istanbul branch entirely is a no-op for matching
+            // but yields a stable `coverage_source` discriminator for
+            // consumers (dashboards, MCP agents, future tier 2 source-map
+            // back-mapping).
+            module.map_or((0.0, 0, Vec::new()), |m| {
+                let result = compute_crap_scores_estimated(
+                    &m.complexity,
+                    &inherit_ctx.test_referenced_exports,
+                    inherit_ctx.is_test_reachable,
+                    crate::health_types::CoverageSource::EstimatedComponentInherited,
+                );
+                (result.max_crap, result.above_threshold, result.per_function)
+            })
+        } else if let Some(istanbul) = istanbul_coverage {
             let canonical = dunce::canonicalize(&path_owned).unwrap_or_else(|_| path_owned.clone());
             let result = module.map_or(
                 IstanbulCrapResult {
@@ -1190,8 +1393,12 @@ pub(super) fn compute_file_scores(
         } else {
             module.map_or((0.0, 0, Vec::new()), |m| {
                 let test_refs = build_test_referenced_exports(&node.exports, &graph.modules);
-                let result =
-                    compute_crap_scores_estimated(&m.complexity, &test_refs, is_test_reachable);
+                let result = compute_crap_scores_estimated(
+                    &m.complexity,
+                    &test_refs,
+                    is_test_reachable,
+                    crate::health_types::CoverageSource::Estimated,
+                );
                 (result.max_crap, result.above_threshold, result.per_function)
             })
         };
@@ -1316,6 +1523,14 @@ pub(super) fn compute_file_scores(
         istanbul_matched,
         istanbul_total,
         per_function_crap,
+        template_inherit_provenance: template_inherit
+            .into_iter()
+            .filter_map(|(file_id, ctx)| {
+                file_paths
+                    .get(&file_id)
+                    .map(|p| ((**p).clone(), ctx.provenance_owner))
+            })
+            .collect(),
     })
 }
 
@@ -1566,6 +1781,7 @@ mod tests {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: vec![],
             unused_import_bindings: vec![],
@@ -1600,6 +1816,7 @@ mod tests {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: vec![],
             unused_import_bindings: vec![],
@@ -1642,6 +1859,7 @@ mod tests {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: vec![],
             unused_import_bindings: vec![],
@@ -1924,6 +2142,7 @@ mod tests {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: vec![],
             unused_import_bindings: vec![],
@@ -3330,7 +3549,12 @@ mod tests {
         let funcs = vec![make_fn_complexity(10)];
         let mut refs = rustc_hash::FxHashSet::default();
         refs.insert("test_fn".to_string());
-        let result = compute_crap_scores_estimated(&funcs, &refs, true);
+        let result = compute_crap_scores_estimated(
+            &funcs,
+            &refs,
+            true,
+            crate::health_types::CoverageSource::Estimated,
+        );
         let (max, above) = (result.max_crap, result.above_threshold);
         assert!((max - 10.3).abs() < 0.1);
         assert_eq!(above, 0);
@@ -3342,7 +3566,12 @@ mod tests {
         // CC=10: CRAP = 100 * (0.6)^3 + 10 = 100 * 0.216 + 10 = 31.6
         let funcs = vec![make_fn_complexity(10)];
         let refs = rustc_hash::FxHashSet::default();
-        let result = compute_crap_scores_estimated(&funcs, &refs, true);
+        let result = compute_crap_scores_estimated(
+            &funcs,
+            &refs,
+            true,
+            crate::health_types::CoverageSource::Estimated,
+        );
         let (max, above) = (result.max_crap, result.above_threshold);
         assert!((max - 31.6).abs() < 0.1);
         assert_eq!(above, 1); // above threshold of 30
@@ -3354,7 +3583,12 @@ mod tests {
         // CC=5: CRAP = 25 * 1 + 5 = 30
         let funcs = vec![make_fn_complexity(5)];
         let refs = rustc_hash::FxHashSet::default();
-        let result = compute_crap_scores_estimated(&funcs, &refs, false);
+        let result = compute_crap_scores_estimated(
+            &funcs,
+            &refs,
+            false,
+            crate::health_types::CoverageSource::Estimated,
+        );
         let (max, above) = (result.max_crap, result.above_threshold);
         assert!((max - 30.0).abs() < f64::EPSILON);
         assert_eq!(above, 1);
@@ -3366,7 +3600,12 @@ mod tests {
         let funcs = vec![make_fn_complexity(2)];
         let mut refs = rustc_hash::FxHashSet::default();
         refs.insert("test_fn".to_string());
-        let result = compute_crap_scores_estimated(&funcs, &refs, true);
+        let result = compute_crap_scores_estimated(
+            &funcs,
+            &refs,
+            true,
+            crate::health_types::CoverageSource::Estimated,
+        );
         let (max, above) = (result.max_crap, result.above_threshold);
         assert!(max < 3.0);
         assert_eq!(above, 0);
@@ -3375,7 +3614,12 @@ mod tests {
     #[test]
     fn estimated_crap_empty() {
         let refs = rustc_hash::FxHashSet::default();
-        let result = compute_crap_scores_estimated(&[], &refs, true);
+        let result = compute_crap_scores_estimated(
+            &[],
+            &refs,
+            true,
+            crate::health_types::CoverageSource::Estimated,
+        );
         let (max, above) = (result.max_crap, result.above_threshold);
         assert!((max).abs() < f64::EPSILON);
         assert_eq!(above, 0);
@@ -3883,7 +4127,12 @@ mod tests {
         ];
         let mut refs = rustc_hash::FxHashSet::default();
         refs.insert("test_fn".to_string()); // Only test_fn is directly referenced
-        let result = compute_crap_scores_estimated(&funcs, &refs, true);
+        let result = compute_crap_scores_estimated(
+            &funcs,
+            &refs,
+            true,
+            crate::health_types::CoverageSource::Estimated,
+        );
         let (max, above) = (result.max_crap, result.above_threshold);
         // test_fn: CC=10, 85% coverage -> CRAP ~10.3
         // helper: CC=3, 40% coverage (indirect) -> CRAP = 9*0.216+3 = 4.944

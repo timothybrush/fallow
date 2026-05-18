@@ -374,6 +374,7 @@ pub(crate) fn parse_css_to_module(
         member_accesses: Vec::new(),
         whole_object_uses: Vec::new(),
         has_cjs_exports: false,
+        has_angular_component_template_url: false,
         content_hash,
         suppressions,
         unused_import_bindings: Vec::new(),

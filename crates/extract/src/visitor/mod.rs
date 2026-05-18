@@ -91,6 +91,17 @@ pub(crate) struct ModuleInfoExtractor {
     pub(crate) member_accesses: Vec<MemberAccess>,
     pub(crate) whole_object_uses: Vec<String>,
     pub(crate) has_cjs_exports: bool,
+    /// True when this module emits at least one Angular `@Component({
+    /// templateUrl: ... })` SideEffect import. Used by
+    /// `crates/cli/src/health/scoring.rs::build_template_inherit_contexts` as
+    /// the gate that distinguishes "this `.ts` owns an Angular component
+    /// whose template is at `<html>`" from a plain `import './tpl.html'` in
+    /// a non-Angular module: the contract for `coverage_source ==
+    /// "estimated_component_inherited"` and `inherited_from` is that the
+    /// owner is an Angular component, and only the visitor knows whether
+    /// the `templateUrl` came from `@Component`. Set in `visit_class` when
+    /// `extract_angular_component_metadata` yields a `template_url`.
+    pub(crate) has_angular_component_template_url: bool,
     /// Spans of `require()` calls already handled via destructured require detection.
     handled_require_spans: FxHashSet<Span>,
     /// Spans of `import()` expressions already handled via variable declarator detection.
@@ -603,6 +614,7 @@ impl ModuleInfoExtractor {
             member_accesses: self.member_accesses,
             whole_object_uses: self.whole_object_uses,
             has_cjs_exports: self.has_cjs_exports,
+            has_angular_component_template_url: self.has_angular_component_template_url,
             content_hash,
             suppressions,
             unused_import_bindings: Vec::new(),
@@ -655,6 +667,7 @@ impl ModuleInfoExtractor {
         info.member_accesses.extend(self.member_accesses);
         info.whole_object_uses.extend(self.whole_object_uses);
         info.has_cjs_exports |= self.has_cjs_exports;
+        info.has_angular_component_template_url |= self.has_angular_component_template_url;
         info.class_heritage.extend(self.class_heritage);
         info.local_type_declarations
             .extend(self.local_type_declarations);

@@ -1007,6 +1007,7 @@ mod tests {
             member_accesses: Vec::new(),
             whole_object_uses: Vec::new(),
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: Vec::new(),
             unused_import_bindings: Vec::new(),

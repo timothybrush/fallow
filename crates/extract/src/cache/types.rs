@@ -7,7 +7,7 @@ use bitcode::{Decode, Encode};
 use crate::MemberKind;
 
 /// Cache version, bump when the cache format or cached extraction semantics change.
-pub(super) const CACHE_VERSION: u32 = 82;
+pub(super) const CACHE_VERSION: u32 = 83;
 
 /// Duplication token cache version — bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.
@@ -51,6 +51,10 @@ pub struct CachedModule {
     pub dynamic_import_patterns: Vec<CachedDynamicImportPattern>,
     /// Whether this module uses CJS exports.
     pub has_cjs_exports: bool,
+    /// Whether this module declares at least one Angular `@Component({
+    /// templateUrl: ... })` decorator. Mirrors `ModuleInfo.has_angular_component_template_url`
+    /// so the CRAP-inherit walker's gate survives a warm-cache load.
+    pub has_angular_component_template_url: bool,
     /// Local names of import bindings that are never referenced in this file.
     pub unused_import_bindings: Vec<String>,
     /// Local import bindings referenced from type positions.

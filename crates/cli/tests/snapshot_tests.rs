@@ -2179,6 +2179,8 @@ fn sample_health_report(root: &Path) -> HealthReport {
             crap: None,
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }],
         summary: HealthSummary {
             files_analyzed: 50,

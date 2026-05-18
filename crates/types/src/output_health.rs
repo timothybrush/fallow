@@ -83,6 +83,16 @@ pub struct HealthFindingAction {
     /// action variants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<String>,
+    /// Project-relative path the action should target when the finding's
+    /// remediation lives in a different file from where the finding is
+    /// anchored. Currently populated on the `increase-coverage` action for
+    /// synthetic Angular `<template>` findings whose CRAP is inherited from
+    /// the owning `.component.ts`: the action points at the component file
+    /// (where the user actually adds tests) rather than the `.html` template
+    /// (where the finding is anchored but which is not directly testable).
+    /// Absent when the action's target is the finding's own file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_path: Option<String>,
 }
 
 /// Discriminant for [`HealthFindingAction::kind`]. Mirrors the action types

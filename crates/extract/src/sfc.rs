@@ -284,6 +284,7 @@ fn empty_sfc_module(file_id: FileId, source: &str, content_hash: u64) -> ModuleI
         member_accesses: Vec::new(),
         whole_object_uses: Vec::new(),
         has_cjs_exports: false,
+        has_angular_component_template_url: false,
         content_hash,
         suppressions,
         unused_import_bindings: Vec::new(),

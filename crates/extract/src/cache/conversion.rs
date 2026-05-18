@@ -174,6 +174,7 @@ pub fn cached_to_module_opts(
         member_accesses: cached.member_accesses.clone(),
         whole_object_uses: cached.whole_object_uses.clone(),
         has_cjs_exports: cached.has_cjs_exports,
+        has_angular_component_template_url: cached.has_angular_component_template_url,
         content_hash: cached.content_hash,
         suppressions,
         unused_import_bindings: cached.unused_import_bindings.clone(),
@@ -338,6 +339,7 @@ pub fn module_to_cached(
             })
             .collect(),
         has_cjs_exports: module.has_cjs_exports,
+        has_angular_component_template_url: module.has_angular_component_template_url,
         unused_import_bindings: module.unused_import_bindings.clone(),
         type_referenced_import_bindings: module.type_referenced_import_bindings.clone(),
         value_referenced_import_bindings: module.value_referenced_import_bindings.clone(),

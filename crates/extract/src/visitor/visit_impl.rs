@@ -2047,6 +2047,11 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                     span: oxc_span::Span::default(),
                     source_span: oxc_span::Span::default(),
                 });
+                // Flag the module as an Angular component-template owner so
+                // the CRAP-inherit walker accepts it as an inheritance source
+                // for the `.html` target. Plain `import './x.html'` does not
+                // set this flag and is correctly rejected.
+                self.has_angular_component_template_url = true;
             }
             for style_url in &meta.style_urls {
                 self.imports.push(ImportInfo {

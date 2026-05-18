@@ -1589,6 +1589,7 @@ mod tests {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: vec![],
             unused_import_bindings: vec![],

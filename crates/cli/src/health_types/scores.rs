@@ -199,6 +199,41 @@ impl CoverageTier {
     }
 }
 
+/// Provenance of a CRAP finding's coverage signal.
+///
+/// Discriminates whether the `coverage_tier` and `crap` score were derived
+/// from real Istanbul data, the graph-based estimated model evaluated against
+/// the finding's own file, or the graph-based estimated model evaluated
+/// against a different file (today: an Angular component `.ts` reached via
+/// the inverse `templateUrl` edge from a synthetic `<template>` finding on
+/// the component's `.html` template).
+///
+/// Consumers reading this field:
+/// - AI agents picking remediation actions ("the score is inherited, the fix
+///   may need to land on the component file, not the template").
+/// - Dashboards plotting CRAP trends ("the discriminator changed shape;
+///   absorb the rollout rather than flagging a step change").
+/// - Future tier 2 (AOT source-map back-mapping) will introduce
+///   `MeasuredAotSourceMap` so consumers can distinguish measured-AOT from
+///   inherited-JIT without parsing the score itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageSource {
+    /// Direct match against Istanbul `fnMap` data for this function.
+    Istanbul,
+    /// Graph-based estimated model evaluated against the finding's own file
+    /// (current default for any CRAP finding that did not match Istanbul).
+    Estimated,
+    /// Graph-based estimated model evaluated against the owning component's
+    /// `.ts` file (reached via the inverse `templateUrl` edge from a
+    /// synthetic `<template>` finding on an Angular `.html` template). Emitted
+    /// because JIT-compiled Angular tests do not produce Istanbul entries for
+    /// `.html` files; tier 2 will replace this with measured coverage for
+    /// AOT-compiled tests.
+    EstimatedComponentInherited,
+}
+
 /// A single function that exceeds a complexity threshold.
 #[derive(Debug, Clone, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -244,6 +279,24 @@ pub struct HealthFinding {
     /// band).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coverage_tier: Option<CoverageTier>,
+    /// Provenance of the coverage signal. Present whenever CRAP triggered the
+    /// finding. `istanbul` = direct fnMap match; `estimated` = graph-based
+    /// estimate against the finding's own file; `estimated_component_inherited`
+    /// = graph-based estimate inherited from an Angular component `.ts`
+    /// reached via the inverse `templateUrl` edge (synthetic `<template>`
+    /// findings on `.html` files only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_source: Option<CoverageSource>,
+    /// Owning component file that contributed reachability when
+    /// `coverage_source == "estimated_component_inherited"`. Always paired
+    /// with that variant of `coverage_source` and absent otherwise. The
+    /// value is the `.ts` file fallow walked to via the inverse `templateUrl`
+    /// edge (e.g. `permissions.component.ts`); the JSON serializer strips it
+    /// to project-relative form just like other path fields. Lets human and
+    /// AI consumers explain "the template scored partial because the
+    /// component it belongs to is tested" without re-deriving the link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherited_from: Option<std::path::PathBuf>,
 }
 
 /// Which complexity threshold was exceeded.

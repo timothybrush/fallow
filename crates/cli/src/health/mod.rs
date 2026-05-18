@@ -497,6 +497,7 @@ fn execute_health_inner(
             changed_files.as_ref(),
             ws_roots.as_deref(),
             &score_out.per_function_crap,
+            &score_out.template_inherit_provenance,
             max_crap,
             max_cyclomatic,
             max_cognitive,
@@ -1816,6 +1817,8 @@ fn collect_findings(
                     crap: None,
                     coverage_pct: None,
                     coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
                 });
             }
         }
@@ -1844,6 +1847,7 @@ fn merge_crap_findings(
     changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
     ws_roots: Option<&[std::path::PathBuf]>,
     per_function_crap: &rustc_hash::FxHashMap<std::path::PathBuf, Vec<scoring::PerFunctionCrap>>,
+    template_inherit_provenance: &rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
     max_crap: f64,
     max_cyclomatic: u16,
     max_cognitive: u16,
@@ -1924,6 +1928,12 @@ fn merge_crap_findings(
                 finding.crap = Some(pf.crap);
                 finding.coverage_pct = pf.coverage_pct;
                 finding.coverage_tier = Some(pf.coverage_tier);
+                finding.coverage_source = Some(pf.coverage_source);
+                finding.inherited_from = inherited_from_for(
+                    pf.coverage_source,
+                    path.as_path(),
+                    template_inherit_provenance,
+                );
                 let exceeds_cyclomatic = finding.exceeded.includes_cyclomatic();
                 let exceeds_cognitive = finding.exceeded.includes_cognitive();
                 finding.exceeded =
@@ -1977,11 +1987,40 @@ fn merge_crap_findings(
                     crap: Some(pf.crap),
                     coverage_pct: pf.coverage_pct,
                     coverage_tier: Some(pf.coverage_tier),
+                    coverage_source: Some(pf.coverage_source),
+                    inherited_from: inherited_from_for(
+                        pf.coverage_source,
+                        path.as_path(),
+                        template_inherit_provenance,
+                    ),
                 });
             }
         }
     }
     findings.extend(new_findings);
+}
+
+/// Resolve the `inherited_from` provenance path for a CRAP finding.
+///
+/// Returns `Some(owner_path)` only for the
+/// `CoverageSource::EstimatedComponentInherited` variant, so the field stays
+/// absent on every Istanbul / regular-estimated row. Pairs with the
+/// `coverage_source` discriminator: any finding carrying
+/// `estimated_component_inherited` also carries `inherited_from`, and vice
+/// versa.
+fn inherited_from_for(
+    source: crate::health_types::CoverageSource,
+    template_path: &std::path::Path,
+    template_inherit_provenance: &rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    if matches!(
+        source,
+        crate::health_types::CoverageSource::EstimatedComponentInherited
+    ) {
+        template_inherit_provenance.get(template_path).cloned()
+    } else {
+        None
+    }
 }
 
 /// Save health baseline to disk.
@@ -2245,6 +2284,7 @@ mod tests {
             member_accesses: vec![],
             whole_object_uses: vec![],
             has_cjs_exports: false,
+            has_angular_component_template_url: false,
             content_hash: 0,
             suppressions: vec![],
             unused_import_bindings: vec![],
@@ -2333,6 +2373,8 @@ mod tests {
             crap: exceeded.includes_crap().then_some(30.0),
             coverage_pct: None,
             coverage_tier: None,
+            coverage_source: None,
+            inherited_from: None,
         }
     }
 
@@ -2696,6 +2738,7 @@ mod tests {
                     crap: 56.0,
                     coverage_pct: None,
                     coverage_tier: crate::health_types::CoverageTier::None,
+                    coverage_source: crate::health_types::CoverageSource::Estimated,
                 },
                 scoring::PerFunctionCrap {
                     line: outer.line,
@@ -2703,6 +2746,7 @@ mod tests {
                     crap: 2.0,
                     coverage_pct: None,
                     coverage_tier: crate::health_types::CoverageTier::None,
+                    coverage_source: crate::health_types::CoverageSource::Estimated,
                 },
             ],
         );
@@ -2716,6 +2760,7 @@ mod tests {
             None,
             None,
             &per_function_crap,
+            &FxHashMap::default(),
             30.0,
             20,
             15,
@@ -2796,6 +2841,7 @@ mod tests {
                     crap: 2.0,
                     coverage_pct: None,
                     coverage_tier: crate::health_types::CoverageTier::None,
+                    coverage_source: crate::health_types::CoverageSource::Estimated,
                 },
                 scoring::PerFunctionCrap {
                     line: outer.line,
@@ -2803,6 +2849,7 @@ mod tests {
                     crap: 72.0,
                     coverage_pct: None,
                     coverage_tier: crate::health_types::CoverageTier::None,
+                    coverage_source: crate::health_types::CoverageSource::Estimated,
                 },
             ],
         );
@@ -2816,6 +2863,7 @@ mod tests {
             None,
             None,
             &per_function_crap,
+            &FxHashMap::default(),
             30.0,
             20,
             15,

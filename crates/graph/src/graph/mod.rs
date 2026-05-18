@@ -854,6 +854,7 @@ mod tests {
             file_id: FileId(0),
             path: PathBuf::from("/project/entry.ts"),
             has_cjs_exports: true,
+            has_angular_component_template_url: false,
             ..Default::default()
         }];
 
