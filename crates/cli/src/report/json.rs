@@ -9,6 +9,7 @@ use fallow_types::envelope::{CheckSummary, ElapsedMs, EntryPoints, SchemaVersion
 
 use super::{emit_json, normalize_uri};
 use crate::explain;
+use crate::output_dupes::DupesReportPayload;
 use crate::output_envelope::{
     CheckGroupedEntry, CheckGroupedOutput, CheckOutput, DupesOutput, GroupByMode, HealthOutput,
 };
@@ -458,370 +459,33 @@ pub fn build_baseline_deltas_json<'a>(
     })
 }
 
-/// Inject `actions` arrays into `targets[]` and `hotspots[]` in a health
-/// JSON output.
-///
-/// Complexity findings now carry their `actions` natively via the typed
-/// [`HealthFinding`](crate::health_types::HealthFinding) wrapper, so the
-/// findings post-pass that lived here previously was retired in
-/// PR B2 of issue #384. The `actions_meta` breadcrumb is set on the typed
-/// [`HealthReport`](crate::health_types::HealthReport) at construction
-/// time and flows through serde natively.
-///
-/// Refactoring targets and hotspots still use the JSON post-pass until
-/// their typed wrapper migrations land in PR B3.
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "pub(crate) needed, used by audit.rs via re-export, but not part of public API"
-)]
-pub(crate) fn inject_health_post_pass_actions(output: &mut serde_json::Value) {
-    let Some(map) = output.as_object_mut() else {
-        return;
-    };
+// Health JSON post-pass action injection has been fully retired.
+//
+// - Complexity findings carry their `actions` natively via the typed
+//   [`HealthFinding`](crate::health_types::HealthFinding) wrapper (PR B2
+//   of issue #384).
+// - Hotspots and refactoring targets carry their typed `actions` arrays
+//   via the [`HotspotFinding`](crate::health_types::HotspotFinding) and
+//   [`RefactoringTargetFinding`](crate::health_types::RefactoringTargetFinding)
+//   wrappers (PR B3 of issue #384).
+// - Coverage gaps flow through
+//   [`UntestedFileFinding`](crate::health_types::UntestedFileFinding) /
+//   [`UntestedExportFinding`](crate::health_types::UntestedExportFinding).
+// - Runtime coverage actions ship from the sidecar via serde directly.
+//
+// The `actions_meta` breadcrumb is set on the typed
+// [`HealthReport`](crate::health_types::HealthReport) at construction
+// time and flows through serde natively, so no post-pass walker is
+// needed for any health output anymore.
 
-    // Refactoring targets: apply the recommended refactoring
-    if let Some(targets) = map.get_mut("targets").and_then(|v| v.as_array_mut()) {
-        for item in targets {
-            let actions = build_refactoring_target_actions(item);
-            if let serde_json::Value::Object(obj) = item {
-                obj.insert("actions".to_string(), actions);
-            }
-        }
-    }
-
-    // Hotspots: files that are both complex and frequently changing
-    if let Some(hotspots) = map.get_mut("hotspots").and_then(|v| v.as_array_mut()) {
-        for item in hotspots {
-            let actions = build_hotspot_actions(item);
-            if let serde_json::Value::Object(obj) = item {
-                obj.insert("actions".to_string(), actions);
-            }
-        }
-    }
-
-    // Coverage gaps (untested files / exports) are now serialized through
-    // typed `UntestedFileFinding` / `UntestedExportFinding` envelope wrappers
-    // built by `compute_coverage_gaps` in `crates/cli/src/health/scoring.rs`.
-    // No post-pass injection needed; the typed `actions` field flows through
-    // serde natively.
-
-    // Runtime coverage actions are emitted by the sidecar and serialized
-    // directly via serde (see `RuntimeCoverageAction` in
-    // `crates/cli/src/health_types/runtime_coverage.rs`), so no post-hoc
-    // injection is needed here.
-}
-
-// Complexity-finding action construction lives in
-// `crates/cli/src/health_types/finding.rs::build_health_finding_actions`
-// as of PR B2 of issue #384. The typed `HealthFinding` wrapper carries its
-// `actions` list natively, so no JSON post-pass walker is needed for
-// `findings[]` anymore.
-
-/// Build the `actions` array for a single hotspot entry.
-fn build_hotspot_actions(item: &serde_json::Value) -> serde_json::Value {
-    let path = item
-        .get("path")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("file");
-
-    let mut actions = vec![
-        serde_json::json!({
-            "type": "refactor-file",
-            "auto_fixable": false,
-            "description": format!("Refactor `{path}`, high complexity combined with frequent changes makes this a maintenance risk"),
-            "note": "Prioritize extracting complex functions, adding tests, or splitting the module",
-        }),
-        serde_json::json!({
-            "type": "add-tests",
-            "auto_fixable": false,
-            "description": format!("Add test coverage for `{path}` to reduce change risk"),
-            "note": "Frequently changed complex files benefit most from comprehensive test coverage",
-        }),
-    ];
-
-    if let Some(ownership) = item.get("ownership") {
-        // Bus factor of 1 is the canonical "single point of failure" signal.
-        if ownership
-            .get("bus_factor")
-            .and_then(serde_json::Value::as_u64)
-            == Some(1)
-        {
-            let top = ownership.get("top_contributor");
-            let owner = top
-                .and_then(|t| t.get("identifier"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("the sole contributor");
-            // Soften the note for files with very few commits — calling a
-            // 3-commit file a "knowledge loss risk" reads as catastrophizing
-            // for solo maintainers and small teams. Keep the action so
-            // agents still see the signal, but soften the framing.
-            let commits = top
-                .and_then(|t| t.get("commits"))
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            // File-specific note: name the candidate reviewers from the
-            // `suggested_reviewers` array when any exist, fall back to
-            // softened framing for low-commit files, and otherwise omit
-            // the note entirely (the description already carries the
-            // actionable ask; adding generic boilerplate wastes tokens).
-            let suggested: Vec<String> = ownership
-                .get("suggested_reviewers")
-                .and_then(serde_json::Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|r| {
-                            r.get("identifier")
-                                .and_then(serde_json::Value::as_str)
-                                .map(String::from)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mut low_bus_action = serde_json::json!({
-                "type": "low-bus-factor",
-                "auto_fixable": false,
-                "description": format!(
-                    "{owner} is the sole recent contributor to `{path}`; adding a second reviewer reduces knowledge-loss risk"
-                ),
-            });
-            if !suggested.is_empty() {
-                let list = suggested
-                    .iter()
-                    .map(|s| format!("@{s}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                low_bus_action["note"] =
-                    serde_json::Value::String(format!("Candidate reviewers: {list}"));
-            } else if commits < 5 {
-                low_bus_action["note"] = serde_json::Value::String(
-                    "Single recent contributor on a low-commit file. Consider a pair review for major changes."
-                        .to_string(),
-                );
-            }
-            // else: omit `note` entirely — description already carries the ask.
-            actions.push(low_bus_action);
-        }
-
-        // Unowned-hotspot: file matches no CODEOWNERS rule. Skip when null
-        // (no CODEOWNERS file discovered).
-        if ownership
-            .get("unowned")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        {
-            actions.push(serde_json::json!({
-                "type": "unowned-hotspot",
-                "auto_fixable": false,
-                "description": format!("Add a CODEOWNERS entry for `{path}`"),
-                "note": "Frequently-changed files without declared owners create review bottlenecks",
-                "suggested_pattern": suggest_codeowners_pattern(path),
-                "heuristic": "directory-deepest",
-            }));
-        }
-
-        // Drift: original author no longer maintains; add a notice action so
-        // agents can route the next change to the new top contributor.
-        if ownership.get("drift").and_then(serde_json::Value::as_bool) == Some(true) {
-            let reason = ownership
-                .get("drift_reason")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("ownership has shifted from the original author");
-            actions.push(serde_json::json!({
-                "type": "ownership-drift",
-                "auto_fixable": false,
-                "description": format!("Update CODEOWNERS for `{path}`: {reason}"),
-                "note": "Drift suggests the declared or original owner is no longer the right reviewer",
-            }));
-        }
-    }
-
-    serde_json::Value::Array(actions)
-}
-
-/// Suggest a CODEOWNERS pattern for an unowned hotspot.
-///
-/// Picks the deepest directory containing the file
-/// (e.g. `src/api/users/handlers.ts` -> `/src/api/users/`) so agents can
-/// paste a tightly-scoped default. Earlier versions used the first two
-/// directory levels but that catches too many siblings in monorepos
-/// (`/src/api/` could span 200 files across 8 sub-domains). The deepest
-/// directory keeps the suggestion reviewable while still being a directory
-/// pattern rather than a per-file rule.
-///
-/// The action emits this alongside `"heuristic": "directory-deepest"` so
-/// consumers can branch on the strategy if it evolves.
-fn suggest_codeowners_pattern(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    let trimmed = normalized.trim_start_matches('/');
-    let mut components: Vec<&str> = trimmed.split('/').collect();
-    components.pop(); // drop the file itself
-    if components.is_empty() {
-        return format!("/{trimmed}");
-    }
-    format!("/{}/", components.join("/"))
-}
-
-/// Build the `actions` array for a single refactoring target.
-fn build_refactoring_target_actions(item: &serde_json::Value) -> serde_json::Value {
-    let recommendation = item
-        .get("recommendation")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("Apply the recommended refactoring");
-
-    let category = item
-        .get("category")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("refactoring");
-
-    let mut actions = vec![serde_json::json!({
-        "type": "apply-refactoring",
-        "auto_fixable": false,
-        "description": recommendation,
-        "category": category,
-    })];
-
-    // Targets with evidence linking to specific functions get a suppress action
-    if item.get("evidence").is_some() {
-        actions.push(serde_json::json!({
-            "type": "suppress-line",
-            "auto_fixable": false,
-            "description": "Suppress the underlying complexity finding",
-            "comment": "// fallow-ignore-next-line complexity",
-        }));
-    }
-
-    serde_json::Value::Array(actions)
-}
-
-// ── Duplication action injection ────────────────────────────────
-
-/// Inject `actions` arrays into clone families/groups in a duplication JSON output.
-///
-/// Walks `clone_families` and `clone_groups` arrays, appending
-/// machine-actionable fix and config hints to each item.
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "pub(crate) needed — used by audit.rs via re-export, but not part of public API"
-)]
-pub(crate) fn inject_dupes_actions(output: &mut serde_json::Value) {
-    let Some(map) = output.as_object_mut() else {
-        return;
-    };
-
-    // Clone families: extract shared module/function. Each family also
-    // carries a nested `groups[]` array of `CloneGroup` items that must
-    // get their own `actions` field; the committed schema marks `actions`
-    // as required on every `CloneGroup`, but without this nested walk the
-    // inner groups silently shipped without it and JSON Schema strict
-    // consumers saw a `required 'actions' is a required property`
-    // violation on every nested group (issue #393).
-    if let Some(families) = map.get_mut("clone_families").and_then(|v| v.as_array_mut()) {
-        for item in families {
-            let actions = build_clone_family_actions(item);
-            if let serde_json::Value::Object(obj) = item {
-                if let Some(serde_json::Value::Array(groups)) = obj.get_mut("groups") {
-                    for inner in groups {
-                        let inner_actions = build_clone_group_actions(inner);
-                        if let serde_json::Value::Object(inner_obj) = inner {
-                            inner_obj.insert("actions".to_string(), inner_actions);
-                        }
-                    }
-                }
-                obj.insert("actions".to_string(), actions);
-            }
-        }
-    }
-
-    // Clone groups: extract shared code
-    if let Some(groups) = map.get_mut("clone_groups").and_then(|v| v.as_array_mut()) {
-        for item in groups {
-            let actions = build_clone_group_actions(item);
-            if let serde_json::Value::Object(obj) = item {
-                obj.insert("actions".to_string(), actions);
-            }
-        }
-    }
-}
-
-/// Build the `actions` array for a single clone family.
-fn build_clone_family_actions(item: &serde_json::Value) -> serde_json::Value {
-    let group_count = item
-        .get("groups")
-        .and_then(|v| v.as_array())
-        .map_or(0, Vec::len);
-
-    let total_lines = item
-        .get("total_duplicated_lines")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-
-    let mut actions = vec![serde_json::json!({
-        "type": "extract-shared",
-        "auto_fixable": false,
-        "description": format!(
-            "Extract {group_count} duplicated code block{} ({total_lines} lines) into a shared module",
-            if group_count == 1 { "" } else { "s" }
-        ),
-        "note": "These clone groups share the same files, indicating a structural relationship; refactor together",
-    })];
-
-    // Include any refactoring suggestions from the family
-    if let Some(suggestions) = item.get("suggestions").and_then(|v| v.as_array()) {
-        for suggestion in suggestions {
-            if let Some(desc) = suggestion
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-            {
-                actions.push(serde_json::json!({
-                    "type": "apply-suggestion",
-                    "auto_fixable": false,
-                    "description": desc,
-                }));
-            }
-        }
-    }
-
-    actions.push(serde_json::json!({
-        "type": "suppress-line",
-        "auto_fixable": false,
-        "description": "Suppress with an inline comment above the duplicated code",
-        "comment": "// fallow-ignore-next-line code-duplication",
-    }));
-
-    serde_json::Value::Array(actions)
-}
-
-/// Build the `actions` array for a single clone group.
-fn build_clone_group_actions(item: &serde_json::Value) -> serde_json::Value {
-    let instance_count = item
-        .get("instances")
-        .and_then(|v| v.as_array())
-        .map_or(0, Vec::len);
-
-    let line_count = item
-        .get("line_count")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-
-    let actions = vec![
-        serde_json::json!({
-            "type": "extract-shared",
-            "auto_fixable": false,
-            "description": format!(
-                "Extract duplicated code ({line_count} lines, {instance_count} instance{}) into a shared function",
-                if instance_count == 1 { "" } else { "s" }
-            ),
-        }),
-        serde_json::json!({
-            "type": "suppress-line",
-            "auto_fixable": false,
-            "description": "Suppress with an inline comment above the duplicated code",
-            "comment": "// fallow-ignore-next-line code-duplication",
-        }),
-    ];
-
-    serde_json::Value::Array(actions)
-}
+// Duplication action injection retired in #409: the wire shape now flows
+// through typed `CloneGroupFinding` / `CloneFamilyFinding` /
+// `AttributedCloneGroupFinding` wrappers in `crate::output_dupes`, each
+// carrying its `actions[]` array natively. The legacy
+// `inject_dupes_actions` `serde_json::Value` post-pass (plus
+// `build_clone_family_actions` and `build_clone_group_actions`) used to
+// graft the same fields onto the serialized JSON after the bare findings
+// went through; both are no longer needed.
 
 /// Insert a `_meta` key into a JSON object value.
 fn insert_meta(output: &mut serde_json::Value, meta: serde_json::Value) {
@@ -855,7 +519,6 @@ pub fn build_health_json(
     let mut output = serde_json::to_value(&envelope)?;
     let root_prefix = format!("{}/", root.display());
     strip_root_prefix(&mut output, &root_prefix);
-    inject_health_post_pass_actions(&mut output);
     if explain {
         insert_meta(&mut output, explain::health_meta());
     }
@@ -925,7 +588,6 @@ pub fn build_grouped_health_json(
     };
     let mut output = serde_json::to_value(&envelope)?;
     strip_root_prefix(&mut output, &root_prefix);
-    inject_health_post_pass_actions(&mut output);
 
     let group_values: Vec<serde_json::Value> = grouping
         .groups
@@ -933,7 +595,6 @@ pub fn build_grouped_health_json(
         .map(|g| {
             let mut value = serde_json::to_value(g)?;
             strip_root_prefix(&mut value, &root_prefix);
-            inject_health_post_pass_actions(&mut value);
             Ok(value)
         })
         .collect::<Result<_, serde_json::Error>>()?;
@@ -981,7 +642,7 @@ pub fn build_duplication_json(
         schema_version: SchemaVersion(SCHEMA_VERSION),
         version: ToolVersion(env!("CARGO_PKG_VERSION").to_string()),
         elapsed_ms: ElapsedMs(elapsed.as_millis() as u64),
-        report: report.clone(),
+        report: DupesReportPayload::from_report(report),
         grouped_by: None,
         total_issues: None,
         groups: None,
@@ -990,7 +651,6 @@ pub fn build_duplication_json(
     let mut output = serde_json::to_value(&envelope)?;
     let root_prefix = format!("{}/", root.display());
     strip_root_prefix(&mut output, &root_prefix);
-    inject_dupes_actions(&mut output);
 
     if explain {
         insert_meta(&mut output, explain::dupes_meta());
@@ -1050,18 +710,18 @@ pub fn build_grouped_duplication_json(
         schema_version: SchemaVersion(SCHEMA_VERSION),
         version: ToolVersion(env!("CARGO_PKG_VERSION").to_string()),
         elapsed_ms: ElapsedMs(elapsed.as_millis() as u64),
-        report: report.clone(),
+        report: DupesReportPayload::from_report(report),
         grouped_by: Some(group_by_mode_from_label(grouping.mode)),
         total_issues: Some(report.clone_groups.len()),
         // Per-group buckets are serialized separately below so each carries
-        // its own path-stripping + actions injection; splice them in via the
-        // `Value` post-pass.
+        // its own path-stripping; splice them in via the `Value` post-pass.
+        // Wrapper-level `actions[]` is already typed on each bucket's
+        // `clone_groups` / `clone_families`.
         groups: None,
         meta: None,
     };
     let mut output = serde_json::to_value(&envelope)?;
     strip_root_prefix(&mut output, &root_prefix);
-    inject_dupes_actions(&mut output);
 
     let group_values: Vec<serde_json::Value> = grouping
         .groups
@@ -1069,7 +729,6 @@ pub fn build_grouped_duplication_json(
         .map(|g| {
             let mut value = serde_json::to_value(g)?;
             strip_root_prefix(&mut value, &root_prefix);
-            inject_dupes_actions(&mut value);
             Ok(value)
         })
         .collect::<Result<_, serde_json::Error>>()?;
@@ -1266,7 +925,6 @@ mod tests {
         };
         let mut output = serde_json::to_value(&envelope).expect("should serialize health envelope");
         strip_root_prefix(&mut output, "/project/");
-        inject_health_post_pass_actions(&mut output);
 
         assert_eq!(
             output["runtime_coverage"]["verdict"],
@@ -2760,233 +2418,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn refactoring_target_has_actions() {
-        let mut output = serde_json::json!({
-            "targets": [{
-                "path": "src/big-module.ts",
-                "priority": 85.0,
-                "efficiency": 42.5,
-                "recommendation": "Split module: 12 exports, 4 unused",
-                "category": "split_high_impact",
-                "effort": "medium",
-                "confidence": "high",
-                "evidence": { "unused_exports": 4 }
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["targets"][0]["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0]["type"], "apply-refactoring");
-        assert_eq!(
-            actions[0]["description"],
-            "Split module: 12 exports, 4 unused"
-        );
-        assert_eq!(actions[0]["category"], "split_high_impact");
-        // Target with evidence gets suppress action
-        assert_eq!(actions[1]["type"], "suppress-line");
-    }
-
-    #[test]
-    fn refactoring_target_without_evidence_has_no_suppress() {
-        let mut output = serde_json::json!({
-            "targets": [{
-                "path": "src/simple.ts",
-                "priority": 30.0,
-                "efficiency": 15.0,
-                "recommendation": "Consider extracting helper functions",
-                "category": "extract_complex_functions",
-                "effort": "small",
-                "confidence": "medium"
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["targets"][0]["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0]["type"], "apply-refactoring");
-    }
-
-    #[test]
-    fn health_empty_findings_no_actions() {
-        let mut output = serde_json::json!({
-            "findings": [],
-            "targets": []
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        assert!(output["findings"].as_array().unwrap().is_empty());
-        assert!(output["targets"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn hotspot_has_actions() {
-        let mut output = serde_json::json!({
-            "hotspots": [{
-                "path": "src/utils.ts",
-                "complexity_score": 45.0,
-                "churn_score": 12,
-                "hotspot_score": 540.0
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["hotspots"][0]["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0]["type"], "refactor-file");
-        assert!(
-            actions[0]["description"]
-                .as_str()
-                .unwrap()
-                .contains("src/utils.ts")
-        );
-        assert_eq!(actions[1]["type"], "add-tests");
-    }
-
-    #[test]
-    fn hotspot_low_bus_factor_emits_action() {
-        let mut output = serde_json::json!({
-            "hotspots": [{
-                "path": "src/api.ts",
-                "ownership": {
-                    "bus_factor": 1,
-                    "contributor_count": 1,
-                    "top_contributor": {"identifier": "alice@x", "share": 1.0, "stale_days": 5, "commits": 30},
-                    "unowned": null,
-                    "drift": false,
-                }
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["hotspots"][0]["actions"].as_array().unwrap();
-        assert!(
-            actions
-                .iter()
-                .filter_map(|a| a["type"].as_str())
-                .any(|t| t == "low-bus-factor"),
-            "low-bus-factor action should be present",
-        );
-        let bus = actions
-            .iter()
-            .find(|a| a["type"] == "low-bus-factor")
-            .unwrap();
-        assert!(bus["description"].as_str().unwrap().contains("alice@x"));
-    }
-
-    #[test]
-    fn hotspot_unowned_emits_action_with_pattern() {
-        let mut output = serde_json::json!({
-            "hotspots": [{
-                "path": "src/api/users.ts",
-                "ownership": {
-                    "bus_factor": 2,
-                    "contributor_count": 4,
-                    "top_contributor": {"identifier": "alice@x", "share": 0.5, "stale_days": 5, "commits": 10},
-                    "unowned": true,
-                    "drift": false,
-                }
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["hotspots"][0]["actions"].as_array().unwrap();
-        let unowned = actions
-            .iter()
-            .find(|a| a["type"] == "unowned-hotspot")
-            .expect("unowned-hotspot action should be present");
-        // Deepest directory containing the file -> /src/api/
-        // (file `users.ts` is at depth 2, so the deepest dir is `/src/api/`).
-        assert_eq!(unowned["suggested_pattern"], "/src/api/");
-        assert_eq!(unowned["heuristic"], "directory-deepest");
-    }
-
-    #[test]
-    fn hotspot_unowned_skipped_when_codeowners_missing() {
-        let mut output = serde_json::json!({
-            "hotspots": [{
-                "path": "src/api.ts",
-                "ownership": {
-                    "bus_factor": 2,
-                    "contributor_count": 4,
-                    "top_contributor": {"identifier": "alice@x", "share": 0.5, "stale_days": 5, "commits": 10},
-                    "unowned": null,
-                    "drift": false,
-                }
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["hotspots"][0]["actions"].as_array().unwrap();
-        assert!(
-            !actions.iter().any(|a| a["type"] == "unowned-hotspot"),
-            "unowned action must not fire when CODEOWNERS file is absent"
-        );
-    }
-
-    #[test]
-    fn hotspot_drift_emits_action() {
-        let mut output = serde_json::json!({
-            "hotspots": [{
-                "path": "src/old.ts",
-                "ownership": {
-                    "bus_factor": 1,
-                    "contributor_count": 2,
-                    "top_contributor": {"identifier": "bob@x", "share": 0.9, "stale_days": 1, "commits": 18},
-                    "unowned": null,
-                    "drift": true,
-                    "drift_reason": "original author alice@x has 5% share",
-                }
-            }]
-        });
-
-        inject_health_post_pass_actions(&mut output);
-
-        let actions = output["hotspots"][0]["actions"].as_array().unwrap();
-        let drift = actions
-            .iter()
-            .find(|a| a["type"] == "ownership-drift")
-            .expect("ownership-drift action should be present");
-        assert!(drift["description"].as_str().unwrap().contains("alice@x"));
-    }
-
-    // ── suggest_codeowners_pattern ─────────────────────────────────
-
-    #[test]
-    fn codeowners_pattern_uses_deepest_directory() {
-        // Deepest dir keeps the suggestion tightly-scoped; the prior
-        // "first two levels" heuristic over-generalized in monorepos.
-        assert_eq!(
-            suggest_codeowners_pattern("src/api/users/handlers.ts"),
-            "/src/api/users/"
-        );
-    }
-
-    #[test]
-    fn codeowners_pattern_for_root_file() {
-        assert_eq!(suggest_codeowners_pattern("README.md"), "/README.md");
-    }
-
-    #[test]
-    fn codeowners_pattern_normalizes_backslashes() {
-        assert_eq!(
-            suggest_codeowners_pattern("src\\api\\users.ts"),
-            "/src/api/"
-        );
-    }
-
-    #[test]
-    fn codeowners_pattern_two_level_path() {
-        assert_eq!(suggest_codeowners_pattern("src/foo.ts"), "/src/");
-    }
+    // Tests for `inject_health_post_pass_actions` (the JSON post-pass that
+    // walked `hotspots[]` and `targets[]` arrays appending typed `actions`)
+    // have moved to `crates/cli/src/health_types/finding.rs::hotspot_target_tests`
+    // alongside the typed `HotspotFinding` and `RefactoringTargetFinding`
+    // wrappers and the typed `build_hotspot_actions` /
+    // `build_refactoring_target_actions` helpers they exercise. Issue #408
+    // (PR B3 of #384) replaced the JSON post-pass with typed wrappers that
+    // emit `actions` natively via serde. The four direct
+    // `suggest_codeowners_pattern` tests moved alongside that helper.
 
     #[test]
     fn health_finding_suppress_has_placement() {
@@ -3074,152 +2514,11 @@ mod tests {
         assert_eq!(suppress["placement"], "above-angular-decorator");
     }
 
-    // ── Duplication actions injection ─────────────────────────────
-
-    #[test]
-    fn clone_family_has_actions() {
-        let mut output = serde_json::json!({
-            "clone_families": [{
-                "files": ["src/a.ts", "src/b.ts"],
-                "groups": [
-                    { "instances": [{"file": "src/a.ts"}, {"file": "src/b.ts"}], "token_count": 100, "line_count": 20 }
-                ],
-                "total_duplicated_lines": 20,
-                "total_duplicated_tokens": 100,
-                "suggestions": [
-                    { "kind": "ExtractFunction", "description": "Extract shared validation logic", "estimated_savings": 15 }
-                ]
-            }]
-        });
-
-        inject_dupes_actions(&mut output);
-
-        let actions = output["clone_families"][0]["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 3);
-        assert_eq!(actions[0]["type"], "extract-shared");
-        assert_eq!(actions[0]["auto_fixable"], false);
-        assert!(
-            actions[0]["description"]
-                .as_str()
-                .unwrap()
-                .contains("20 lines")
-        );
-        // Suggestion forwarded as action
-        assert_eq!(actions[1]["type"], "apply-suggestion");
-        assert!(
-            actions[1]["description"]
-                .as_str()
-                .unwrap()
-                .contains("validation logic")
-        );
-        // Suppress action
-        assert_eq!(actions[2]["type"], "suppress-line");
-        assert_eq!(
-            actions[2]["comment"],
-            "// fallow-ignore-next-line code-duplication"
-        );
-    }
-
-    #[test]
-    fn clone_group_has_actions() {
-        let mut output = serde_json::json!({
-            "clone_groups": [{
-                "instances": [
-                    {"file": "src/a.ts", "start_line": 1, "end_line": 10},
-                    {"file": "src/b.ts", "start_line": 5, "end_line": 14}
-                ],
-                "token_count": 50,
-                "line_count": 10
-            }]
-        });
-
-        inject_dupes_actions(&mut output);
-
-        let actions = output["clone_groups"][0]["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0]["type"], "extract-shared");
-        assert!(
-            actions[0]["description"]
-                .as_str()
-                .unwrap()
-                .contains("10 lines")
-        );
-        assert!(
-            actions[0]["description"]
-                .as_str()
-                .unwrap()
-                .contains("2 instances")
-        );
-        assert_eq!(actions[1]["type"], "suppress-line");
-    }
-
-    #[test]
-    fn dupes_empty_results_no_actions() {
-        let mut output = serde_json::json!({
-            "clone_families": [],
-            "clone_groups": []
-        });
-
-        inject_dupes_actions(&mut output);
-
-        assert!(output["clone_families"].as_array().unwrap().is_empty());
-        assert!(output["clone_groups"].as_array().unwrap().is_empty());
-    }
-
-    /// Regression for issue #393: `inject_dupes_actions` must also walk
-    /// every `clone_families[i].groups[j]` (each a `CloneGroup`) and inject
-    /// `actions` on the inner item. The schema marks `actions` as required
-    /// on every `CloneGroup`; without the nested walk, JSON Schema strict
-    /// consumers saw a `required 'actions' is a required property`
-    /// violation on every nested group.
-    #[test]
-    fn clone_family_nested_groups_have_actions() {
-        let mut output = serde_json::json!({
-            "clone_families": [{
-                "files": ["src/a.ts", "src/b.ts"],
-                "groups": [
-                    {
-                        "instances": [
-                            {"file": "src/a.ts", "start_line": 1, "end_line": 10},
-                            {"file": "src/b.ts", "start_line": 5, "end_line": 14}
-                        ],
-                        "token_count": 50,
-                        "line_count": 10
-                    },
-                    {
-                        "instances": [
-                            {"file": "src/a.ts", "start_line": 20, "end_line": 30},
-                            {"file": "src/b.ts", "start_line": 25, "end_line": 35}
-                        ],
-                        "token_count": 60,
-                        "line_count": 11
-                    }
-                ],
-                "total_duplicated_lines": 21,
-                "total_duplicated_tokens": 110
-            }]
-        });
-
-        inject_dupes_actions(&mut output);
-
-        let family = &output["clone_families"][0];
-        assert!(
-            family.get("actions").and_then(|v| v.as_array()).is_some(),
-            "family carries top-level actions"
-        );
-        let groups = family["groups"].as_array().expect("groups array");
-        for (idx, group) in groups.iter().enumerate() {
-            let actions = group["actions"]
-                .as_array()
-                .unwrap_or_else(|| panic!("inner group {idx} missing actions"));
-            assert!(
-                !actions.is_empty(),
-                "inner group {idx} has at least one action"
-            );
-            assert_eq!(actions[0]["type"], "extract-shared");
-            assert_eq!(actions.last().unwrap()["type"], "suppress-line");
-        }
-    }
+    // Duplication action injection tests retired in #409: the wire shape
+    // now flows through typed wrappers in `crate::output_dupes`; the
+    // wrappers carry their own unit tests covering the same per-finding
+    // `actions[]` semantics (extract-shared / apply-suggestion /
+    // suppress-line position-0 invariants, issue #393 nested groups).
 
     // ── Tier-aware health action emission ──────────────────────────
 
@@ -3356,8 +2655,7 @@ mod tests {
 
     #[test]
     fn crap_only_tier_none_emits_add_tests() {
-        let mut output = crap_only_finding_envelope(Some("none"), 6, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope(Some("none"), 6, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "add-tests"),
@@ -3371,8 +2669,7 @@ mod tests {
 
     #[test]
     fn crap_only_tier_partial_emits_increase_coverage() {
-        let mut output = crap_only_finding_envelope(Some("partial"), 6, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope(Some("partial"), 6, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "increase-coverage"),
@@ -3389,8 +2686,7 @@ mod tests {
         // CC=20 at 70% coverage has CRAP 30.8, but at 100% coverage CRAP
         // falls to 20.0, below the default max_crap_threshold=30. Coverage
         // is therefore still a valid remediation even though tier=high.
-        let mut output = crap_only_finding_envelope(Some("high"), 20, 30);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope(Some("high"), 20, 30);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "increase-coverage"),
@@ -3411,9 +2707,7 @@ mod tests {
         // At 100% coverage CRAP bottoms out at CC. With CC=35 and a CRAP
         // threshold of 30, tests alone can reduce risk but cannot clear the
         // finding; the primary action should be complexity reduction.
-        let mut output =
-            crap_only_finding_envelope_with_max_crap(Some("high"), 35, 12, 50, 15, 30.0);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope_with_max_crap(Some("high"), 35, 12, 50, 15, 30.0);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "refactor-function"),
@@ -3433,8 +2727,7 @@ mod tests {
     fn crap_only_high_cc_appends_secondary_refactor() {
         // CC=16 with threshold=20 => within SECONDARY_REFACTOR_BAND (5)
         // of the threshold; refactor is a useful complement to coverage.
-        let mut output = crap_only_finding_envelope(Some("none"), 16, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope(Some("none"), 16, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "add-tests"),
@@ -3449,8 +2742,7 @@ mod tests {
     #[test]
     fn crap_only_far_below_threshold_no_secondary_refactor() {
         // CC=6 with threshold=20 => far outside the band; refactor not added.
-        let mut output = crap_only_finding_envelope(Some("none"), 6, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope(Some("none"), 6, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             !actions.iter().any(|a| a["type"] == "refactor-function"),
@@ -3468,8 +2760,7 @@ mod tests {
         // floor at `max_cognitive_threshold / 2` (default 7) suppresses the
         // secondary refactor in this case while still firing it for genuinely
         // tangled functions (CC>=15 + cog>=8) where refactor would help.
-        let mut output = crap_only_finding_envelope_with_cognitive(Some("none"), 17, 2, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope_with_cognitive(Some("none"), 17, 2, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "add-tests"),
@@ -3488,8 +2779,7 @@ mod tests {
         // and cognitive=10 (above default floor of 7) is the canonical
         // "tangled but near-threshold" function that genuinely benefits from
         // both coverage AND refactoring.
-        let mut output = crap_only_finding_envelope_with_cognitive(Some("none"), 16, 10, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope_with_cognitive(Some("none"), 16, 10, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "add-tests"),
@@ -3581,8 +2871,7 @@ mod tests {
 
     #[test]
     fn suppress_line_emitted_by_default() {
-        let mut output = crap_only_finding_envelope(Some("none"), 6, 20);
-        inject_health_post_pass_actions(&mut output);
+        let output = crap_only_finding_envelope(Some("none"), 6, 20);
         let actions = output["findings"][0]["actions"].as_array().unwrap();
         assert!(
             actions.iter().any(|a| a["type"] == "suppress-line"),

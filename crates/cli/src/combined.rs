@@ -577,10 +577,10 @@ fn print_combined_json(
     let root_prefix = format!("{}/", root.display());
 
     if let Some(result) = dupes {
-        match serde_json::to_value(&result.report) {
+        let payload = crate::output_dupes::DupesReportPayload::from_report(&result.report);
+        match serde_json::to_value(&payload) {
             Ok(mut json) => {
                 report::strip_root_prefix(&mut json, &root_prefix);
-                report::inject_dupes_actions(&mut json);
                 combined.insert("dupes".into(), json);
             }
             Err(e) => {
@@ -597,7 +597,6 @@ fn print_combined_json(
         match serde_json::to_value(&result.report) {
             Ok(mut json) => {
                 report::strip_root_prefix(&mut json, &root_prefix);
-                report::inject_health_post_pass_actions(&mut json);
                 combined.insert("health".into(), json);
             }
             Err(e) => {

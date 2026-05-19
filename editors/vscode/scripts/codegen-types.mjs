@@ -203,8 +203,7 @@ function stripTrailingWhitespace(contents) {
  * the same shape to TypeScript consumers without forcing them to reach
  * through the wrapper.
  *
- * Adding entries (e.g. for `HotspotEntry` and `RefactoringTarget` once
- * their `*Finding` wrappers land in PR B3 of issue #384):
+ * Adding new entries:
  *   1. Confirm jstt actually dedupes the new inner by inspecting the
  *      generated `.d.ts` for `export interface <inner-name>\b`. If
  *      present, the entry is unnecessary (and would conflict on the
@@ -228,21 +227,115 @@ const FLATTEN_DEDUPED_ALIASES = [
       " * alias; consumers that need the full envelope (with `actions` and\n" +
       " * optional `introduced`) should use `HealthFinding` directly.",
   },
+  {
+    name: "HotspotEntry",
+    parent: "HotspotFinding",
+    wrapperOnlyFields: ["actions"],
+    description:
+      "Inner hotspot payload, flattened into `HotspotFinding` on the wire\n" +
+      " * via `#[serde(flatten)]`. Exposed here for the same reason as\n" +
+      " * `ComplexityViolation`: jstt dedupes the inner because its property\n" +
+      " * set is fully subsumed by the wrapper. Consumers that want only the\n" +
+      " * inner shape should use this alias; consumers that need the full\n" +
+      " * envelope with `actions` should use `HotspotFinding` directly.\n" +
+      " * Unlike `HealthFinding`, the wrapper does not carry `introduced`\n" +
+      " * because hotspot ranking does not run through audit attribution.",
+  },
+  {
+    name: "RefactoringTarget",
+    parent: "RefactoringTargetFinding",
+    wrapperOnlyFields: ["actions"],
+    description:
+      "Inner refactoring-target payload, flattened into\n" +
+      " * `RefactoringTargetFinding` on the wire via `#[serde(flatten)]`.\n" +
+      " * Exposed here for the same reason as `ComplexityViolation`: jstt\n" +
+      " * dedupes the inner because its property set is fully subsumed by\n" +
+      " * the wrapper. Consumers that want only the inner shape should use\n" +
+      " * this alias; consumers that need the full envelope with `actions`\n" +
+      " * should use `RefactoringTargetFinding` directly. Unlike\n" +
+      " * `HealthFinding`, the wrapper does not carry `introduced` because\n" +
+      " * refactoring targets do not run through audit attribution.",
+  },
+  {
+    name: "CloneGroup",
+    parent: "CloneGroupFinding",
+    wrapperOnlyFields: [],
+    description:
+      "Backwards-compat alias for the pre-#409 bare clone-group name.\n" +
+      " * jstt dedupes the bare interface because every field is fully\n" +
+      " * subsumed by `CloneGroupFinding` (the wrapper flattens the bare\n" +
+      " * `CloneGroup` via `#[serde(flatten)]`). Aliased to the full\n" +
+      " * wrapper (not `Omit<>`-stripped) because the pre-migration wire\n" +
+      " * always carried `actions[]` on every clone group via the legacy\n" +
+      " * `inject_dupes_actions` post-pass, so the bare alias matching the\n" +
+      " * wrapper shape is the byte-faithful continuation. Consumers that\n" +
+      " * imported `CloneGroup` from `fallow/types` pre-migration continue\n" +
+      " * to work via this alias; new code should prefer `CloneGroupFinding`.",
+  },
+  {
+    name: "CloneFamily",
+    parent: "CloneFamilyFinding",
+    wrapperOnlyFields: [],
+    description:
+      "Backwards-compat alias for the pre-#409 bare clone-family name.\n" +
+      " * jstt dedupes the bare interface because every field is subsumed\n" +
+      " * by `CloneFamilyFinding`. The wrapper's `groups[]` items are\n" +
+      " * `CloneGroupFinding` rather than bare `CloneGroup`, which matches\n" +
+      " * the pre-migration wire shape (the legacy `inject_dupes_actions`\n" +
+      " * post-pass injected `actions[]` on every nested group too).\n" +
+      " * Consumers that imported `CloneFamily` from `fallow/types`\n" +
+      " * pre-migration continue to work via this alias; new code should\n" +
+      " * prefer `CloneFamilyFinding`.",
+  },
+  {
+    name: "AttributedCloneGroup",
+    parent: "AttributedCloneGroupFinding",
+    wrapperOnlyFields: [],
+    description:
+      "Backwards-compat alias for the pre-#409 bare attributed-clone-group\n" +
+      " * name (`fallow dupes --group-by` per-bucket attribution).\n" +
+      " * Consumers that imported `AttributedCloneGroup` from `fallow/types`\n" +
+      " * pre-migration continue to work via this alias; new code should\n" +
+      " * prefer `AttributedCloneGroupFinding`.",
+  },
+  {
+    name: "DuplicationReport",
+    parent: "DupesReportPayload",
+    wrapperOnlyFields: [],
+    description:
+      "Backwards-compat alias for the pre-#409 `DuplicationReport` name.\n" +
+      " * The wire shape is byte-identical between the two: the typed\n" +
+      " * `DupesReportPayload` mirrors `DuplicationReport` field-for-field\n" +
+      " * with `clone_groups[]` / `clone_families[]` carrying typed\n" +
+      " * `CloneGroupFinding` / `CloneFamilyFinding` wrappers instead of\n" +
+      " * bare findings (the pre-migration wire ALSO carried `actions[]`\n" +
+      " * on each item via the legacy `inject_dupes_actions` post-pass).\n" +
+      " * Consumers that imported `DuplicationReport` from `fallow/types`\n" +
+      " * pre-migration continue to work via this alias; new code should\n" +
+      " * prefer `DupesReportPayload`.",
+  },
 ];
 
 /**
  * Append aliases for serde-flattened inner types that jstt dedupes (see
  * `FLATTEN_DEDUPED_ALIASES` for the full rationale and extension recipe).
+ *
+ * When `wrapperOnlyFields` is empty, emits `export type Name = Parent` (a
+ * full alias) instead of `export type Name = Omit<Parent, ...>` (an Omit
+ * alias with no fields to omit). Used for bare types whose property set is
+ * BYTE-IDENTICAL to the wrapper on the wire (e.g., the pre-wrapper
+ * `DuplicationReport` whose `clone_groups[]` items always carried injected
+ * `actions[]` even before the typed wrapper migration).
  */
 function appendDedupedFlattenAliases(contents) {
   let out = contents;
   for (const alias of FLATTEN_DEDUPED_ALIASES) {
-    const omitKeys = alias.wrapperOnlyFields
-      .map((field) => `"${field}"`)
-      .join(" | ");
-    out +=
-      `\n/**\n * ${alias.description}\n */\n` +
-      `export type ${alias.name} = Omit<${alias.parent}, ${omitKeys}>;\n`;
+    const rhs = alias.wrapperOnlyFields.length === 0
+      ? alias.parent
+      : `Omit<${alias.parent}, ${alias.wrapperOnlyFields
+          .map((field) => `"${field}"`)
+          .join(" | ")}>`;
+    out += `\n/**\n * ${alias.description}\n */\nexport type ${alias.name} = ${rhs};\n`;
   }
   return out;
 }
