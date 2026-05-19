@@ -15,6 +15,18 @@ mod io;
 
 pub use config::is_config_fixable;
 
+fn run_analyze(
+    config: &fallow_config::ResolvedConfig,
+    output: OutputFormat,
+) -> Result<fallow_core::results::AnalysisResults, ExitCode> {
+    #[expect(
+        deprecated,
+        reason = "ADR-008 deprecates fallow_core::analyze externally; the CLI still uses the workspace path dependency"
+    )]
+    fallow_core::analyze(config)
+        .map_err(|e| crate::error::emit_error(&format!("Analysis error: {e}"), 2, output))
+}
+
 pub struct FixOptions<'a> {
     pub root: &'a Path,
     pub config_path: &'a Option<PathBuf>,
@@ -54,15 +66,9 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
         Err(code) => return code,
     };
 
-    #[expect(
-        deprecated,
-        reason = "ADR-008 deprecates fallow_core::analyze externally; the CLI still uses the workspace path dependency"
-    )]
-    let results = match fallow_core::analyze(&config) {
+    let results = match run_analyze(&config, opts.output) {
         Ok(r) => r,
-        Err(e) => {
-            return crate::error::emit_error(&format!("Analysis error: {e}"), 2, opts.output);
-        }
+        Err(code) => return code,
     };
 
     if results.total_issues() == 0 {
