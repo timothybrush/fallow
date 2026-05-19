@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use fallow_config::OutputFormat;
+use fallow_config::{CatalogPrecedingCommentPolicy, OutputFormat};
 use fallow_core::results::{
     EmptyCatalogGroup, EmptyCatalogGroupFinding, UnusedCatalogEntry, UnusedCatalogEntryFinding,
 };
@@ -39,6 +39,7 @@ use super::io::{atomic_write, read_source};
 pub(super) fn apply_catalog_entry_fixes(
     root: &Path,
     entries: &[UnusedCatalogEntryFinding],
+    preceding_comment_policy: CatalogPrecedingCommentPolicy,
     output: OutputFormat,
     dry_run: bool,
     fixes: &mut Vec<serde_json::Value>,
@@ -126,7 +127,7 @@ pub(super) fn apply_catalog_entry_fixes(
                 continue;
             }
 
-            let range = compute_deletion_range(&lines, line_idx);
+            let range = compute_deletion_range(&lines, line_idx, entry, preceding_comment_policy);
             to_remove.push((range, entry));
         }
 
@@ -220,6 +221,8 @@ pub(super) fn apply_catalog_entry_fixes(
 
         for (range, entry) in &deduped {
             fixes.push(remove_record(entry, range, true, relative_path));
+            let entry_idx = entry.line.saturating_sub(1) as usize;
+            summary.comment_lines_removed += entry_idx.saturating_sub(range.start);
         }
         summary.applied += deduped.len();
     }
@@ -353,17 +356,33 @@ pub(super) struct CatalogFixSummary {
     pub applied: usize,
     pub skipped: usize,
     pub write_error: bool,
+    /// Total leading-comment lines absorbed across all applied fixes.
+    /// Surfaced in the human summary so users see that comments were
+    /// removed alongside entries (`Fixed N issue(s) (+M comment lines)`).
+    pub comment_lines_removed: usize,
 }
 
 /// Compute the deletion range `[start, end)` (line indices) for a catalog
-/// entry whose key sits on `start_idx`. Object-form entries
+/// entry whose key sits on `entry_idx`. Object-form entries
 /// (`react:\n    specifier: ^18.2.0`) consume every subsequent line with
 /// strictly greater indent. Blank lines and lines at the entry's own
-/// indent (or shallower) stop the scan: blank lines are conservatively
-/// treated as inter-entry whitespace that should be preserved.
-fn compute_deletion_range(lines: &[&str], start_idx: usize) -> std::ops::Range<usize> {
-    let entry_indent = leading_spaces(lines[start_idx]);
-    let mut end_idx = start_idx + 1;
+/// indent (or shallower) stop the forward scan: blank lines are
+/// conservatively treated as inter-entry whitespace that should be
+/// preserved.
+///
+/// Depending on `preceding_comment_policy`, the range may also extend
+/// backward to include a contiguous YAML comment block immediately above
+/// the entry.
+fn compute_deletion_range(
+    lines: &[&str],
+    entry_idx: usize,
+    entry: &UnusedCatalogEntry,
+    preceding_comment_policy: CatalogPrecedingCommentPolicy,
+) -> std::ops::Range<usize> {
+    let start_idx =
+        comment_block_start(lines, entry_idx, entry, preceding_comment_policy).unwrap_or(entry_idx);
+    let entry_indent = leading_spaces(lines[entry_idx]);
+    let mut end_idx = entry_idx + 1;
     while end_idx < lines.len() {
         let line = lines[end_idx];
         if line.trim().is_empty() {
@@ -375,6 +394,81 @@ fn compute_deletion_range(lines: &[&str], start_idx: usize) -> std::ops::Range<u
         end_idx += 1;
     }
     start_idx..end_idx
+}
+
+fn comment_block_start(
+    lines: &[&str],
+    entry_idx: usize,
+    entry: &UnusedCatalogEntry,
+    policy: CatalogPrecedingCommentPolicy,
+) -> Option<usize> {
+    if matches!(policy, CatalogPrecedingCommentPolicy::Never) || entry_idx == 0 {
+        return None;
+    }
+
+    let entry_indent = leading_spaces(lines[entry_idx]);
+    let mut comment_start = entry_idx;
+    while comment_start > 0 && is_entry_comment(lines[comment_start - 1], entry_indent) {
+        comment_start -= 1;
+    }
+    if comment_start == entry_idx {
+        return None;
+    }
+
+    // Per-block escape hatch (`# fallow-keep`): any line in the block bearing
+    // this marker preserves the entire block regardless of policy. Mirrors
+    // fallow's existing `fallow-ignore-next-line` / `fallow-ignore-file`
+    // inline-suppression convention so users discover it without docs.
+    let block = &lines[comment_start..entry_idx];
+    if block.iter().any(|line| line.contains("fallow-keep")) {
+        return None;
+    }
+
+    match policy {
+        CatalogPrecedingCommentPolicy::Always => Some(comment_start),
+        CatalogPrecedingCommentPolicy::Never => None,
+        CatalogPrecedingCommentPolicy::Auto => {
+            // Section-banner heuristic: a comment line consisting of `#`
+            // followed by 3+ repeated separator characters (`=`, `-`, `*`,
+            // `_`, `~`, `+`, `#`) is treated as a curated banner that
+            // semantically owns the following section, not the next entry.
+            // Auto preserves the block when any line in it matches.
+            if block.iter().any(|line| is_section_banner_line(line)) {
+                return None;
+            }
+            let before_comment = comment_start.checked_sub(1)?;
+            if lines[before_comment].trim().is_empty()
+                || find_parent_header_line(lines, entry) == Some(before_comment)
+            {
+                Some(comment_start)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn is_entry_comment(line: &str, entry_indent: usize) -> bool {
+    leading_spaces(line) == entry_indent && line.trim_start().starts_with('#')
+}
+
+/// Recognize banner-shaped comment lines like `# ====`, `# ----`, `# ====
+/// React 18 pins ====`. Returns true when the comment body (after `#` and
+/// optional leading whitespace) starts with 3+ repeats of `=`, `-`, `*`,
+/// `_`, `~`, `+`, or `#`. Used by the Auto policy to preserve section
+/// dividers above the next catalog entry.
+fn is_section_banner_line(line: &str) -> bool {
+    let Some(after_hash) = line.trim_start().strip_prefix('#') else {
+        return false;
+    };
+    let body = after_hash.trim_start();
+    let Some(first) = body.chars().next() else {
+        return false;
+    };
+    if !matches!(first, '=' | '-' | '*' | '_' | '~' | '+' | '#') {
+        return false;
+    }
+    body.chars().take(3).all(|c| c == first)
 }
 
 fn leading_spaces(line: &str) -> usize {
@@ -577,7 +671,13 @@ fn remove_record(
         "entry_name": entry.entry_name,
         "catalog_name": entry.catalog_name,
         "file": relative_path.to_string_lossy().replace('\\', "/"),
+        // `line` is the first deleted line (the leading comment block when
+        // `fix.catalog.deletePrecedingComments` absorbs one). `entry_line`
+        // is the catalog entry's original line so consumers that keyed on
+        // the entry position (CI annotators, dedup caches) keep a stable
+        // anchor. Both are 1-based.
         "line": range.start + 1,
+        "entry_line": entry.line,
         "removed_lines": removed_lines,
     });
     if applied && let serde_json::Value::Object(map) = &mut value {
@@ -727,8 +827,14 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 3)];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 1);
         assert_eq!(summary.skipped, 0);
@@ -749,8 +855,14 @@ mod tests {
 
         let entries = vec![make_entry("react", "default", 3)];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 1);
         assert_eq!(summary.skipped, 0);
@@ -773,8 +885,14 @@ mod tests {
             vec![PathBuf::from("apps/web/package.json")],
         )];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 0);
         assert_eq!(summary.skipped, 1);
@@ -805,8 +923,14 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 2)];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, true, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            true,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 1);
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
@@ -822,8 +946,14 @@ mod tests {
 
         let entries = vec![make_entry("react", "react17", 3)];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 1);
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
@@ -838,27 +968,266 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 3)];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert_eq!(result, "catalog:\n  is-odd: ^1.0.0 # keep me\n");
     }
 
     #[test]
-    fn leaves_leading_comment_as_orphan() {
-        // The conservative comments policy preserves leading single-line
-        // comments even when their sibling entry is removed. The orphaned
-        // comment is mildly ugly but never destroys user intent.
+    fn auto_deletes_leading_comment_after_parent_header() {
         let dir = tempfile::tempdir().unwrap();
         let content = "catalog:\n  # mention is-even\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n";
         seed_workspace_file(dir.path(), content);
 
         let entries = vec![make_entry("is-even", "default", 3)];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
-        assert_eq!(result, "catalog:\n  # mention is-even\n  is-odd: ^1.0.0\n");
+        assert_eq!(result, "catalog:\n  is-odd: ^1.0.0\n");
+        assert_eq!(fixes[0]["line"], serde_json::json!(2));
+        assert_eq!(fixes[0]["entry_line"], serde_json::json!(3));
+        assert_eq!(fixes[0]["removed_lines"], serde_json::json!(2));
+        assert_eq!(summary.comment_lines_removed, 1);
+    }
+
+    #[test]
+    fn auto_preserves_block_with_fallow_keep_marker() {
+        // `# fallow-keep` on any line in the contiguous comment block
+        // protects the entire block from deletion regardless of policy.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  # fallow-keep: audit trail for CVE-2024-XXXX\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 3)];
+        let mut fixes = Vec::new();
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(
+            result,
+            "catalog:\n  # fallow-keep: audit trail for CVE-2024-XXXX\n  is-odd: ^1.0.0\n"
+        );
+        assert_eq!(summary.comment_lines_removed, 0);
+    }
+
+    #[test]
+    fn always_preserves_block_with_fallow_keep_marker() {
+        // `# fallow-keep` is a per-block escape hatch that overrides even
+        // the `always` policy. The marker is the user's explicit intent
+        // to keep this specific block.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  # fallow-keep\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 3)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Always,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalog:\n  # fallow-keep\n  is-odd: ^1.0.0\n");
+    }
+
+    #[test]
+    fn auto_preserves_section_banner_block() {
+        // Section-banner comments (`# === React 18 production pins ===`,
+        // `# ----`, etc.) semantically own the following section, not
+        // the next entry. Auto must NOT delete them even when sitting
+        // directly under the parent header.
+        let dir = tempfile::tempdir().unwrap();
+        let content =
+            "catalog:\n  # === React 18 production pins ===\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 3)];
+        let mut fixes = Vec::new();
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(
+            result,
+            "catalog:\n  # === React 18 production pins ===\n  is-odd: ^1.0.0\n"
+        );
+        assert_eq!(summary.comment_lines_removed, 0);
+    }
+
+    #[test]
+    fn always_deletes_section_banner_block() {
+        // The `always` policy still deletes banner-shaped blocks. The
+        // banner heuristic is an Auto-only refinement; users who opt
+        // into `always` get aggressive deletion. To protect a banner
+        // under `always`, add a `# fallow-keep` marker.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  # ====\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 3)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Always,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalog:\n  is-odd: ^1.0.0\n");
+    }
+
+    #[test]
+    fn section_banner_detector_recognizes_separator_runs() {
+        assert!(is_section_banner_line("# === banner ==="));
+        assert!(is_section_banner_line("  # ----"));
+        assert!(is_section_banner_line("# ***"));
+        assert!(is_section_banner_line("# ___"));
+        assert!(is_section_banner_line("#==="));
+        assert!(!is_section_banner_line("# mention is-even"));
+        assert!(!is_section_banner_line("# = single sep"));
+        assert!(!is_section_banner_line("# -- two seps only"));
+        assert!(!is_section_banner_line("not a comment"));
+    }
+
+    #[test]
+    fn auto_deletes_leading_comment_after_blank_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  is-odd: ^1.0.0\n\n  # mention is-even\n  is-even: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 5)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalog:\n  is-odd: ^1.0.0\n\n");
+    }
+
+    #[test]
+    fn auto_preserves_leading_comment_after_sibling_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  is-odd: ^1.0.0\n  # shared note\n  is-even: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 4)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalog:\n  is-odd: ^1.0.0\n  # shared note\n");
+    }
+
+    #[test]
+    fn auto_deletes_named_catalog_leading_comment_after_named_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalogs:\n  react17:\n    # pinned for old peer deps\n    react: ^17.0.2\n    react-dom: ^17.0.2\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("react", "react17", 4)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalogs:\n  react17:\n    react-dom: ^17.0.2\n");
+    }
+
+    #[test]
+    fn always_deletes_leading_comment_after_sibling_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  is-odd: ^1.0.0\n  # force remove\n  is-even: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 4)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Always,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalog:\n  is-odd: ^1.0.0\n");
+    }
+
+    #[test]
+    fn never_preserves_leading_comment_after_parent_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "catalog:\n  # keep always\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n";
+        seed_workspace_file(dir.path(), content);
+
+        let entries = vec![make_entry("is-even", "default", 3)];
+        let mut fixes = Vec::new();
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Never,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
+
+        let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(result, "catalog:\n  # keep always\n  is-odd: ^1.0.0\n");
     }
 
     #[test]
@@ -872,8 +1241,14 @@ mod tests {
             make_entry("left-pad", "default", 4),
         ];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 2);
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
@@ -888,8 +1263,14 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 2)];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 0);
         assert_eq!(summary.skipped, 1);
@@ -912,8 +1293,14 @@ mod tests {
         // line 99 is way past EOF (file has 3 lines including trailing newline)
         let entries = vec![make_entry("is-even", "default", 99)];
         let mut fixes = Vec::new();
-        let summary =
-            apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        let summary = apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         assert_eq!(summary.applied, 0);
         assert_eq!(summary.skipped, 1);
@@ -931,7 +1318,14 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 3)];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert_eq!(result, "catalog:\r\n  is-odd: ^1.0.0\r\n");
@@ -949,7 +1343,14 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 2)];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert_eq!(result, "catalog: {}\n");
@@ -977,7 +1378,14 @@ mod tests {
             make_entry("react-dom", "react17", 4),
         ];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert_eq!(
@@ -1004,7 +1412,14 @@ mod tests {
 
         let entries = vec![make_entry("react", "react17", 3)];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert_eq!(
@@ -1023,7 +1438,14 @@ mod tests {
 
         let entries = vec![make_entry("is-even", "default", 3)];
         let mut fixes = Vec::new();
-        apply_catalog_entry_fixes(dir.path(), &entries, OutputFormat::Json, false, &mut fixes);
+        apply_catalog_entry_fixes(
+            dir.path(),
+            &entries,
+            CatalogPrecedingCommentPolicy::Auto,
+            OutputFormat::Json,
+            false,
+            &mut fixes,
+        );
 
         let result = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert_eq!(result, "catalog:\n  is-odd: ^1.0.0\n");
@@ -1036,7 +1458,8 @@ mod tests {
         let lines: Vec<&str> = "catalog:\n  is-even: ^1.0.0\n  is-odd: ^1.0.0\n"
             .split('\n')
             .collect();
-        let range = compute_deletion_range(&lines, 1);
+        let entry = make_entry("is-even", "default", 2).entry;
+        let range = compute_deletion_range(&lines, 1, &entry, CatalogPrecedingCommentPolicy::Auto);
         assert_eq!(range, 1..2);
     }
 
@@ -1044,7 +1467,8 @@ mod tests {
     fn deletion_range_object_form_spans_until_indent_drops() {
         let content = "catalog:\n  react:\n    specifier: ^18.2.0\n    publishConfig: {}\n  is-even: ^1.0.0\n";
         let lines: Vec<&str> = content.split('\n').collect();
-        let range = compute_deletion_range(&lines, 1);
+        let entry = make_entry("react", "default", 2).entry;
+        let range = compute_deletion_range(&lines, 1, &entry, CatalogPrecedingCommentPolicy::Auto);
         assert_eq!(range, 1..4);
     }
 
@@ -1052,7 +1476,8 @@ mod tests {
     fn deletion_range_stops_at_blank_line() {
         let content = "catalog:\n  is-even: ^1.0.0\n\n  is-odd: ^1.0.0\n";
         let lines: Vec<&str> = content.split('\n').collect();
-        let range = compute_deletion_range(&lines, 1);
+        let entry = make_entry("is-even", "default", 2).entry;
+        let range = compute_deletion_range(&lines, 1, &entry, CatalogPrecedingCommentPolicy::Auto);
         assert_eq!(range, 1..2);
     }
 

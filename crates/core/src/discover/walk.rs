@@ -842,6 +842,7 @@ mod tests {
                 codeowners: None,
                 public_packages: vec![],
                 flags: FlagsConfig::default(),
+                fix: fallow_config::FixConfig::default(),
                 resolve: ResolveConfig::default(),
                 sealed: false,
                 include_entry_exports: false,

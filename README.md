@@ -476,9 +476,30 @@ Works out of the box. When you need to customize, create `.fallowrc.json` or run
     "maxCyclomatic": 20,
     "maxCognitive": 15,
     "maxCrap": 30
+  },
+  "fix": {
+    "catalog": {
+      "deletePrecedingComments": "auto"
+    }
   }
 }
 ```
+
+`fix.catalog.deletePrecedingComments` controls how `fallow fix` handles YAML
+comment blocks immediately above removed pnpm catalog entries: `"auto"` deletes
+blocks that clearly belong to the entry, `"always"` deletes every contiguous
+leading block, and `"never"` preserves them. To protect a specific comment
+regardless of policy, mark any line in the block with `# fallow-keep`:
+
+```yaml
+catalog:
+  # fallow-keep: audit trail, CVE-2024-XXXX
+  react: ^18.2.0
+```
+
+Section-banner comments (3+ repeated `=`, `-`, `*`, `_`, `~`, `+`, or `#`
+characters, e.g. `# === React 18 production pins ===`) are also preserved by
+the `"auto"` policy so curated dividers survive cleanup.
 
 Architecture boundary presets enforce import rules between layers with zero manual config:
 

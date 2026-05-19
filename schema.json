@@ -186,6 +186,15 @@
         "configObjectHeuristics": false
       }
     },
+    "fix": {
+      "description": "Auto-fix behavior settings.",
+      "$ref": "#/$defs/FixConfig",
+      "default": {
+        "catalog": {
+          "deletePrecedingComments": "auto"
+        }
+      }
+    },
     "resolve": {
       "description": "Module resolver configuration (custom conditions, etc.).",
       "$ref": "#/$defs/ResolveConfig",
@@ -1162,6 +1171,50 @@
       },
       "required": [
         "function"
+      ]
+    },
+    "FixConfig": {
+      "description": "Auto-fix behavior settings.",
+      "type": "object",
+      "properties": {
+        "catalog": {
+          "description": "Auto-fix behavior for pnpm catalog edits.",
+          "$ref": "#/$defs/CatalogFixConfig",
+          "default": {
+            "deletePrecedingComments": "auto"
+          }
+        }
+      }
+    },
+    "CatalogFixConfig": {
+      "description": "Auto-fix behavior for pnpm catalog entries.",
+      "type": "object",
+      "properties": {
+        "deletePrecedingComments": {
+          "description": "Whether removing an unused catalog entry also removes the contiguous\nYAML comment block immediately above it.",
+          "$ref": "#/$defs/CatalogPrecedingCommentPolicy",
+          "default": "auto"
+        }
+      }
+    },
+    "CatalogPrecedingCommentPolicy": {
+      "description": "Policy for deleting comments immediately above removed catalog entries.",
+      "oneOf": [
+        {
+          "description": "Delete the comment block when it is separated from previous siblings by\na blank line, or when it directly follows the parent catalog header.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Always delete the contiguous comment block immediately above the entry.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Never delete leading comments; leave them in place as orphan comments.",
+          "type": "string",
+          "const": "never"
+        }
       ]
     },
     "ResolveConfig": {

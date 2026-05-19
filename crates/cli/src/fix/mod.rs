@@ -137,6 +137,7 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
     let catalog_summary = catalog::apply_catalog_entry_fixes(
         opts.root,
         &results.unused_catalog_entries,
+        config.fix.catalog.delete_preceding_comments,
         opts.output,
         opts.dry_run,
         &mut fixes,
@@ -152,6 +153,7 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
     had_write_error |= empty_catalog_summary.write_error;
     let catalog_applied = catalog_summary.applied + empty_catalog_summary.applied;
     let catalog_skipped = catalog_summary.skipped + empty_catalog_summary.skipped;
+    let catalog_comment_lines_removed = catalog_summary.comment_lines_removed;
 
     if matches!(opts.output, OutputFormat::Json) {
         let applied_count = fixes
@@ -183,7 +185,13 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
             }
         }
     } else if !opts.quiet {
-        emit_human_summary(opts.dry_run, &fixes, catalog_applied, catalog_skipped);
+        emit_human_summary(
+            opts.dry_run,
+            &fixes,
+            catalog_applied,
+            catalog_skipped,
+            catalog_comment_lines_removed,
+        );
     }
 
     if had_write_error {
@@ -205,6 +213,7 @@ fn emit_human_summary(
     fixes: &[serde_json::Value],
     catalog_applied: usize,
     catalog_skipped: usize,
+    catalog_comment_lines_removed: usize,
 ) {
     if dry_run {
         eprintln!("Dry run complete. No files were modified.");
@@ -217,7 +226,18 @@ fn emit_human_summary(
                     .unwrap_or(false)
             })
             .count();
-        eprintln!("Fixed {fixed_count} issue(s).");
+        if catalog_comment_lines_removed > 0 {
+            let line_word = if catalog_comment_lines_removed == 1 {
+                "line"
+            } else {
+                "lines"
+            };
+            eprintln!(
+                "Fixed {fixed_count} issue(s) (+{catalog_comment_lines_removed} catalog comment {line_word})."
+            );
+        } else {
+            eprintln!("Fixed {fixed_count} issue(s).");
+        }
     }
     if !dry_run && catalog_applied > 0 {
         eprintln!(

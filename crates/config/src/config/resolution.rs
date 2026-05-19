@@ -275,6 +275,8 @@ pub struct ResolvedConfig {
     pub public_packages: Vec<String>,
     /// Feature flag detection configuration.
     pub flags: FlagsConfig,
+    /// Auto-fix behavior settings.
+    pub fix: super::FixConfig,
     /// Module resolver configuration (user-supplied import/export conditions).
     pub resolve: ResolveConfig,
     /// When true, entry file exports are subject to unused-export detection
@@ -518,6 +520,7 @@ impl FallowConfig {
             codeowners: self.codeowners,
             public_packages: self.public_packages,
             flags: self.flags,
+            fix: self.fix,
             resolve: self.resolve,
             include_entry_exports: self.include_entry_exports,
         }
@@ -604,6 +607,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
             include_entry_exports: false,
@@ -653,6 +657,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
             include_entry_exports: false,
@@ -718,6 +723,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
             include_entry_exports: false,
@@ -779,6 +785,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
             include_entry_exports: false,
@@ -883,6 +890,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
             include_entry_exports: false,
@@ -933,6 +941,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: FlagsConfig::default(),
+            fix: crate::config::FixConfig::default(),
             resolve: ResolveConfig::default(),
             sealed: false,
             include_entry_exports: false,

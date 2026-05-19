@@ -360,6 +360,7 @@ fn ignore_patterns_applied_to_workspace_package_json_for_unused_deps() {
         codeowners: None,
         public_packages: vec![],
         flags: fallow_config::FlagsConfig::default(),
+        fix: fallow_config::FixConfig::default(),
         resolve: fallow_config::ResolveConfig::default(),
         sealed: false,
         include_entry_exports: false,

@@ -340,6 +340,120 @@ fn fix_without_yes_in_non_tty_exits_2() {
     assert_eq!(output.code, 2, "fix without --yes in non-TTY should exit 2");
 }
 
+#[test]
+fn fix_catalog_delete_preceding_comments_config_is_consumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("packages/app")).unwrap();
+    std::fs::write(
+        root.join(".fallowrc.json"),
+        r#"{
+  "fix": {
+    "catalog": {
+      "deletePrecedingComments": "always"
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'packages/*'\n\ncatalog:\n  is-odd: ^1.0.0\n  # pinned for issue #360\n  is-even: ^1.0.0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("packages/app/package.json"),
+        r#"{
+  "name": "app",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "catalog:"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_fallow_in_root("fix", root, &["--yes", "--format", "json", "--quiet"]);
+    assert_eq!(
+        output.code, 0,
+        "fix should exit 0, stdout: {}, stderr: {}",
+        output.stdout, output.stderr
+    );
+
+    let after = std::fs::read_to_string(root.join("pnpm-workspace.yaml")).unwrap();
+    assert_eq!(
+        after,
+        "packages:\n  - 'packages/*'\n\ncatalog:\n  is-odd: ^1.0.0\n"
+    );
+    let json = parse_json(&output);
+    let fixes = json["fixes"].as_array().unwrap();
+    let catalog_fix = fixes
+        .iter()
+        .find(|fix| fix["type"] == "remove_catalog_entry")
+        .expect("fix output should include the catalog entry removal");
+    assert_eq!(catalog_fix["line"], 6, "line tracks the deletion start");
+    assert_eq!(
+        catalog_fix["entry_line"], 7,
+        "entry_line tracks the original catalog entry position"
+    );
+    assert_eq!(catalog_fix["removed_lines"], 2);
+}
+
+#[test]
+fn fix_catalog_fallow_keep_marker_preserves_block() {
+    // Regression: `# fallow-keep` marker preserves a comment block even
+    // under `policy: always`. Mirrors the inline-suppression convention
+    // (`fallow-ignore-*`) so users discover it without docs.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("packages/app")).unwrap();
+    std::fs::write(
+        root.join(".fallowrc.json"),
+        r#"{
+  "fix": {
+    "catalog": {
+      "deletePrecedingComments": "always"
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'packages/*'\n\ncatalog:\n  is-odd: ^1.0.0\n  # fallow-keep audit trail\n  is-even: ^1.0.0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("packages/app/package.json"),
+        r#"{
+  "name": "app",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "catalog:"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_fallow_in_root("fix", root, &["--yes", "--format", "json", "--quiet"]);
+    assert_eq!(
+        output.code, 0,
+        "fix should exit 0, stderr: {}",
+        output.stderr
+    );
+
+    let after = std::fs::read_to_string(root.join("pnpm-workspace.yaml")).unwrap();
+    assert_eq!(
+        after,
+        "packages:\n  - 'packages/*'\n\ncatalog:\n  is-odd: ^1.0.0\n  # fallow-keep audit trail\n",
+        "fallow-keep marker must preserve the comment even when the entry is removed under `always`"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // fix --yes on the canonical pnpm-catalog fixture (issue #335)
 // ---------------------------------------------------------------------------

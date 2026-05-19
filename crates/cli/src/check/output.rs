@@ -235,6 +235,7 @@ mod tests {
             codeowners: None,
             public_packages: vec![],
             flags: fallow_config::FlagsConfig::default(),
+            fix: fallow_config::FixConfig::default(),
             resolve: fallow_config::ResolveConfig::default(),
             include_entry_exports: false,
         }

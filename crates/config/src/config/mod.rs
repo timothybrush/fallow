@@ -99,6 +99,39 @@ pub struct IgnoreExportsUsedInFileByKind {
     pub interface: bool,
 }
 
+/// Auto-fix behavior settings.
+#[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FixConfig {
+    /// Auto-fix behavior for pnpm catalog edits.
+    #[serde(default)]
+    pub catalog: CatalogFixConfig,
+}
+
+/// Auto-fix behavior for pnpm catalog entries.
+#[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogFixConfig {
+    /// Whether removing an unused catalog entry also removes the contiguous
+    /// YAML comment block immediately above it.
+    #[serde(default)]
+    pub delete_preceding_comments: CatalogPrecedingCommentPolicy,
+}
+
+/// Policy for deleting comments immediately above removed catalog entries.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogPrecedingCommentPolicy {
+    /// Delete the comment block when it is separated from previous siblings by
+    /// a blank line, or when it directly follows the parent catalog header.
+    #[default]
+    Auto,
+    /// Always delete the contiguous comment block immediately above the entry.
+    Always,
+    /// Never delete leading comments; leave them in place as orphan comments.
+    Never,
+}
+
 /// User-facing configuration loaded from `.fallowrc.json`, `.fallowrc.jsonc`, `fallow.toml`, or `.fallow.toml`.
 ///
 /// # Examples
@@ -230,6 +263,10 @@ pub struct FallowConfig {
     /// Feature flag detection configuration.
     #[serde(default)]
     pub flags: FlagsConfig,
+
+    /// Auto-fix behavior settings.
+    #[serde(default)]
+    pub fix: FixConfig,
 
     /// Module resolver configuration (custom conditions, etc.).
     #[serde(default)]
@@ -554,6 +591,10 @@ mod tests {
         assert!(config.dynamically_loaded.is_empty());
         assert!(config.overrides.is_empty());
         assert!(config.public_packages.is_empty());
+        assert_eq!(
+            config.fix.catalog.delete_preceding_comments,
+            CatalogPrecedingCommentPolicy::Auto
+        );
         assert!(!config.production);
     }
 
@@ -674,6 +715,29 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_json_fix_catalog_delete_preceding_comments() {
+        let config: FallowConfig =
+            serde_json::from_str(r#"{"fix": {"catalog": {"deletePrecedingComments": "always"}}}"#)
+                .unwrap();
+        assert_eq!(
+            config.fix.catalog.delete_preceding_comments,
+            CatalogPrecedingCommentPolicy::Always
+        );
+    }
+
+    #[test]
+    fn deserialize_json_fix_catalog_delete_preceding_comments_rejects_unknown_policy() {
+        let err = serde_json::from_str::<FallowConfig>(
+            r#"{"fix": {"catalog": {"deletePrecedingComments": "sometimes"}}}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("sometimes"),
+            "error should name the bad policy: {err}"
+        );
+    }
+
+    #[test]
     fn deserialize_json_used_class_members_supports_strings_and_scoped_rules() {
         let json = r#"{
             "usedClassMembers": [
@@ -758,6 +822,19 @@ entryPoints = ["src/routes/**/*.tsx"]
         assert_eq!(
             config.framework[0].entry_points,
             vec!["src/routes/**/*.tsx"]
+        );
+    }
+
+    #[test]
+    fn deserialize_toml_fix_catalog_delete_preceding_comments() {
+        let toml_str = r#"
+[fix.catalog]
+deletePrecedingComments = "never"
+"#;
+        let config: FallowConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.fix.catalog.delete_preceding_comments,
+            CatalogPrecedingCommentPolicy::Never
         );
     }
 

@@ -463,9 +463,10 @@ fn line_matches_catalog_key(line: &str, entry_name: &str) -> bool {
 }
 
 /// Compute the end line index (exclusive) for a catalog entry whose key
-/// sits on `start_idx`. Mirrors the algorithm in
-/// `crates/cli/src/fix/catalog.rs::compute_deletion_range` so the LSP
-/// preview matches what `fallow fix` would write.
+/// sits on `start_idx`. This mirrors the CLI's forward object-form entry
+/// scan, but intentionally does not delete leading comments; LSP quick fixes
+/// stay conservative even when `fallow fix` uses the default
+/// `fix.catalog.deletePrecedingComments = "auto"` policy.
 fn compute_catalog_deletion_end(lines: &[&str], start_idx: usize) -> usize {
     let entry_indent = lines[start_idx].bytes().take_while(|&b| b == b' ').count();
     let mut end_idx = start_idx + 1;
