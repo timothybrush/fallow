@@ -30,7 +30,9 @@ mod upgrades;
 
 pub use fallbacks::extract_package_name_from_node_modules_path;
 pub use path_info::{extract_package_name, is_bare_specifier, is_path_alias};
-pub use types::{ResolveResult, ResolvedImport, ResolvedModule, ResolvedReExport};
+pub use types::{
+    ResolveResult, ResolvedImport, ResolvedModule, ResolvedReExport, ResolvedSourceEdge,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

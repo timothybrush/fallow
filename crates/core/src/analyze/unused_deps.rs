@@ -718,7 +718,7 @@ fn has_types_package_for_file(
 
 /// Look up the import location (line, col) for a given package in a given file.
 ///
-/// Falls back to `(1, 0)` when no span is found (e.g. re-export-only usages).
+/// Falls back to `(1, 0)` when no source edge span is found.
 pub fn find_import_location(
     import_spans_by_file: &FxHashMap<FileId, Vec<(&str, &str, u32)>>,
     line_offsets_by_file: &LineOffsetsMap<'_>,
@@ -820,22 +820,20 @@ pub fn find_unlisted_dependencies(
         .map(|pr| pr.tooling_dependencies.iter().map(String::as_str).collect())
         .unwrap_or_default();
 
-    // Build a lookup from resolved modules so we can recover the import location when building
+    // Build a lookup from resolved modules so we can recover the source edge location when building
     // UnlistedDependency results. Keep both the collapsed npm package name and original source
     // specifier because `bun/foo` resolves to package `bun` but is not the builtin `bun` module.
     let mut import_spans_by_file: FxHashMap<FileId, Vec<(&str, &str, u32)>> = FxHashMap::default();
     for rm in resolved_modules {
-        for import in rm.all_resolved_imports() {
-            if let Some(name) = import.target.package_usage_name() {
+        for edge in rm.all_resolved_source_edges() {
+            if let Some(name) = edge.target().package_usage_name() {
                 import_spans_by_file.entry(rm.file_id).or_default().push((
                     name,
-                    import.info.source.as_str(),
-                    import.info.span.start,
+                    edge.source_specifier(),
+                    edge.span().start,
                 ));
             }
         }
-        // Re-exports don't have span info on ReExportInfo, so skip them here.
-        // The import span lookup will fall back to (1, 0) for re-export-only usages.
     }
 
     let ignore_deps: FxHashSet<&str> = config
@@ -940,8 +938,8 @@ pub fn find_unresolved_imports(
     let mut unresolved = Vec::new();
 
     for module in resolved_modules {
-        for import in module.all_resolved_imports() {
-            if let crate::resolve::ResolveResult::Unresolvable(spec) = &import.target {
+        for edge in module.all_resolved_source_edges() {
+            if let crate::resolve::ResolveResult::Unresolvable(spec) = edge.target() {
                 // Platform builtins are provided by the runtime, not the filesystem.
                 if is_builtin_module(spec) {
                     continue;
@@ -984,7 +982,7 @@ pub fn find_unresolved_imports(
                 // Skip build-time generated route type imports from framework plugins
                 // (e.g., React Router's `./+types/root`). Keep this type-only so
                 // missing runtime imports under the same directory remain visible.
-                if import.info.is_type_only
+                if edge.is_type_only()
                     && generated_type_prefixes
                         .iter()
                         .any(|prefix| spec.starts_with(prefix))
@@ -994,17 +992,18 @@ pub fn find_unresolved_imports(
                 let (line, col) = byte_offset_to_line_col(
                     line_offsets_by_file,
                     module.file_id,
-                    import.info.span.start,
+                    edge.span().start,
                 );
 
                 // Compute the column of the source string literal for precise LSP highlighting.
                 // Falls back to the import statement column when source_span is not available
                 // (e.g., synthetic CSS/SFC imports that use Span::default()).
-                let specifier_col = if import.info.source_span.end > import.info.source_span.start {
+                let source_span = edge.source_span();
+                let specifier_col = if source_span.end > source_span.start {
                     let (_, sc) = byte_offset_to_line_col(
                         line_offsets_by_file,
                         module.file_id,
-                        import.info.source_span.start,
+                        source_span.start,
                     );
                     sc
                 } else {

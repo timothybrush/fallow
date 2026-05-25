@@ -72,6 +72,37 @@ fn unlisted_dependencies_detected() {
     );
 }
 
+#[test]
+fn unlisted_re_export_dependency_reports_re_export_line() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).expect("create src dir");
+    std::fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "unlisted-re-export",
+  "main": "src/index.ts"
+}"#,
+    )
+    .expect("write package.json");
+    std::fs::write(
+        root.join("src/index.ts"),
+        "export const local = 1;\nexport { default as pad } from 'left-pad';\n",
+    )
+    .expect("write source");
+
+    let config = create_config(root.to_path_buf());
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+    let finding = results
+        .unlisted_dependencies
+        .iter()
+        .find(|dep| dep.dep.package_name == "left-pad")
+        .expect("left-pad re-export should be reported as unlisted");
+
+    assert_eq!(finding.dep.imported_from.len(), 1);
+    assert_eq!(finding.dep.imported_from[0].line, 2);
+}
+
 // ── Unresolved imports integration ─────────────────────────────
 
 #[test]
@@ -89,6 +120,14 @@ fn unresolved_imports_detected() {
     assert!(
         unresolved_specifiers.contains(&"./nonexistent"),
         "\"./nonexistent\" should be detected as unresolved import, found: {unresolved_specifiers:?}"
+    );
+    assert!(
+        unresolved_specifiers.contains(&"./missing-re-export"),
+        "named re-export source should be detected as unresolved import, found: {unresolved_specifiers:?}"
+    );
+    assert!(
+        unresolved_specifiers.contains(&"./missing-star-re-export"),
+        "star re-export source should be detected as unresolved import, found: {unresolved_specifiers:?}"
     );
 }
 
@@ -390,6 +429,153 @@ fn package_imports_missing_dist_resolve_to_source() {
             .iter()
             .any(|f| f.file.path.ends_with("src/self.ts")),
         "root self package export should resolve back to source"
+    );
+}
+
+#[test]
+fn package_imports_external_targets_credit_dependency_usage() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).expect("create src dir");
+    std::fs::write(
+        root.join("package.json"),
+        r##"{
+  "name": "imports-external-target",
+  "main": "src/index.ts",
+  "imports": {
+    "#pad": "left-pad"
+  },
+  "dependencies": {
+    "left-pad": "1.3.0",
+    "unused": "1.0.0"
+  }
+}"##,
+    )
+    .expect("write package.json");
+    std::fs::write(
+        root.join("src/index.ts"),
+        "import pad from '#pad';\nexport const value = pad('x', 2);\n",
+    )
+    .expect("write source");
+
+    let config = create_config(root.to_path_buf());
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+    let unresolved_specifiers: Vec<&str> = results
+        .unresolved_imports
+        .iter()
+        .map(|u| u.import.specifier.as_str())
+        .collect();
+    assert!(
+        !unresolved_specifiers.contains(&"#pad"),
+        "package imports external target should resolve: {unresolved_specifiers:?}"
+    );
+
+    let unused_dep_names: Vec<&str> = results
+        .unused_dependencies
+        .iter()
+        .map(|d| d.dep.package_name.as_str())
+        .collect();
+    assert!(
+        !unused_dep_names.contains(&"left-pad"),
+        "external target dependency should be credited as used: {unused_dep_names:?}"
+    );
+    assert!(
+        unused_dep_names.contains(&"unused"),
+        "unrelated dependency should still be reported unused: {unused_dep_names:?}"
+    );
+}
+
+#[test]
+fn package_imports_array_fallback_resolves_reachable_target() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).expect("create src dir");
+    std::fs::write(
+        root.join("package.json"),
+        r##"{
+  "name": "imports-array-fallback",
+  "main": "src/index.ts",
+  "imports": {
+    "#public/feature": ["./dist/missing.js", "./src/feature.ts"]
+  }
+}"##,
+    )
+    .expect("write package.json");
+    std::fs::write(
+        root.join("src/index.ts"),
+        "import { feature } from '#public/feature';\nexport const value = feature();\n",
+    )
+    .expect("write index");
+    std::fs::write(
+        root.join("src/feature.ts"),
+        "export function feature() { return 'ok'; }\n",
+    )
+    .expect("write feature");
+
+    let config = create_config(root.to_path_buf());
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+    let unresolved_specifiers: Vec<&str> = results
+        .unresolved_imports
+        .iter()
+        .map(|u| u.import.specifier.as_str())
+        .collect();
+    assert!(
+        !unresolved_specifiers.contains(&"#public/feature"),
+        "array fallback should resolve to the reachable target: {unresolved_specifiers:?}"
+    );
+    assert!(
+        !results
+            .unused_files
+            .iter()
+            .any(|f| f.file.path.ends_with("src/feature.ts")),
+        "array fallback target should be reachable"
+    );
+}
+
+#[test]
+fn package_exports_array_fallback_resolves_self_package_source() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).expect("create src dir");
+    std::fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "self-array-fallback",
+  "main": "src/index.ts",
+  "exports": {
+    "./public-feature": ["./dist/missing.js", "./src/feature.ts"]
+  }
+}"#,
+    )
+    .expect("write package.json");
+    std::fs::write(
+        root.join("src/index.ts"),
+        "import { feature } from 'self-array-fallback/public-feature';\nexport const value = feature();\n",
+    )
+    .expect("write index");
+    std::fs::write(
+        root.join("src/feature.ts"),
+        "export function feature() { return 'ok'; }\n",
+    )
+    .expect("write feature");
+
+    let config = create_config(root.to_path_buf());
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+    let unresolved_specifiers: Vec<&str> = results
+        .unresolved_imports
+        .iter()
+        .map(|u| u.import.specifier.as_str())
+        .collect();
+    assert!(
+        !unresolved_specifiers.contains(&"self-array-fallback/public-feature"),
+        "self-package exports array fallback should resolve: {unresolved_specifiers:?}"
+    );
+    assert!(
+        !results
+            .unused_files
+            .iter()
+            .any(|f| f.file.path.ends_with("src/feature.ts")),
+        "self-package exports array fallback target should be reachable"
     );
 }
 

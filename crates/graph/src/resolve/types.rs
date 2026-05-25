@@ -71,6 +71,61 @@ pub struct ResolvedReExport {
     pub target: ResolveResult,
 }
 
+/// Any source-bearing module edge that resolves one literal specifier.
+pub enum ResolvedSourceEdge<'a> {
+    /// Static or literal dynamic import edge.
+    Import(&'a ResolvedImport),
+    /// Re-export source edge.
+    ReExport(&'a ResolvedReExport),
+}
+
+impl<'a> ResolvedSourceEdge<'a> {
+    /// Return the original source specifier.
+    #[must_use]
+    pub fn source_specifier(&self) -> &'a str {
+        match self {
+            Self::Import(import) => &import.info.source,
+            Self::ReExport(re_export) => &re_export.info.source,
+        }
+    }
+
+    /// Return the resolved target.
+    #[must_use]
+    pub const fn target(&self) -> &'a ResolveResult {
+        match self {
+            Self::Import(import) => &import.target,
+            Self::ReExport(re_export) => &re_export.target,
+        }
+    }
+
+    /// Return whether this edge is type-only.
+    #[must_use]
+    pub const fn is_type_only(&self) -> bool {
+        match self {
+            Self::Import(import) => import.info.is_type_only,
+            Self::ReExport(re_export) => re_export.info.is_type_only,
+        }
+    }
+
+    /// Return the span of the full import or re-export declaration.
+    #[must_use]
+    pub const fn span(&self) -> oxc_span::Span {
+        match self {
+            Self::Import(import) => import.info.span,
+            Self::ReExport(re_export) => re_export.info.span,
+        }
+    }
+
+    /// Return the source literal span when the extractor has one.
+    #[must_use]
+    pub const fn source_span(&self) -> oxc_span::Span {
+        match self {
+            Self::Import(import) => import.info.source_span,
+            Self::ReExport(_) => oxc_span::Span::new(0, 0),
+        }
+    }
+}
+
 /// Fully resolved module with all imports mapped to targets.
 #[derive(Debug)]
 pub struct ResolvedModule {
@@ -141,6 +196,23 @@ impl ResolvedModule {
         self.resolved_imports
             .iter()
             .chain(self.resolved_dynamic_imports.iter())
+    }
+
+    /// Iterate over every literal source edge that has one resolved target.
+    ///
+    /// Includes static imports, literal dynamic imports, and re-export sources.
+    /// Dynamic import patterns are excluded because they resolve to sets of
+    /// files rather than single import specifiers.
+    pub fn all_resolved_source_edges(&self) -> impl Iterator<Item = ResolvedSourceEdge<'_>> {
+        self.resolved_imports
+            .iter()
+            .map(ResolvedSourceEdge::Import)
+            .chain(
+                self.resolved_dynamic_imports
+                    .iter()
+                    .map(ResolvedSourceEdge::Import),
+            )
+            .chain(self.re_exports.iter().map(ResolvedSourceEdge::ReExport))
     }
 }
 
