@@ -1760,9 +1760,9 @@ mod tests {
     use super::{
         CoverageSetupContext, FrameworkKind, PackageManager, SetupArgs, build_setup_json,
         detect_coverage_artifact, detect_framework, detect_package_manager, handle_license_step,
-        hash_file, load_setup_state, recipe_contents, recipe_state_is_current, record_recipe_state,
-        record_sidecar_state, run_setup, save_setup_state, setup_context_fingerprint,
-        setup_state_path, sidecar_state_is_current, write_recipe,
+        load_setup_state, recipe_contents, recipe_state_is_current, record_recipe_state,
+        record_sidecar_state, run_setup, setup_context_fingerprint, setup_state_path,
+        sidecar_state_is_current, write_recipe,
     };
     use fallow_config::PackageJson;
     use fallow_license::LicenseStatus;
@@ -2330,6 +2330,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_setup_resumes_valid_recipe_state_without_rewriting() {
+        use super::{hash_file, save_setup_state};
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().expect("tempdir should be created");
