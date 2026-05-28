@@ -122,6 +122,10 @@ pub struct CloneGroupFinding {
     /// The underlying clone group.
     #[serde(flatten)]
     pub group: CloneGroup,
+    /// Stable content fingerprint (`dup:<8hex>`). Addressable via
+    /// `fallow dupes --trace dup:<fp>` (and the `trace_clone` MCP tool) to
+    /// deep-dive this group; shown alongside each group in the human listing.
+    pub fingerprint: String,
     /// Suggested next steps: an `extract-shared` primary and a
     /// `suppress-line` secondary. Always emitted (possibly empty for
     /// forward-compat).
@@ -158,6 +162,7 @@ impl CloneGroupFinding {
             },
         ];
         Self {
+            fingerprint: fallow_core::duplicates::clone_fingerprint(&group.instances),
             group,
             actions,
             introduced: None,
@@ -274,6 +279,11 @@ pub struct AttributedCloneGroupFinding {
     /// The underlying attributed clone group.
     #[serde(flatten)]
     pub group: AttributedCloneGroup,
+    /// Stable content fingerprint (`dup:<8hex>`), addressable via
+    /// `fallow dupes --trace dup:<fp>`. Computed from the group's instances,
+    /// so it matches the top-level `clone_groups[].fingerprint` for the same
+    /// clone.
+    pub fingerprint: String,
     /// Suggested next steps. Always emitted.
     pub actions: Vec<CloneGroupAction>,
 }
@@ -303,7 +313,21 @@ impl AttributedCloneGroupFinding {
                 comment: Some(SUPPRESS_COMMENT.to_string()),
             },
         ];
-        Self { group, actions }
+        Self {
+            // Hash the representative instance's fragment, same as the bare
+            // `CloneGroupFinding`. `AttributedCloneGroup::from_group` preserves
+            // the base group's `(file, line)` instance order, so `first()` here
+            // is the same `CloneInstance` and the fingerprint matches the
+            // top-level `clone_groups[].fingerprint` for the same clone. If that
+            // grouping ever re-sorts instances, this must switch to hashing the
+            // base group to keep the two surfaces in agreement.
+            fingerprint: group.instances.first().map_or_else(
+                || fallow_core::duplicates::fingerprint_for_fragment(""),
+                |ai| fallow_core::duplicates::fingerprint_for_fragment(&ai.instance.fragment),
+            ),
+            group,
+            actions,
+        }
     }
 }
 
