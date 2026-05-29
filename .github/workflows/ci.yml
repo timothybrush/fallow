@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 # Deny all permissions by default — grant per-job as needed
 permissions: {}
@@ -99,7 +100,7 @@ jobs:
   check:
     name: Check (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -164,7 +165,7 @@ jobs:
   doc:
     name: Documentation
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -211,7 +212,7 @@ jobs:
   npm-package:
     name: npm Package
     needs: changes
-    if: needs.changes.outputs.npm-package == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.npm-package == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -305,7 +306,7 @@ jobs:
   fallow-self-analyze:
     name: Fallow Self Analysis
     needs: changes
-    if: needs.changes.outputs.self-analyze == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.self-analyze == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -323,7 +324,7 @@ jobs:
   vscode:
     name: VS Code Extension
     needs: changes
-    if: needs.changes.outputs.vscode == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.vscode == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -380,7 +381,7 @@ jobs:
   windows-arm64:
     name: Windows ARM64 Native Compile
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.npm == 'true' || needs.changes.outputs.actions == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.npm == 'true' || needs.changes.outputs.actions == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: windows-11-arm
     timeout-minutes: 20
     permissions:
@@ -405,7 +406,7 @@ jobs:
   test-gitlab-ci:
     name: Test GitLab CI scripts
     needs: changes
-    if: needs.changes.outputs.ci-scripts == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.ci-scripts == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -419,7 +420,7 @@ jobs:
   audit:
     name: Security Audit
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -432,7 +433,7 @@ jobs:
   deny:
     name: Cargo Deny
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -444,7 +445,7 @@ jobs:
   shear:
     name: Unused Dependencies
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -457,7 +458,7 @@ jobs:
   zizmor:
     name: Actions Security
     needs: changes
-    if: needs.changes.outputs.actions == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.actions == 'true' || github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -496,7 +497,7 @@ jobs:
     # that add tempdir / fs-IO tests without inheriting #[cfg_attr(miri, ignore)] from sibling
     # tests. Does not run on push events (the .githooks/pre-push hook covers that locally for
     # maintainers who opt in via `git config core.hooksPath .githooks`).
-    if: needs.changes.outputs.miri == 'true' && github.event_name == 'pull_request'
+    if: (needs.changes.outputs.miri == 'true' && github.event_name == 'pull_request') || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
