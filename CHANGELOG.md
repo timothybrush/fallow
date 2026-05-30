@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.85.0] - 2026-05-30
+
 ### Added
 
 - **`fallow coverage upload-source-maps` now uploads each map's repo-relative path, so the source-evidence viewer can resolve monorepo sub-package source.** A bundled map under a sub-package (e.g. `dashboard/dist/assets/X.js.map`) lists its sources relative to the map file (`../../src/components/X.tsx`); the cloud previously had only the basename and collapsed that to `src/components/X.tsx`, which never matched the package-prefixed runtime path `dashboard/src/components/X.tsx`, so the viewer reported "source not in maps" even though the file was in an uploaded map. The CLI now sends the map's path relative to the repo root alongside the existing `fileName`, letting the cloud resolve each source against the map's directory and recover `dashboard/src/components/X.tsx`. The field is omitted when a map is not under the repo root (an absolute `--dir` outside it), in which case the cloud falls back to its previous behavior. Run `upload-source-maps` from the repo root so the prefix is correct. No change for single-package projects. (Closes [#260](https://github.com/fallow-rs/fallow-cloud/issues/260).)
@@ -24,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Declared-but-unused framework plugins (`vite-plugin-*`, `prettier-plugin-*`) are now reported as unused devDependencies.** Fallow carried a hardcoded list of known dev tooling that exempted a package from the unused-dependency report by exact name. Several entries on that list were framework plugins (`vite-plugin-svgr`, `vite-plugin-eslint`, `prettier-plugin-tailwindcss`, `prettier-plugin-organize-imports`, `@ianvs/prettier-plugin-sort-imports`), which meant a plugin you listed in `devDependencies` but never wired into your `vite.config.*` or prettier config was silently treated as used. Those entries are gone: such a plugin is now credited only when it actually appears in the config (vite plugins through the import graph that already reads your config file, prettier plugins through the Prettier config parser, which now also reads the `plugins` array from `.prettierrc.{yml,yaml,toml}`), so a genuinely-unused one correctly surfaces. If a plugin you do use is flagged, fallow could not see it referenced in a config it parses; add it to `ignoreDependencies` and please open an issue with the config form. (Closes [#462](https://github.com/fallow-rs/fallow/issues/462).)
 - **The known-tooling list is now a community-maintainable catalogue.** The prefix and exact tool names that exempt a devDependency from the unused report moved out of Rust source into `crates/core/data/tooling.toml`. Adding a tool is a one-line entry with no code change and no regeneration step; see [CONTRIBUTING.md](CONTRIBUTING.md). No behavior change for the tools that stayed on the list. (Refs [#462](https://github.com/fallow-rs/fallow/issues/462).)
-- **The `fallow-v8-coverage` crate's ownership boundary with `oxc_coverage_v8` is now documented.** The two crates solve inverse problems (fallow maps real Node V8 dumps in UTF-16-code-unit space; `oxc_coverage_v8` fills an AST-built Istanbul `FileCoverage` in byte space) and are intentionally not consolidated, recorded in [ADR-010](decisions/010-v8-coverage-vs-oxc-coverage-boundary.md). The UTF-16 offset invariant is now pinned by a conformance test. No change to the `fallow` CLI's behavior, output, or the runtime-coverage wire format. (Closes [#509](https://github.com/fallow-rs/fallow/issues/509).)
+- **The `fallow-v8-coverage` crate's ownership boundary with `oxc_coverage_v8` is now documented.** The two crates solve inverse problems (fallow maps real Node V8 dumps in UTF-16-code-unit space; `oxc_coverage_v8` fills an AST-built Istanbul `FileCoverage` in byte space) and are intentionally not consolidated, recorded in ADR-010. The UTF-16 offset invariant is now pinned by a conformance test. No change to the `fallow` CLI's behavior, output, or the runtime-coverage wire format. (Closes [#509](https://github.com/fallow-rs/fallow/issues/509).)
 
 ### Removed
 
@@ -2689,7 +2691,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.84.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.85.0...HEAD
+[2.85.0]: https://github.com/fallow-rs/fallow/compare/v2.84.0...v2.85.0
 [2.84.0]: https://github.com/fallow-rs/fallow/compare/v2.83.0...v2.84.0
 [2.83.0]: https://github.com/fallow-rs/fallow/compare/v2.82.0...v2.83.0
 [2.82.0]: https://github.com/fallow-rs/fallow/compare/v2.81.0...v2.82.0
