@@ -414,139 +414,162 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedFileFinding"
-          }
+          },
+          "description": "Files not reachable from any entry point. Wrapped in\n[`UnusedFileFinding`] so each entry carries a typed `actions` array\nnatively, replacing the pre-2.76 post-pass injection."
         },
         "unused_exports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedExportFinding"
-          }
+          },
+          "description": "Exports never imported by other modules. Wrapped in\n[`UnusedExportFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unused_types": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedTypeFinding"
-          }
+          },
+          "description": "Type exports never imported by other modules. Wrapped in\n[`UnusedTypeFinding`]: the inner [`UnusedExport`] struct is shared\nwith `unused_exports` but the wrapper emits a type-targeted fix\ndescription."
         },
         "private_type_leaks": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/PrivateTypeLeakFinding"
-          }
+          },
+          "description": "Exported symbols whose public signature references same-file private\ntypes. Wrapped in [`PrivateTypeLeakFinding`] so each entry carries a\ntyped `actions` array natively."
         },
         "unused_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDependencyFinding"
-          }
+          },
+          "description": "Dependencies listed in package.json but never imported. Wrapped in\n[`UnusedDependencyFinding`] so each entry carries a typed `actions`\narray natively. The fix action swaps from `remove-dependency` to\n`move-dependency` when `used_in_workspaces` is non-empty."
         },
         "unused_dev_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDevDependencyFinding"
-          }
+          },
+          "description": "Dev dependencies listed in package.json but never imported. Wrapped\nin [`UnusedDevDependencyFinding`]: same bare struct as\n`unused_dependencies` with a `devDependencies`-targeted fix\ndescription."
         },
         "unused_optional_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedOptionalDependencyFinding"
-          }
+          },
+          "description": "Optional dependencies listed in package.json but never imported.\nWrapped in [`UnusedOptionalDependencyFinding`] with an\n`optionalDependencies`-targeted fix description."
         },
         "unused_enum_members": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedEnumMemberFinding"
-          }
+          },
+          "description": "Enum members never accessed. Wrapped in\n[`UnusedEnumMemberFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unused_class_members": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedClassMemberFinding"
-          }
+          },
+          "description": "Class members never accessed. Wrapped in\n[`UnusedClassMemberFinding`]: same inner [`UnusedMember`] struct as\n`unused_enum_members`, with a class-targeted fix description and the\n`auto_fixable: false` default to reflect dependency-injection\npatterns."
         },
         "unresolved_imports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnresolvedImportFinding"
-          }
+          },
+          "description": "Import specifiers that could not be resolved. Wrapped in\n[`UnresolvedImportFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unlisted_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnlistedDependencyFinding"
-          }
+          },
+          "description": "Dependencies used in code but not listed in package.json. Wrapped in\n[`UnlistedDependencyFinding`]."
         },
         "duplicate_exports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/DuplicateExportFinding"
-          }
+          },
+          "description": "Exports with the same name across multiple modules. Wrapped in\n[`DuplicateExportFinding`] so each entry carries a typed `actions`\narray natively, with the position-0 `add-to-config` `ignoreExports`\nsnippet wired in at wrapper construction."
         },
         "type_only_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TypeOnlyDependencyFinding"
-          }
+          },
+          "description": "Production dependencies only used via type-only imports (could be\ndevDependencies). Only populated in production mode. Wrapped in\n[`TypeOnlyDependencyFinding`]."
         },
         "test_only_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TestOnlyDependencyFinding"
-          }
+          },
+          "description": "Production dependencies only imported by test files (could be\ndevDependencies). Wrapped in [`TestOnlyDependencyFinding`]."
         },
         "circular_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/CircularDependencyFinding"
-          }
+          },
+          "description": "Circular dependency chains detected in the module graph. Wrapped in\n[`CircularDependencyFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "re_export_cycles": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ReExportCycleFinding"
-          }
+          },
+          "description": "Cycles or self-loops in the re-export edge subgraph (barrel files\nre-exporting from each other in a loop). Wrapped in\n[`ReExportCycleFinding`] so each entry carries a typed `actions`\narray natively (a `refactor-re-export-cycle` informational primary\nplus a `suppress-file` secondary; cycles are file-scoped so a single\nsuppression breaks the cycle)."
         },
         "boundary_violations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/BoundaryViolationFinding"
-          }
+          },
+          "description": "Imports that cross architecture boundary rules. Wrapped in\n[`BoundaryViolationFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "stale_suppressions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/StaleSuppression"
-          }
+          },
+          "description": "Suppression comments or JSDoc tags that no longer match any issue."
         },
         "unused_catalog_entries": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedCatalogEntryFinding"
-          }
+          },
+          "description": "Entries in pnpm-workspace.yaml's catalog: or catalogs: sections not\nreferenced by any workspace package via the catalog: protocol. Wrapped\nin [`UnusedCatalogEntryFinding`] so each entry carries a typed\n`actions` array natively, with per-instance `auto_fixable` derived\nfrom `hardcoded_consumers`."
         },
         "empty_catalog_groups": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/EmptyCatalogGroupFinding"
-          }
+          },
+          "description": "Named groups under pnpm-workspace.yaml's catalogs: section that declare\nno package entries. The top-level catalog: map is not reported. Wrapped\nin [`EmptyCatalogGroupFinding`]."
         },
         "unresolved_catalog_references": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnresolvedCatalogReferenceFinding"
-          }
+          },
+          "description": "Workspace package.json references to catalogs (`catalog:` or\n`catalog:<name>`) that do not declare the consumed package. pnpm install\nwill error until the named catalog grows to include the package or the\nreference is switched / removed. Wrapped in\n[`UnresolvedCatalogReferenceFinding`] with the discriminated\n`add-catalog-entry` / `update-catalog-reference` primary at position 0."
         },
         "unused_dependency_overrides": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDependencyOverrideFinding"
-          }
+          },
+          "description": "Entries in pnpm-workspace.yaml's overrides: section, or package.json's\npnpm.overrides block, whose target package is not declared by any\nworkspace package and is not present in pnpm-lock.yaml. Default severity\nis warn because projects without a readable lockfile fall back to\nmanifest-only checks; the hint field flags those conservative cases.\nWrapped in [`UnusedDependencyOverrideFinding`]."
         },
         "misconfigured_dependency_overrides": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/MisconfiguredDependencyOverrideFinding"
-          }
+          },
+          "description": "pnpm.overrides entries whose key or value does not parse as a valid\noverride spec (empty key, empty value, malformed selector, unbalanced\nparent matcher). pnpm install will reject these. Default severity is\nerror. Wrapped in [`MisconfiguredDependencyOverrideFinding`]."
         },
         "baseline_deltas": {
           "anyOf": [
@@ -687,139 +710,162 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedFileFinding"
-          }
+          },
+          "description": "Files not reachable from any entry point. Wrapped in\n[`UnusedFileFinding`] so each entry carries a typed `actions` array\nnatively, replacing the pre-2.76 post-pass injection."
         },
         "unused_exports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedExportFinding"
-          }
+          },
+          "description": "Exports never imported by other modules. Wrapped in\n[`UnusedExportFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unused_types": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedTypeFinding"
-          }
+          },
+          "description": "Type exports never imported by other modules. Wrapped in\n[`UnusedTypeFinding`]: the inner [`UnusedExport`] struct is shared\nwith `unused_exports` but the wrapper emits a type-targeted fix\ndescription."
         },
         "private_type_leaks": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/PrivateTypeLeakFinding"
-          }
+          },
+          "description": "Exported symbols whose public signature references same-file private\ntypes. Wrapped in [`PrivateTypeLeakFinding`] so each entry carries a\ntyped `actions` array natively."
         },
         "unused_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDependencyFinding"
-          }
+          },
+          "description": "Dependencies listed in package.json but never imported. Wrapped in\n[`UnusedDependencyFinding`] so each entry carries a typed `actions`\narray natively. The fix action swaps from `remove-dependency` to\n`move-dependency` when `used_in_workspaces` is non-empty."
         },
         "unused_dev_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDevDependencyFinding"
-          }
+          },
+          "description": "Dev dependencies listed in package.json but never imported. Wrapped\nin [`UnusedDevDependencyFinding`]: same bare struct as\n`unused_dependencies` with a `devDependencies`-targeted fix\ndescription."
         },
         "unused_optional_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedOptionalDependencyFinding"
-          }
+          },
+          "description": "Optional dependencies listed in package.json but never imported.\nWrapped in [`UnusedOptionalDependencyFinding`] with an\n`optionalDependencies`-targeted fix description."
         },
         "unused_enum_members": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedEnumMemberFinding"
-          }
+          },
+          "description": "Enum members never accessed. Wrapped in\n[`UnusedEnumMemberFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unused_class_members": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedClassMemberFinding"
-          }
+          },
+          "description": "Class members never accessed. Wrapped in\n[`UnusedClassMemberFinding`]: same inner [`UnusedMember`] struct as\n`unused_enum_members`, with a class-targeted fix description and the\n`auto_fixable: false` default to reflect dependency-injection\npatterns."
         },
         "unresolved_imports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnresolvedImportFinding"
-          }
+          },
+          "description": "Import specifiers that could not be resolved. Wrapped in\n[`UnresolvedImportFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unlisted_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnlistedDependencyFinding"
-          }
+          },
+          "description": "Dependencies used in code but not listed in package.json. Wrapped in\n[`UnlistedDependencyFinding`]."
         },
         "duplicate_exports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/DuplicateExportFinding"
-          }
+          },
+          "description": "Exports with the same name across multiple modules. Wrapped in\n[`DuplicateExportFinding`] so each entry carries a typed `actions`\narray natively, with the position-0 `add-to-config` `ignoreExports`\nsnippet wired in at wrapper construction."
         },
         "type_only_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TypeOnlyDependencyFinding"
-          }
+          },
+          "description": "Production dependencies only used via type-only imports (could be\ndevDependencies). Only populated in production mode. Wrapped in\n[`TypeOnlyDependencyFinding`]."
         },
         "test_only_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TestOnlyDependencyFinding"
-          }
+          },
+          "description": "Production dependencies only imported by test files (could be\ndevDependencies). Wrapped in [`TestOnlyDependencyFinding`]."
         },
         "circular_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/CircularDependencyFinding"
-          }
+          },
+          "description": "Circular dependency chains detected in the module graph. Wrapped in\n[`CircularDependencyFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "re_export_cycles": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ReExportCycleFinding"
-          }
+          },
+          "description": "Cycles or self-loops in the re-export edge subgraph (barrel files\nre-exporting from each other in a loop). Wrapped in\n[`ReExportCycleFinding`] so each entry carries a typed `actions`\narray natively (a `refactor-re-export-cycle` informational primary\nplus a `suppress-file` secondary; cycles are file-scoped so a single\nsuppression breaks the cycle)."
         },
         "boundary_violations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/BoundaryViolationFinding"
-          }
+          },
+          "description": "Imports that cross architecture boundary rules. Wrapped in\n[`BoundaryViolationFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "stale_suppressions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/StaleSuppression"
-          }
+          },
+          "description": "Suppression comments or JSDoc tags that no longer match any issue."
         },
         "unused_catalog_entries": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedCatalogEntryFinding"
-          }
+          },
+          "description": "Entries in pnpm-workspace.yaml's catalog: or catalogs: sections not\nreferenced by any workspace package via the catalog: protocol. Wrapped\nin [`UnusedCatalogEntryFinding`] so each entry carries a typed\n`actions` array natively, with per-instance `auto_fixable` derived\nfrom `hardcoded_consumers`."
         },
         "empty_catalog_groups": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/EmptyCatalogGroupFinding"
-          }
+          },
+          "description": "Named groups under pnpm-workspace.yaml's catalogs: section that declare\nno package entries. The top-level catalog: map is not reported. Wrapped\nin [`EmptyCatalogGroupFinding`]."
         },
         "unresolved_catalog_references": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnresolvedCatalogReferenceFinding"
-          }
+          },
+          "description": "Workspace package.json references to catalogs (`catalog:` or\n`catalog:<name>`) that do not declare the consumed package. pnpm install\nwill error until the named catalog grows to include the package or the\nreference is switched / removed. Wrapped in\n[`UnresolvedCatalogReferenceFinding`] with the discriminated\n`add-catalog-entry` / `update-catalog-reference` primary at position 0."
         },
         "unused_dependency_overrides": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDependencyOverrideFinding"
-          }
+          },
+          "description": "Entries in pnpm-workspace.yaml's overrides: section, or package.json's\npnpm.overrides block, whose target package is not declared by any\nworkspace package and is not present in pnpm-lock.yaml. Default severity\nis warn because projects without a readable lockfile fall back to\nmanifest-only checks; the hint field flags those conservative cases.\nWrapped in [`UnusedDependencyOverrideFinding`]."
         },
         "misconfigured_dependency_overrides": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/MisconfiguredDependencyOverrideFinding"
-          }
+          },
+          "description": "pnpm.overrides entries whose key or value does not parse as a valid\noverride spec (empty key, empty value, malformed selector, unbalanced\nparent matcher). pnpm install will reject these. Default severity is\nerror. Wrapped in [`MisconfiguredDependencyOverrideFinding`]."
         }
       },
       "required": [
@@ -2761,25 +2807,30 @@
       "type": "object",
       "properties": {
         "type": {
+          "description": "Action type identifier.",
           "$ref": "#/definitions/UntestedFileActionType"
         },
         "auto_fixable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether `fallow fix` can auto-apply this action. Today both\nvariants are manual."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable description of the action."
         },
         "note": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Additional context for the `add-tests` variant (explains why no\ntest path reaches this file). Absent on `suppress-file`."
         },
         "comment": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The file-level comment to insert. Present on `suppress-file`\n(`// fallow-ignore-file coverage-gaps`). Absent on `add-tests`."
         }
       },
       "required": [
@@ -2787,31 +2838,36 @@
         "auto_fixable",
         "description"
       ],
-      "description": "Action attached to an [`UntestedFile`] coverage-gap finding."
+      "description": "Suggested action attached to an [`UntestedFile`] coverage-gap finding.\n\n`build_untested_file_actions` emits a two-entry array on every\nuntested-file item: an `add-tests` primary action (scaffold tests for\nthe runtime file) and a `suppress-file` action\n(`// fallow-ignore-file coverage-gaps`). Both variants share the same\nstruct shape; the field that is populated (`note` for `add-tests`,\n`comment` for `suppress-file`) depends on the `kind`.\n\n[`UntestedFile`]: ../../fallow-cli/src/health_types/coverage.rs"
     },
     "UntestedExportAction": {
       "type": "object",
       "properties": {
         "type": {
+          "description": "Action type identifier.",
           "$ref": "#/definitions/UntestedExportActionType"
         },
         "auto_fixable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether `fallow fix` can auto-apply this action. Today both\nvariants are manual."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable description of the action."
         },
         "note": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Additional context for the `add-test-import` variant (explains the\nruntime-reachable / test-unreachable asymmetry). Absent on\n`suppress-file`."
         },
         "comment": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The file-level comment to insert. Present on `suppress-file`\n(`// fallow-ignore-file coverage-gaps`). Absent on\n`add-test-import`."
         }
       },
       "required": [
@@ -2819,7 +2875,7 @@
         "auto_fixable",
         "description"
       ],
-      "description": "Action attached to an [`UntestedExport`] coverage-gap finding."
+      "description": "Suggested action attached to an [`UntestedExport`] coverage-gap\nfinding.\n\n`build_untested_export_actions` emits a two-entry array on every\nuntested-export item: an `add-test-import` primary action (import the\nexport from a test-reachable module) and a `suppress-file` action\n(`// fallow-ignore-file coverage-gaps`). The export-specific variant\n`add-test-import` reflects that a test-reachable reference chain, not\njust any test coverage, is what closes the gap.\n\n[`UntestedExport`]: ../../fallow-cli/src/health_types/coverage.rs"
     },
     "HealthScore": {
       "type": "object",
@@ -3281,37 +3337,44 @@
       "type": "object",
       "properties": {
         "type": {
+          "description": "Action type identifier. A single finding's `actions` array can carry\nMULTIPLE entries of different types: e.g., a finding that exceeded\nboth cyclomatic and CRAP at `coverage_tier`: partial will get BOTH\n`increase-coverage` AND `refactor-function`, plus `suppress-line`.\nConsumers that select a single action should treat the FIRST\nnon-`suppress-{line,file}` action as primary. `add-tests` is emitted\nwhen CRAP triggered the finding, the function has no test coverage\n(`coverage_tier`: none), and full coverage can bring CRAP below\n`max_crap_threshold` (cyclomatic < threshold, since CRAP bottoms out\nat CC at 100% coverage). `increase-coverage` is emitted when CRAP\ntriggered the finding, some coverage exists (`coverage_tier`: partial\nor high), and full coverage can bring CRAP below `max_crap_threshold`;\nthe description steers toward targeted branch coverage rather than\nscaffolding new tests. `refactor-function` is emitted when\ncyclomatic/cognitive triggered the finding, when full coverage still\ncannot bring CRAP below `max_crap_threshold` (cyclomatic >=\nthreshold), or as a secondary action when cyclomatic is within 5 of\nthe cyclomatic threshold AND cognitive is at or above\n`max_cognitive_threshold / 2` (the cognitive floor suppresses false\npositives on flat type-tag dispatchers and JSX render maps where\nhigh cyclomatic comes from a single switch with near-zero cognitive\nload). `suppress-file` is emitted instead of `suppress-line` for\nsynthetic Angular `<template>` findings on `.html` files, because\nline-suppression comments cannot be expressed in HTML; the `comment`\nfield carries `<!-- fallow-ignore-file complexity -->` and\n`placement` is `top-of-template`.",
           "$ref": "#/definitions/HealthFindingActionType"
         },
         "auto_fixable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether `fallow fix` can auto-apply this action. Today every health\nfinding action is manual, but the field is non-singleton so a future\nauto-applier (e.g., an LLM-driven `refactor-function` worker) does\nnot need a schema change."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable description of the action."
         },
         "note": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Additional context (e.g., the canonical CRAP formula, or a hint\nabout which branch type to extract). Present on most action types;\ndropped only when the description carries the full ask."
         },
         "comment": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The inline comment to insert (e.g.,\n`// fallow-ignore-next-line complexity` or\n`<!-- fallow-ignore-file complexity -->`). Present on\n`suppress-line` and `suppress-file` action variants."
         },
         "placement": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Where to insert the suppress comment\n(e.g., `above-function-declaration`, `above-angular-decorator`,\n`above-component-worst-method`, or `top-of-template`). Present on\n`suppress-line` and `suppress-file` action variants."
         },
         "target_path": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Project-relative path the action should target when the finding's\nremediation lives in a different file from where the finding is\nanchored. Currently populated on the `increase-coverage` action for\nsynthetic Angular `<template>` findings whose CRAP is inherited from\nthe owning `.component.ts`: the action points at the component file\n(where the user actually adds tests) rather than the `.html` template\n(where the finding is anchored but which is not directly testable).\nAbsent when the action's target is the finding's own file."
         }
       },
       "required": [
@@ -3319,31 +3382,36 @@
         "auto_fixable",
         "description"
       ],
-      "description": "Action attached to a [`ComplexityViolation`]."
+      "description": "Suggested action attached to a [`ComplexityViolation`].\n\nEach complexity finding carries an array of these on the JSON wire\n(`findings[].actions[]`). The action selector in\n`crates/cli/src/report/json.rs::build_health_finding_actions` picks the\nprimary action based on which thresholds triggered the finding and the\nbucketed coverage tier. See [`HealthFindingActionType`] for the full\ndiscriminant list.\n\n`note`, `comment`, and `placement` are populated per-variant: refactor\nactions carry a `note`, suppress-line / suppress-file actions carry\n`comment` plus `placement`, and the coverage-leaning actions\n(`add-tests`, `increase-coverage`) carry only `note`.\n\n[`ComplexityViolation`]: ../../fallow-cli/src/health_types/scores.rs"
     },
     "HotspotAction": {
       "type": "object",
       "properties": {
         "type": {
+          "description": "Action type identifier.",
           "$ref": "#/definitions/HotspotActionType"
         },
         "auto_fixable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether `fallow fix` can auto-apply this action. Today every\nhotspot action is manual."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable description of the action."
         },
         "note": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Additional context for the action. Absent on `low-bus-factor` when\nthe finding's description already carries the full ask (no\nsuggested reviewers and not a low-commit file)."
         },
         "suggested_pattern": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Suggested CODEOWNERS pattern. Present only on `unowned-hotspot`\nactions. Derived per the [`heuristic`](Self::heuristic) field;\nconsumers should branch on [`heuristic`](Self::heuristic) rather\nthan assume a stable algorithm."
         },
         "heuristic": {
           "anyOf": [
@@ -3353,7 +3421,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Strategy used to derive [`suggested_pattern`](Self::suggested_pattern).\nReserved for future evolution (`codeowners-cluster`, etc.)."
         }
       },
       "required": [
@@ -3361,31 +3430,36 @@
         "auto_fixable",
         "description"
       ],
-      "description": "Action attached to a [`HotspotEntry`]."
+      "description": "Suggested action attached to a [`HotspotEntry`].\n\nThe action list always begins with `refactor-file` plus `add-tests`.\nOwnership-derived variants (`low-bus-factor`, `unowned-hotspot`,\n`ownership-drift`) are appended only when `--ownership` is active AND\nthe corresponding signal fires for the hotspot.\n\n[`HotspotEntry`]: ../../fallow-cli/src/health_types/scores.rs"
     },
     "RefactoringTargetAction": {
       "type": "object",
       "properties": {
         "type": {
+          "description": "Action type identifier.",
           "$ref": "#/definitions/RefactoringTargetActionType"
         },
         "auto_fixable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether `fallow fix` can auto-apply this action. Today both\nvariants are manual."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable description of the action. For `apply-refactoring`\nthis is the target's own `recommendation` string; for\n`suppress-line` it is the suppression prompt."
         },
         "category": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Recommendation category for `apply-refactoring` actions. Mirrors\nthe parent target's\n[`category`](../../fallow-cli/src/health_types/targets.rs.html)\nfield so consumers can route on the action alone."
         },
         "comment": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The inline comment to insert. Present on `suppress-line` actions\nwhen evidence exists."
         }
       },
       "required": [
@@ -3393,7 +3467,7 @@
         "auto_fixable",
         "description"
       ],
-      "description": "Action attached to a [`RefactoringTarget`]."
+      "description": "Suggested action attached to a [`RefactoringTarget`].\n\nThe list always begins with `apply-refactoring`. A trailing\n`suppress-line` is appended only when the target carries `evidence`\nlinking to specific functions (e.g., `extract_complex_functions`,\n`add_test_coverage`).\n\nUnlike [`HealthFindingAction`], the `suppress-line` variant emitted\nhere does NOT carry a `placement` field: the parent\n[`RefactoringTarget`] points at a file (not a specific function\ndeclaration site), so a per-line placement hint would have no\nreferent. Consumers that want the placement metadata should follow\nthe target's `evidence.complex_functions` back to the matching\n`ComplexityViolation` and read placement from THAT action instead.\n\n[`RefactoringTarget`]: ../../fallow-cli/src/health_types/targets.rs"
     },
     "CloneFamilyAction": {
       "type": "object",
@@ -3466,7 +3540,8 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute path to the unused file."
         }
       },
       "required": [
@@ -3478,25 +3553,32 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unused export."
         },
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the unused export."
         },
         "is_type_only": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this is a type-only export."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the export."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "span_start": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Byte offset into the source file (used by the fix command)."
         },
         "is_re_export": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this finding comes from a barrel/index re-export rather than the source definition."
         }
       },
       "required": [
@@ -3514,22 +3596,28 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the exported symbol."
         },
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Export whose public signature leaks the private type."
         },
         "type_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Private type referenced by the public signature."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the leaking type reference."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "span_start": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Byte offset of the type reference."
         }
       },
       "required": [
@@ -3546,22 +3634,27 @@
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
         },
         "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
           "$ref": "#/definitions/DependencyLocation"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         },
         "used_in_workspaces": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
         }
       },
       "required": [
@@ -3576,22 +3669,28 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unused member."
         },
         "parent_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the parent enum or class."
         },
         "member_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the unused member."
         },
         "kind": {
+          "description": "Whether this is an enum member, class method, or class property.",
           "$ref": "#/definitions/MemberKind"
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         }
       },
       "required": [
@@ -3608,19 +3707,24 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unresolved import."
         },
         "specifier": {
-          "type": "string"
+          "type": "string",
+          "description": "The import specifier that could not be resolved."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the import statement."
         },
         "specifier_col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the source string literal (the specifier in quotes).\nUsed by the LSP to underline just the specifier, not the entire import line."
         }
       },
       "required": [
@@ -3636,13 +3740,15 @@
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name, including internal workspace package names, that is\nimported but not listed in package.json."
         },
         "imported_from": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ImportSite"
-          }
+          },
+          "description": "Import sites where this unlisted dependency is used (file path, line, column)."
         }
       },
       "required": [
@@ -3655,13 +3761,16 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the import."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         }
       },
       "required": [
@@ -3675,13 +3784,15 @@
       "type": "object",
       "properties": {
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "The duplicated export name."
         },
         "locations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/DuplicateLocation"
-          }
+          },
+          "description": "Locations where this export name appears."
         }
       },
       "required": [
@@ -3694,13 +3805,16 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the duplicate export."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         }
       },
       "required": [
@@ -3714,13 +3828,16 @@
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Production dependency that is only used via type-only imports."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where the dependency is listed."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         }
       },
       "required": [
@@ -3728,19 +3845,22 @@
         "path",
         "line"
       ],
-      "description": "A production dependency that is only used via type-only imports."
+      "description": "A production dependency that is only used via type-only imports.\nIn production builds, type imports are erased, so this dependency\nis not needed at runtime and could be moved to devDependencies."
     },
     "TestOnlyDependency": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Production dependency that is only imported by test files — consider\nmoving to devDependencies."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where the dependency is listed."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         }
       },
       "required": [
@@ -3748,7 +3868,7 @@
         "path",
         "line"
       ],
-      "description": "A production dependency that is only imported by test files."
+      "description": "A production dependency that is only imported by test files.\nSince it is never used in production code, it could be moved to devDependencies."
     },
     "CircularDependency": {
       "type": "object",
@@ -3757,19 +3877,24 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Files forming the cycle, in import order."
         },
         "length": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Number of files in the cycle."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the import that starts the cycle (in the first file)."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the import that starts the cycle."
         },
         "is_cross_package": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this cycle crosses workspace package boundaries."
         }
       },
       "required": [
@@ -3784,25 +3909,32 @@
       "type": "object",
       "properties": {
         "from_path": {
-          "type": "string"
+          "type": "string",
+          "description": "The file making the disallowed import."
         },
         "to_path": {
-          "type": "string"
+          "type": "string",
+          "description": "The file being imported that violates the boundary."
         },
         "from_zone": {
-          "type": "string"
+          "type": "string",
+          "description": "The zone the importing file belongs to."
         },
         "to_zone": {
-          "type": "string"
+          "type": "string",
+          "description": "The zone the imported file belongs to."
         },
         "import_specifier": {
-          "type": "string"
+          "type": "string",
+          "description": "The raw import specifier from the source file."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the import statement in the source file."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the import statement."
         }
       },
       "required": [
@@ -3820,15 +3952,19 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the stale suppression."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the suppression comment or tag."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "origin": {
+          "description": "The origin and details of the stale suppression.",
           "$ref": "#/definitions/SuppressionOrigin"
         }
       },
@@ -3844,22 +3980,27 @@
       "type": "object",
       "properties": {
         "entry_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name declared in the catalog (e.g. `\"react\"`, `\"@scope/lib\"`)."
         },
         "catalog_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Catalog group: `\"default\"` for the top-level `catalog:` map, or the\nnamed catalog key for entries declared under `catalogs.<name>:`."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to `pnpm-workspace.yaml`, relative to the analyzed root."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the catalog entry within `pnpm-workspace.yaml`."
         },
         "hardcoded_consumers": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Workspace `package.json` files that declare the same package with a\nhardcoded version range instead of `catalog:`. Empty when no consumer\nuses a hardcoded version. Sorted lexicographically for deterministic\noutput."
         }
       },
       "required": [
@@ -3868,19 +4009,22 @@
         "path",
         "line"
       ],
-      "description": "A pnpm catalog entry declared in pnpm-workspace.yaml that no workspace package\nreferences via the `catalog:` protocol."
+      "description": "A pnpm catalog entry declared in pnpm-workspace.yaml that no workspace package\nreferences via the `catalog:` protocol.\n\nThe default catalog (top-level `catalog:` key) uses `catalog_name: \"default\"`.\nNamed catalogs (under `catalogs.<name>:`) use their declared name."
     },
     "EmptyCatalogGroup": {
       "type": "object",
       "properties": {
         "catalog_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Catalog group name declared under the top-level `catalogs:` map."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to `pnpm-workspace.yaml`, relative to the analyzed root."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the empty group header within `pnpm-workspace.yaml`."
         }
       },
       "required": [
@@ -3888,28 +4032,33 @@
         "path",
         "line"
       ],
-      "description": "A named `catalogs.<name>:` group with no entries."
+      "description": "A named `catalogs.<name>:` group in `pnpm-workspace.yaml` with no package entries."
     },
     "UnresolvedCatalogReference": {
       "type": "object",
       "properties": {
         "entry_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name being referenced via the catalog protocol (e.g. `\"react\"`)."
         },
         "catalog_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Catalog group the reference points at: `\"default\"` for bare `catalog:` references,\nor the named catalog key for `catalog:<name>` references."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute path to the consumer `package.json`. Matches the storage\nconvention used by every path-anchored finding type (`UnusedFile`,\n`UnresolvedImport`, `UnusedExport`, etc.) so the shared filtering\npipelines (`filter_results_by_changed_files`, per-file overrides,\naudit attribution) work without a separate root-join pass. JSON\noutput strips the project-root prefix via `serde_path::serialize`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in the consumer `package.json`."
         },
         "available_in_catalogs": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Other catalogs (in the same `pnpm-workspace.yaml`) that DO declare this\npackage. Empty when no catalog has the package. Sorted lexicographically.\nLets agents and humans decide whether to switch the reference to a\ndifferent catalog or to add the entry to the named catalog."
         }
       },
       "required": [
@@ -3918,46 +4067,55 @@
         "path",
         "line"
       ],
-      "description": "A workspace package.json reference pointing at a catalog missing the package."
+      "description": "A workspace package.json reference (`catalog:` or `catalog:<name>`) that points\nat a catalog which does not declare the consumed package.\n\n`pnpm install` errors at install time with `ERR_PNPM_CATALOG_ENTRY_NOT_FOUND_FOR_CATALOG_PROTOCOL`\nwhen this happens. fallow surfaces it statically so the failure is caught at\n`fallow check` time, before any install.\n\nThe default catalog (bare `catalog:` references the top-level `catalog:` map)\nuses `catalog_name: \"default\"`. Named catalogs (`catalog:react17`) use the\ndeclared catalog name."
     },
     "UnusedDependencyOverride": {
       "type": "object",
       "properties": {
         "raw_key": {
-          "type": "string"
+          "type": "string",
+          "description": "The full original override key as written in the source (e.g.\n`\"react>react-dom\"`, `\"@types/react@<18\"`). Preserved for round-trip\nreporting so agents see the unmodified spelling."
         },
         "target_package": {
-          "type": "string"
+          "type": "string",
+          "description": "The target package the override rewrites (e.g. `\"react-dom\"` for\n`\"react>react-dom\"`, `\"@types/react\"` for `\"@types/react@<18\"`)."
         },
         "parent_package": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Optional parent package (left side of `>`). `None` for bare-target keys."
         },
         "version_constraint": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Optional version selector on the target (e.g. `Some(\"<18\")` for\n`\"@types/react@<18\"`)."
         },
         "version_range": {
-          "type": "string"
+          "type": "string",
+          "description": "The right-hand side of the entry: the version pnpm should force."
         },
         "source": {
+          "description": "File the override was declared in. Matches the value users write in\n`ignoreDependencyOverrides[].source`.",
           "$ref": "#/definitions/DependencyOverrideSource"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the source file. `pnpm-workspace.yaml` or a `package.json`,\nstored as an absolute filesystem path so `--changed-since` and\nper-file `overrides.rules` can compare directly against the analyzer's\nchanged-set / per-path rule lookups. JSON serialization strips the\nproject root via `serde_path::serialize`, matching the\n`UnresolvedCatalogReference` convention."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the entry within the source file."
         },
         "hint": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Soft hint reminding consumers to verify the override before removal.\nEmitted on every unused-override finding (both bare-target and\nparent-chain shapes) because projects without a readable lockfile still\nuse the conservative package-manifest fallback."
         }
       },
       "required": [
@@ -3968,34 +4126,41 @@
         "path",
         "line"
       ],
-      "description": "An entry in pnpm's `overrides:` map whose target package is not declared in any workspace\n`package.json` and is not present in `pnpm-lock.yaml`."
+      "description": "An entry in pnpm's `overrides:` map (or the legacy `pnpm.overrides` in\n`package.json`) whose target package is not declared in any workspace\n`package.json` and is not present in `pnpm-lock.yaml`. Projects without a\nreadable lockfile fall back to package manifest checks; the `hint` field\nflags that conservative mode."
     },
     "MisconfiguredDependencyOverride": {
       "type": "object",
       "properties": {
         "raw_key": {
-          "type": "string"
+          "type": "string",
+          "description": "The full original override key as written in the source."
         },
         "target_package": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Parsed target package name when the key was syntactically valid (the\n`EmptyValue` reason path). `None` for `UnparsableKey` findings whose\nkey could not be parsed at all. Used by JSON `add-to-config` actions to\nemit a paste-ready `ignoreDependencyOverrides` value that matches the\nsuppression matcher (which also keys on `target_package`); avoids the\npitfall where `raw_key` like `\"react@<18\"` would not match the rule\nthat targets package `\"react\"`."
         },
         "raw_value": {
-          "type": "string"
+          "type": "string",
+          "description": "The right-hand side of the entry, exactly as written. Empty when the\nvalue was missing."
         },
         "reason": {
+          "description": "Classifier for the misconfiguration. 'unparsable-key' = the key is not a\nvalid pnpm shape; 'empty-value' = the value is missing, empty, or\ncontains line breaks.",
           "$ref": "#/definitions/DependencyOverrideMisconfigReason"
         },
         "source": {
+          "description": "Where the override entry was declared.",
           "$ref": "#/definitions/DependencyOverrideSource"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the source file. Stored as an absolute filesystem path so\n`--changed-since` and per-file `overrides.rules` can compare directly.\nJSON serialization strips the project root via `serde_path::serialize`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the entry within the source file."
         }
       },
       "required": [
@@ -4006,7 +4171,7 @@
         "path",
         "line"
       ],
-      "description": "An override entry whose key or value is malformed."
+      "description": "An override entry whose key or value is malformed. Default severity is\n`error` because pnpm refuses to install (or silently produces a no-op\noverride) when it encounters these shapes."
     },
     "CloneGroup": {
       "type": "object",
@@ -4864,139 +5029,162 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedFileFinding"
-          }
+          },
+          "description": "Files not reachable from any entry point. Wrapped in\n[`UnusedFileFinding`] so each entry carries a typed `actions` array\nnatively, replacing the pre-2.76 post-pass injection."
         },
         "unused_exports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedExportFinding"
-          }
+          },
+          "description": "Exports never imported by other modules. Wrapped in\n[`UnusedExportFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unused_types": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedTypeFinding"
-          }
+          },
+          "description": "Type exports never imported by other modules. Wrapped in\n[`UnusedTypeFinding`]: the inner [`UnusedExport`] struct is shared\nwith `unused_exports` but the wrapper emits a type-targeted fix\ndescription."
         },
         "private_type_leaks": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/PrivateTypeLeakFinding"
-          }
+          },
+          "description": "Exported symbols whose public signature references same-file private\ntypes. Wrapped in [`PrivateTypeLeakFinding`] so each entry carries a\ntyped `actions` array natively."
         },
         "unused_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDependencyFinding"
-          }
+          },
+          "description": "Dependencies listed in package.json but never imported. Wrapped in\n[`UnusedDependencyFinding`] so each entry carries a typed `actions`\narray natively. The fix action swaps from `remove-dependency` to\n`move-dependency` when `used_in_workspaces` is non-empty."
         },
         "unused_dev_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDevDependencyFinding"
-          }
+          },
+          "description": "Dev dependencies listed in package.json but never imported. Wrapped\nin [`UnusedDevDependencyFinding`]: same bare struct as\n`unused_dependencies` with a `devDependencies`-targeted fix\ndescription."
         },
         "unused_optional_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedOptionalDependencyFinding"
-          }
+          },
+          "description": "Optional dependencies listed in package.json but never imported.\nWrapped in [`UnusedOptionalDependencyFinding`] with an\n`optionalDependencies`-targeted fix description."
         },
         "unused_enum_members": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedEnumMemberFinding"
-          }
+          },
+          "description": "Enum members never accessed. Wrapped in\n[`UnusedEnumMemberFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unused_class_members": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedClassMemberFinding"
-          }
+          },
+          "description": "Class members never accessed. Wrapped in\n[`UnusedClassMemberFinding`]: same inner [`UnusedMember`] struct as\n`unused_enum_members`, with a class-targeted fix description and the\n`auto_fixable: false` default to reflect dependency-injection\npatterns."
         },
         "unresolved_imports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnresolvedImportFinding"
-          }
+          },
+          "description": "Import specifiers that could not be resolved. Wrapped in\n[`UnresolvedImportFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "unlisted_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnlistedDependencyFinding"
-          }
+          },
+          "description": "Dependencies used in code but not listed in package.json. Wrapped in\n[`UnlistedDependencyFinding`]."
         },
         "duplicate_exports": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/DuplicateExportFinding"
-          }
+          },
+          "description": "Exports with the same name across multiple modules. Wrapped in\n[`DuplicateExportFinding`] so each entry carries a typed `actions`\narray natively, with the position-0 `add-to-config` `ignoreExports`\nsnippet wired in at wrapper construction."
         },
         "type_only_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TypeOnlyDependencyFinding"
-          }
+          },
+          "description": "Production dependencies only used via type-only imports (could be\ndevDependencies). Only populated in production mode. Wrapped in\n[`TypeOnlyDependencyFinding`]."
         },
         "test_only_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/TestOnlyDependencyFinding"
-          }
+          },
+          "description": "Production dependencies only imported by test files (could be\ndevDependencies). Wrapped in [`TestOnlyDependencyFinding`]."
         },
         "circular_dependencies": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/CircularDependencyFinding"
-          }
+          },
+          "description": "Circular dependency chains detected in the module graph. Wrapped in\n[`CircularDependencyFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "re_export_cycles": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ReExportCycleFinding"
-          }
+          },
+          "description": "Cycles or self-loops in the re-export edge subgraph (barrel files\nre-exporting from each other in a loop). Wrapped in\n[`ReExportCycleFinding`] so each entry carries a typed `actions`\narray natively (a `refactor-re-export-cycle` informational primary\nplus a `suppress-file` secondary; cycles are file-scoped so a single\nsuppression breaks the cycle)."
         },
         "boundary_violations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/BoundaryViolationFinding"
-          }
+          },
+          "description": "Imports that cross architecture boundary rules. Wrapped in\n[`BoundaryViolationFinding`] so each entry carries a typed `actions`\narray natively."
         },
         "stale_suppressions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/StaleSuppression"
-          }
+          },
+          "description": "Suppression comments or JSDoc tags that no longer match any issue."
         },
         "unused_catalog_entries": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedCatalogEntryFinding"
-          }
+          },
+          "description": "Entries in pnpm-workspace.yaml's catalog: or catalogs: sections not\nreferenced by any workspace package via the catalog: protocol. Wrapped\nin [`UnusedCatalogEntryFinding`] so each entry carries a typed\n`actions` array natively, with per-instance `auto_fixable` derived\nfrom `hardcoded_consumers`."
         },
         "empty_catalog_groups": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/EmptyCatalogGroupFinding"
-          }
+          },
+          "description": "Named groups under pnpm-workspace.yaml's catalogs: section that declare\nno package entries. The top-level catalog: map is not reported. Wrapped\nin [`EmptyCatalogGroupFinding`]."
         },
         "unresolved_catalog_references": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnresolvedCatalogReferenceFinding"
-          }
+          },
+          "description": "Workspace package.json references to catalogs (`catalog:` or\n`catalog:<name>`) that do not declare the consumed package. pnpm install\nwill error until the named catalog grows to include the package or the\nreference is switched / removed. Wrapped in\n[`UnresolvedCatalogReferenceFinding`] with the discriminated\n`add-catalog-entry` / `update-catalog-reference` primary at position 0."
         },
         "unused_dependency_overrides": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/UnusedDependencyOverrideFinding"
-          }
+          },
+          "description": "Entries in pnpm-workspace.yaml's overrides: section, or package.json's\npnpm.overrides block, whose target package is not declared by any\nworkspace package and is not present in pnpm-lock.yaml. Default severity\nis warn because projects without a readable lockfile fall back to\nmanifest-only checks; the hint field flags those conservative cases.\nWrapped in [`UnusedDependencyOverrideFinding`]."
         },
         "misconfigured_dependency_overrides": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/MisconfiguredDependencyOverrideFinding"
-          }
+          },
+          "description": "pnpm.overrides entries whose key or value does not parse as a valid\noverride spec (empty key, empty value, malformed selector, unbalanced\nparent matcher). pnpm install will reject these. Default severity is\nerror. Wrapped in [`MisconfiguredDependencyOverrideFinding`]."
         }
       },
       "required": [
@@ -5015,15 +5203,27 @@
         "type_only_dependencies",
         "circular_dependencies"
       ],
-      "description": "Complete analysis results."
+      "description": "Complete analysis results.\n\n# Examples\n\n```\nuse fallow_types::output_dead_code::UnusedFileFinding;\nuse fallow_types::results::{AnalysisResults, UnusedFile};\nuse std::path::PathBuf;\n\nlet mut results = AnalysisResults::default();\nassert_eq!(results.total_issues(), 0);\nassert!(!results.has_issues());\n\nresults\n    .unused_files\n    .push(UnusedFileFinding::with_actions(UnusedFile {\n        path: PathBuf::from(\"src/dead.ts\"),\n    }));\nassert_eq!(results.total_issues(), 1);\nassert!(results.has_issues());\n```"
     },
     "DependencyLocation": {
-      "type": "string",
-      "enum": [
-        "dependencies",
-        "devDependencies",
-        "optionalDependencies"
-      ]
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "dependencies",
+          "description": "Listed in `dependencies`."
+        },
+        {
+          "type": "string",
+          "const": "devDependencies",
+          "description": "Listed in `devDependencies`."
+        },
+        {
+          "type": "string",
+          "const": "optionalDependencies",
+          "description": "Listed in `optionalDependencies`."
+        }
+      ],
+      "description": "Where in package.json a dependency is listed.\n\n# Examples\n\n```\nuse fallow_types::results::DependencyLocation;\n\n// All three variants are constructible\nlet loc = DependencyLocation::Dependencies;\nlet dev = DependencyLocation::DevDependencies;\nlet opt = DependencyLocation::OptionalDependencies;\n// Debug output includes the variant name\nassert!(format!(\"{loc:?}\").contains(\"Dependencies\"));\nassert!(format!(\"{dev:?}\").contains(\"DevDependencies\"));\nassert!(format!(\"{opt:?}\").contains(\"OptionalDependencies\"));\n```"
     },
     "MemberKind": {
       "oneOf": [
@@ -5059,13 +5259,16 @@
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "description": "The issue kind token from the comment (e.g., \"unused-exports\"), or None for blanket."
             },
             "is_file_level": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Whether this was a file-level suppression."
             },
             "kind_known": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Whether `issue_kind` parses to a known `IssueKind`. False when the\ntoken is a typo or refers to a kind that was renamed or removed in\na newer fallow release. JSON consumers (CI annotations, MCP agents,\nVS Code) branch on this to choose the right next-step text.\nOmitted from the wire when `true` so producers that have not yet\nadopted the field stay byte-compatible. See issue #449."
             },
             "type": {
               "type": "string",
@@ -5075,13 +5278,15 @@
           "required": [
             "type",
             "is_file_level"
-          ]
+          ],
+          "description": "A `// fallow-ignore-next-line` or `// fallow-ignore-file` comment."
         },
         {
           "type": "object",
           "properties": {
             "export_name": {
-              "type": "string"
+              "type": "string",
+              "description": "The name of the export that was tagged."
             },
             "type": {
               "type": "string",
@@ -5091,26 +5296,41 @@
           "required": [
             "type",
             "export_name"
-          ]
+          ],
+          "description": "An `@expected-unused` JSDoc tag on an export."
         }
       ],
       "description": "The origin of a stale suppression: inline comment or JSDoc tag."
     },
     "DependencyOverrideSource": {
-      "type": "string",
-      "enum": [
-        "pnpm-workspace.yaml",
-        "package.json"
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "pnpm-workspace.yaml",
+          "description": "Top-level `overrides:` key in `pnpm-workspace.yaml`."
+        },
+        {
+          "type": "string",
+          "const": "package.json",
+          "description": "`pnpm.overrides` in a root `package.json`."
+        }
       ],
-      "description": "Where an override entry was declared."
+      "description": "Where an override entry was declared. Serialized as the filename label\n(`\"pnpm-workspace.yaml\"` or `\"package.json\"`) so the value in JSON output\nmatches the value users write in `ignoreDependencyOverrides[].source`."
     },
     "DependencyOverrideMisconfigReason": {
-      "type": "string",
-      "enum": [
-        "unparsable-key",
-        "empty-value"
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "unparsable-key",
+          "description": "The override key could not be parsed into a recognised pnpm shape\n(e.g. dangling `>`, missing target, garbage characters)."
+        },
+        {
+          "type": "string",
+          "const": "empty-value",
+          "description": "The override value is missing, empty, or contains line breaks."
+        }
       ],
-      "description": "Why a dependency-override entry is misconfigured."
+      "description": "Why a dependency-override entry is misconfigured. `pnpm install` would\neither fail at install time or silently no-op on these entries; surfacing\nthem statically catches the issue before pnpm does."
     },
     "RefactoringKind": {
       "oneOf": [
@@ -5128,20 +5348,42 @@
       "description": "The kind of refactoring suggested for a clone family."
     },
     "FlagKind": {
-      "type": "string",
-      "enum": [
-        "environment_variable",
-        "sdk_call",
-        "config_object"
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "environment_variable",
+          "description": "Environment variable check (e.g., `process.env.FEATURE_X`)."
+        },
+        {
+          "type": "string",
+          "const": "sdk_call",
+          "description": "Feature flag SDK call (e.g., `useFlag('name')`, `variation('name', false)`)."
+        },
+        {
+          "type": "string",
+          "const": "config_object",
+          "description": "Config object property access (e.g., `config.features.newCheckout`)."
+        }
       ],
       "description": "The detection method used to identify a feature flag."
     },
     "FlagConfidence": {
-      "type": "string",
-      "enum": [
-        "low",
-        "medium",
-        "high"
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "low",
+          "description": "Low confidence: heuristic match (config object patterns)."
+        },
+        {
+          "type": "string",
+          "const": "medium",
+          "description": "Medium confidence: pattern match with some ambiguity."
+        },
+        {
+          "type": "string",
+          "const": "high",
+          "description": "High confidence: unambiguous pattern (env vars, direct SDK calls)."
+        }
       ],
       "description": "Detection confidence for a feature flag finding."
     },
@@ -5149,34 +5391,42 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the feature flag usage."
         },
         "flag_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name or identifier of the flag (e.g., `ENABLE_NEW_CHECKOUT`, `new-checkout`)."
         },
         "kind": {
+          "description": "How the flag was detected.",
           "$ref": "#/definitions/FlagKind"
         },
         "confidence": {
+          "description": "Detection confidence level.",
           "$ref": "#/definitions/FlagConfidence"
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "sdk_name": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "SDK or provider name (e.g., \"LaunchDarkly\", \"Statsig\"), if detected from SDK call."
         },
         "guarded_dead_exports": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Unused exports found within the guarded code block.\nPopulated by cross-reference with dead code analysis."
         }
       },
       "required": [
@@ -5193,25 +5443,31 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the export."
         },
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the exported symbol."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "reference_count": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Number of files that reference this export."
         },
         "reference_locations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ReferenceLocation"
-          }
+          },
+          "description": "Locations where this export is referenced. Used by the LSP Code Lens\nto enable click-to-navigate via `editor.action.showReferences`."
         }
       },
       "required": [
@@ -5228,13 +5484,16 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the import that references the export."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         }
       },
       "required": [
@@ -5248,7 +5507,8 @@
       "type": "object",
       "properties": {
         "total": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Total number of entry points detected."
         },
         "by_source": {
           "type": "array",
@@ -5264,14 +5524,15 @@
                 "type": "integer"
               }
             ]
-          }
+          },
+          "description": "Breakdown by source category (e.g., \"package.json\" -> 3, \"plugin\" -> 12).\nSorted by key for deterministic output."
         }
       },
       "required": [
         "total",
         "by_source"
       ],
-      "description": "Summary of detected entry points grouped by discovery source."
+      "description": "Summary of detected entry points, grouped by discovery source.\n\nUsed to surface entry-point detection status in human and JSON output,\nso library authors can verify that fallow found the right entry points."
     },
     "FixActionType": {
       "oneOf": [
@@ -6333,57 +6594,57 @@
         {
           "type": "string",
           "const": "refactor-function",
-          "description": "Refactor the function."
+          "description": "Refactor the function to reduce complexity. Emitted when\ncyclomatic/cognitive triggered the finding, when full coverage\nstill cannot bring CRAP below `max_crap_threshold`, or as a\nsecondary action when cyclomatic is within 5 of the cyclomatic\nthreshold AND cognitive is at or above the cognitive floor."
         },
         {
           "type": "string",
           "const": "add-tests",
-          "description": "Add tests for a CRAP-triggered finding with no coverage."
+          "description": "Add tests for a CRAP-triggered finding whose coverage tier is\n`none` (no test path reaches the function)."
         },
         {
           "type": "string",
           "const": "increase-coverage",
-          "description": "Increase test coverage for a CRAP-triggered finding with partial coverage."
+          "description": "Increase test coverage for a CRAP-triggered finding whose coverage\ntier is `partial` or `high` (some test path exists; add targeted\nassertions for uncovered branches)."
         },
         {
           "type": "string",
           "const": "suppress-file",
-          "description": "Suppress with an HTML comment at the top of the template."
+          "description": "Suppress with an HTML comment at the top of the template. Used for\nsynthetic Angular `<template>` findings on `.html` files where a\nline suppression cannot be expressed."
         },
         {
           "type": "string",
           "const": "suppress-line",
-          "description": "Suppress with an inline comment above the function."
+          "description": "Suppress with an inline `// fallow-ignore-next-line complexity`\ncomment above the function or Angular decorator."
         }
       ],
-      "description": "Discriminant for [`HealthFindingAction::kind`]."
+      "description": "Discriminant for [`HealthFindingAction::kind`]. Mirrors the action types\nemitted by `build_health_finding_actions`. A single finding's `actions`\narray may carry multiple entries of different types: a finding that\nexceeded both cyclomatic and CRAP at `coverage_tier: partial` will get\nBOTH `increase-coverage` AND `refactor-function`, plus the trailing\n`suppress-line`."
     },
     "HotspotActionType": {
       "oneOf": [
         {
           "type": "string",
           "const": "refactor-file",
-          "description": "Refactor the hotspot file."
+          "description": "Refactor the hotspot file (high complexity plus frequent change)."
         },
         {
           "type": "string",
           "const": "add-tests",
-          "description": "Add test coverage for the hotspot file."
+          "description": "Add test coverage to reduce change risk on the hotspot file."
         },
         {
           "type": "string",
           "const": "low-bus-factor",
-          "description": "Bus factor of 1."
+          "description": "Bus factor of 1: a single recent contributor owns the file.\nEmitted only with `--ownership`."
         },
         {
           "type": "string",
           "const": "unowned-hotspot",
-          "description": "Hotspot matches no CODEOWNERS rule."
+          "description": "Hotspot matches no CODEOWNERS rule (a rules file exists but no\npattern matches). Emitted only with `--ownership`."
         },
         {
           "type": "string",
           "const": "ownership-drift",
-          "description": "Ownership has drifted to a new top contributor."
+          "description": "Ownership has drifted from the original author to a new top\ncontributor. Emitted only with `--ownership`."
         }
       ],
       "description": "Discriminant for [`HotspotAction::kind`]."
@@ -6393,22 +6654,22 @@
         {
           "type": "string",
           "const": "directory-deepest",
-          "description": "Suggest the deepest directory containing the file."
+          "description": "Suggest the deepest directory containing the file (e.g.,\n`/src/api/users/`). Keeps the suggestion reviewable while staying\na directory pattern rather than a per-file rule."
         }
       ],
-      "description": "Strategy discriminant for the suggested CODEOWNERS pattern."
+      "description": "Strategy discriminant for the suggested CODEOWNERS pattern attached to\nan `unowned-hotspot` action."
     },
     "RefactoringTargetActionType": {
       "oneOf": [
         {
           "type": "string",
           "const": "apply-refactoring",
-          "description": "Apply the recommended refactoring."
+          "description": "Apply the recommended refactoring (extract, split, decouple, etc.)."
         },
         {
           "type": "string",
           "const": "suppress-line",
-          "description": "Suppress the underlying complexity finding."
+          "description": "Suppress the underlying complexity finding with an inline comment."
         }
       ],
       "description": "Discriminant for [`RefactoringTargetAction::kind`]."
@@ -6423,10 +6684,10 @@
         {
           "type": "string",
           "const": "suppress-file",
-          "description": "Suppress coverage-gap reporting for this file with a file-level comment."
+          "description": "Suppress coverage-gap reporting for this file with a file-level\ncomment."
         }
       ],
-      "description": "Discriminant for [`UntestedFileAction::kind`]."
+      "description": "Discriminant for [`UntestedFileAction::kind`]. Mirrors the action types\nemitted by `build_untested_file_actions`."
     },
     "UntestedExportActionType": {
       "oneOf": [
@@ -6441,7 +6702,7 @@
           "description": "Suppress coverage-gap reporting for the export's file with a\nfile-level comment."
         }
       ],
-      "description": "Discriminant for [`UntestedExportAction::kind`]."
+      "description": "Discriminant for [`UntestedExportAction::kind`]. Mirrors the action\ntypes emitted by `build_untested_export_actions`."
     },
     "BoundariesListLogicalGroup": {
       "type": "object",
@@ -6909,13 +7170,15 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute path to the unused file."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps: a `delete-file` primary and a `suppress-file`\nsecondary. Always emitted (possibly empty for forward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -6925,44 +7188,53 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base. `None` when serialized directly from Rust."
         }
       },
       "required": [
         "path",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedFile`] finding."
+      "description": "Wire-shape envelope for an [`UnusedFile`] finding. The bare finding\nflattens in via `#[serde(flatten)]`, with a typed `actions` array\npopulated at construction time and the audit-pass `introduced` flag\nattached as an optional sibling."
     },
     "UnusedExportFinding": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unused export."
         },
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the unused export."
         },
         "is_type_only": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this is a type-only export."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the export."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "span_start": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Byte offset into the source file (used by the fix command)."
         },
         "is_re_export": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this finding comes from a barrel/index re-export rather than the source definition."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -6972,7 +7244,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -6985,37 +7258,45 @@
         "is_re_export",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedExport`] finding."
+      "description": "Wire-shape envelope for an [`UnusedExport`] finding consumed under the\n`unused_exports` key. Same Rust struct as [`UnusedTypeFinding`], with a\ndifferent fix description so consumers can tell value-export from\ntype-export removal at the action level."
     },
     "UnusedTypeFinding": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unused export."
         },
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the unused export."
         },
         "is_type_only": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this is a type-only export."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the export."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "span_start": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Byte offset into the source file (used by the fix command)."
         },
         "is_re_export": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this finding comes from a barrel/index re-export rather than the source definition."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7025,7 +7306,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7038,34 +7320,41 @@
         "is_re_export",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedExport`] finding consumed under `unused_types`."
+      "description": "Wire-shape envelope for an [`UnusedExport`] finding consumed under the\n`unused_types` key. Wraps the same bare [`UnusedExport`] struct as\n[`UnusedExportFinding`] but emits a fix action targeted at type-only\ndeclarations, with the same `is_re_export`-aware note swap."
     },
     "PrivateTypeLeakFinding": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the exported symbol."
         },
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Export whose public signature leaks the private type."
         },
         "type_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Private type referenced by the public signature."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the leaking type reference."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "span_start": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Byte offset of the type reference."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7075,7 +7364,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7087,34 +7377,40 @@
         "span_start",
         "actions"
       ],
-      "description": "Actions wrapper for a [`PrivateTypeLeak`] finding."
+      "description": "Wire-shape envelope for a [`PrivateTypeLeak`] finding. Mirrors\n[`UnusedFileFinding`]: flattens the bare finding and carries a typed\n`actions` array (`export-type` primary plus `suppress-line` secondary)."
     },
     "UnusedDependencyFinding": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
         },
         "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
           "$ref": "#/definitions/DependencyLocation"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         },
         "used_in_workspaces": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7124,7 +7420,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7134,34 +7431,40 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedDependency`] finding consumed under `unused_dependencies`."
+      "description": "Wire-shape envelope for an [`UnusedDependency`] finding consumed under\nthe `unused_dependencies` key (production deps). Flattens the bare\nfinding; the typed `actions` array carries either a `remove-dependency`\nor `move-dependency` primary depending on\n`inner.used_in_workspaces`."
     },
     "UnusedDevDependencyFinding": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
         },
         "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
           "$ref": "#/definitions/DependencyLocation"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         },
         "used_in_workspaces": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7171,7 +7474,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7181,34 +7485,40 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedDependency`] finding consumed under `unused_dev_dependencies`."
+      "description": "Wire-shape envelope for an [`UnusedDependency`] finding consumed under\nthe `unused_dev_dependencies` key. Same bare struct as\n[`UnusedDependencyFinding`]; the fix description points at\n`devDependencies` and the suppress comment uses\n`unused-dev-dependency`."
     },
     "UnusedOptionalDependencyFinding": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name, including internal workspace package names."
         },
         "location": {
+          "description": "Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.",
           "$ref": "#/definitions/DependencyLocation"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where this dependency is listed.\nFor root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         },
         "used_in_workspaces": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Workspace roots that import this package even though the declaring workspace does not."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7218,7 +7528,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7228,34 +7539,41 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedDependency`] finding consumed under `unused_optional_dependencies`."
+      "description": "Wire-shape envelope for an [`UnusedDependency`] finding consumed under\nthe `unused_optional_dependencies` key. Same bare struct as\n[`UnusedDependencyFinding`]; the fix description points at\n`optionalDependencies`. Reuses the `unused-dependency` suppress\n`IssueKind` because there is no dedicated variant for optional deps."
     },
     "UnusedEnumMemberFinding": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unused member."
         },
         "parent_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the parent enum or class."
         },
         "member_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the unused member."
         },
         "kind": {
+          "description": "Whether this is an enum member, class method, or class property.",
           "$ref": "#/definitions/MemberKind"
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7265,7 +7583,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7277,34 +7596,41 @@
         "col",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedMember`] finding consumed under `unused_enum_members`."
+      "description": "Wire-shape envelope for an [`UnusedMember`] finding consumed under the\n`unused_enum_members` key."
     },
     "UnusedClassMemberFinding": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unused member."
         },
         "parent_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the parent enum or class."
         },
         "member_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Name of the unused member."
         },
         "kind": {
+          "description": "Whether this is an enum member, class method, or class property.",
           "$ref": "#/definitions/MemberKind"
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7314,7 +7640,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7326,31 +7653,37 @@
         "col",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedMember`] finding consumed under `unused_class_members`."
+      "description": "Wire-shape envelope for an [`UnusedMember`] finding consumed under the\n`unused_class_members` key. Same Rust struct as\n[`UnusedEnumMemberFinding`]; the fix action and suppress comment carry\nthe class-member kebab-case identifier instead."
     },
     "UnresolvedImportFinding": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File containing the unresolved import."
         },
         "specifier": {
-          "type": "string"
+          "type": "string",
+          "description": "The import specifier that could not be resolved."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the import statement."
         },
         "specifier_col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the source string literal (the specifier in quotes).\nUsed by the LSP to underline just the specifier, not the entire import line."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7360,7 +7693,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7371,25 +7705,28 @@
         "specifier_col",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnresolvedImport`] finding."
+      "description": "Wire-shape envelope for an [`UnresolvedImport`] finding. Mirrors\n[`UnusedFileFinding`]: flattens the bare finding and carries a typed\n`actions` array (`resolve-import` primary plus config and inline\nsuppression actions)."
     },
     "UnlistedDependencyFinding": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name, including internal workspace package names, that is\nimported but not listed in package.json."
         },
         "imported_from": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/ImportSite"
-          }
+          },
+          "description": "Import sites where this unlisted dependency is used (file path, line, column)."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7399,7 +7736,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7407,25 +7745,29 @@
         "imported_from",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnlistedDependency`] finding."
+      "description": "Wire-shape envelope for an [`UnlistedDependency`] finding. Carries an\n`install-dependency` primary (non-auto-fixable) plus the standard\n`ignoreDependencies` config suppress."
     },
     "TypeOnlyDependencyFinding": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Production dependency that is only used via type-only imports."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where the dependency is listed."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7435,7 +7777,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7444,25 +7787,29 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for a [`TypeOnlyDependency`] finding."
+      "description": "Wire-shape envelope for a [`TypeOnlyDependency`] finding. Carries a\n`move-to-dev` primary plus the standard `ignoreDependencies` config\nsuppress."
     },
     "TestOnlyDependencyFinding": {
       "type": "object",
       "properties": {
         "package_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Production dependency that is only imported by test files — consider\nmoving to devDependencies."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the package.json where the dependency is listed."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in package.json."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7472,7 +7819,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7481,7 +7829,7 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for a [`TestOnlyDependency`] finding."
+      "description": "Wire-shape envelope for a [`TestOnlyDependency`] finding. Carries a\n`move-to-dev` primary (different prose than [`TypeOnlyDependencyFinding`])\nplus the standard `ignoreDependencies` config suppress."
     },
     "CircularDependencyFinding": {
       "type": "object",
@@ -7490,25 +7838,31 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Files forming the cycle, in import order."
         },
         "length": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Number of files in the cycle."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the import that starts the cycle (in the first file)."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the import that starts the cycle."
         },
         "is_cross_package": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this cycle crosses workspace package boundaries."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7518,7 +7872,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7528,37 +7883,45 @@
         "col",
         "actions"
       ],
-      "description": "Actions wrapper for a [`CircularDependency`] finding."
+      "description": "Wire-shape envelope for a [`CircularDependency`] finding. Mirrors\n[`UnusedFileFinding`]: flattens the bare finding and carries a typed\n`actions` array (`refactor-cycle` primary plus `suppress-line`\nsecondary)."
     },
     "BoundaryViolationFinding": {
       "type": "object",
       "properties": {
         "from_path": {
-          "type": "string"
+          "type": "string",
+          "description": "The file making the disallowed import."
         },
         "to_path": {
-          "type": "string"
+          "type": "string",
+          "description": "The file being imported that violates the boundary."
         },
         "from_zone": {
-          "type": "string"
+          "type": "string",
+          "description": "The zone the importing file belongs to."
         },
         "to_zone": {
-          "type": "string"
+          "type": "string",
+          "description": "The zone the imported file belongs to."
         },
         "import_specifier": {
-          "type": "string"
+          "type": "string",
+          "description": "The raw import specifier from the source file."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the import statement in the source file."
         },
         "col": {
-          "type": "integer"
+          "type": "integer",
+          "description": "0-based byte column offset of the import statement."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7568,7 +7931,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7581,7 +7945,7 @@
         "col",
         "actions"
       ],
-      "description": "Actions wrapper for a [`BoundaryViolation`] finding."
+      "description": "Wire-shape envelope for a [`BoundaryViolation`] finding. Mirrors\n[`UnusedFileFinding`]: flattens the bare finding and carries a typed\n`actions` array (`refactor-boundary` primary plus `suppress-line`\nsecondary)."
     },
     "RuntimeCoverageSchemaVersion": {
       "oneOf": [
@@ -7641,19 +8005,22 @@
       "type": "object",
       "properties": {
         "export_name": {
-          "type": "string"
+          "type": "string",
+          "description": "The duplicated export name."
         },
         "locations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/DuplicateLocation"
-          }
+          },
+          "description": "Locations where this export name appears."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -7663,7 +8030,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7671,34 +8039,40 @@
         "locations",
         "actions"
       ],
-      "description": "Actions wrapper for a [`DuplicateExport`] finding."
+      "description": "Wire-shape envelope for a [`DuplicateExport`] finding. Carries up to\nthree actions in position-locked order: an `add-to-config` `ignoreExports`\nsnippet (only when `locations[]` carries at least one path) followed by\nthe `remove-duplicate` fix and the multi-location suppress.\n\nThe `add-to-config` action sits at position 0 because the documented\nprimary slot points at the safe, non-destructive path: the shadcn /\nRadix / bits-ui namespace-barrel case where every `index.*` reexports\nthe directory's neighbours. The `remove-duplicate` fix stays as the\nsecondary so consumers that pattern-match on `actions[0].type` for\n\"primary fix\" never propose deletion of an intentional barrel surface."
     },
     "UnusedCatalogEntryFinding": {
       "type": "object",
       "properties": {
         "entry_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name declared in the catalog (e.g. `\"react\"`, `\"@scope/lib\"`)."
         },
         "catalog_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Catalog group: `\"default\"` for the top-level `catalog:` map, or the\nnamed catalog key for entries declared under `catalogs.<name>:`."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to `pnpm-workspace.yaml`, relative to the analyzed root."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the catalog entry within `pnpm-workspace.yaml`."
         },
         "hardcoded_consumers": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Workspace `package.json` files that declare the same package with a\nhardcoded version range instead of `catalog:`. Empty when no consumer\nuses a hardcoded version. Sorted lexicographically for deterministic\noutput."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted."
         },
         "introduced": {
           "anyOf": [
@@ -7708,7 +8082,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7718,25 +8093,29 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnusedCatalogEntry`] finding."
+      "description": "Wire-shape envelope for an [`UnusedCatalogEntry`] finding. Per-instance\n`auto_fixable` flips to `false` when `hardcoded_consumers` is non-empty:\nthe entry cannot be removed safely while a workspace package still pins\nthe same package via a hardcoded version range."
     },
     "EmptyCatalogGroupFinding": {
       "type": "object",
       "properties": {
         "catalog_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Catalog group name declared under the top-level `catalogs:` map."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to `pnpm-workspace.yaml`, relative to the analyzed root."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the empty group header within `pnpm-workspace.yaml`."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted."
         },
         "introduced": {
           "anyOf": [
@@ -7746,7 +8125,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7755,34 +8135,40 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for an [`EmptyCatalogGroup`] finding."
+      "description": "Wire-shape envelope for an [`EmptyCatalogGroup`] finding. Carries a\nstraightforward `remove-empty-catalog-group` primary plus a YAML-comment\nsuppress."
     },
     "UnresolvedCatalogReferenceFinding": {
       "type": "object",
       "properties": {
         "entry_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Package name being referenced via the catalog protocol (e.g. `\"react\"`)."
         },
         "catalog_name": {
-          "type": "string"
+          "type": "string",
+          "description": "Catalog group the reference points at: `\"default\"` for bare `catalog:` references,\nor the named catalog key for `catalog:<name>` references."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute path to the consumer `package.json`. Matches the storage\nconvention used by every path-anchored finding type (`UnusedFile`,\n`UnresolvedImport`, `UnusedExport`, etc.) so the shared filtering\npipelines (`filter_results_by_changed_files`, per-file overrides,\naudit attribution) work without a separate root-join pass. JSON\noutput strips the project-root prefix via `serde_path::serialize`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the dependency entry in the consumer `package.json`."
         },
         "available_in_catalogs": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Other catalogs (in the same `pnpm-workspace.yaml`) that DO declare this\npackage. Empty when no catalog has the package. Sorted lexicographically.\nLets agents and humans decide whether to switch the reference to a\ndifferent catalog or to add the entry to the named catalog."
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted; position 0 is the discriminated\nprimary (see struct docs)."
         },
         "introduced": {
           "anyOf": [
@@ -7792,7 +8178,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -7802,46 +8189,55 @@
         "line",
         "actions"
       ],
-      "description": "Actions wrapper for an [`UnresolvedCatalogReference`] finding."
+      "description": "Wire-shape envelope for an [`UnresolvedCatalogReference`] finding. The\nprimary action at position 0 discriminates on `available_in_catalogs`:\n`add-catalog-entry` when the array is empty (no other catalog declares\nthe package), or `update-catalog-reference` when at least one\nalternative exists. When exactly one alternative exists, the action\nalso carries `suggested_target` so deterministic agents can land the\nedit without picking from a list."
     },
     "UnusedDependencyOverrideFinding": {
       "type": "object",
       "properties": {
         "raw_key": {
-          "type": "string"
+          "type": "string",
+          "description": "The full original override key as written in the source (e.g.\n`\"react>react-dom\"`, `\"@types/react@<18\"`). Preserved for round-trip\nreporting so agents see the unmodified spelling."
         },
         "target_package": {
-          "type": "string"
+          "type": "string",
+          "description": "The target package the override rewrites (e.g. `\"react-dom\"` for\n`\"react>react-dom\"`, `\"@types/react\"` for `\"@types/react@<18\"`)."
         },
         "parent_package": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Optional parent package (left side of `>`). `None` for bare-target keys."
         },
         "version_constraint": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Optional version selector on the target (e.g. `Some(\"<18\")` for\n`\"@types/react@<18\"`)."
         },
         "version_range": {
-          "type": "string"
+          "type": "string",
+          "description": "The right-hand side of the entry: the version pnpm should force."
         },
         "source": {
+          "description": "File the override was declared in. Matches the value users write in\n`ignoreDependencyOverrides[].source`.",
           "$ref": "#/definitions/DependencyOverrideSource"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the source file. `pnpm-workspace.yaml` or a `package.json`,\nstored as an absolute filesystem path so `--changed-since` and\nper-file `overrides.rules` can compare directly against the analyzer's\nchanged-set / per-path rule lookups. JSON serialization strips the\nproject root via `serde_path::serialize`, matching the\n`UnresolvedCatalogReference` convention."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the entry within the source file."
         },
         "hint": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Soft hint reminding consumers to verify the override before removal.\nEmitted on every unused-override finding (both bare-target and\nparent-chain shapes) because projects without a readable lockfile still\nuse the conservative package-manifest fallback."
         },
         "actions": {
           "type": "array",
@@ -7877,28 +8273,35 @@
       "type": "object",
       "properties": {
         "raw_key": {
-          "type": "string"
+          "type": "string",
+          "description": "The full original override key as written in the source."
         },
         "target_package": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Parsed target package name when the key was syntactically valid (the\n`EmptyValue` reason path). `None` for `UnparsableKey` findings whose\nkey could not be parsed at all. Used by JSON `add-to-config` actions to\nemit a paste-ready `ignoreDependencyOverrides` value that matches the\nsuppression matcher (which also keys on `target_package`); avoids the\npitfall where `raw_key` like `\"react@<18\"` would not match the rule\nthat targets package `\"react\"`."
         },
         "raw_value": {
-          "type": "string"
+          "type": "string",
+          "description": "The right-hand side of the entry, exactly as written. Empty when the\nvalue was missing."
         },
         "reason": {
+          "description": "Classifier for the misconfiguration. 'unparsable-key' = the key is not a\nvalid pnpm shape; 'empty-value' = the value is missing, empty, or\ncontains line breaks.",
           "$ref": "#/definitions/DependencyOverrideMisconfigReason"
         },
         "source": {
+          "description": "Where the override entry was declared.",
           "$ref": "#/definitions/DependencyOverrideSource"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the source file. Stored as an absolute filesystem path so\n`--changed-since` and per-file `overrides.rules` can compare directly.\nJSON serialization strips the project root via `serde_path::serialize`."
         },
         "line": {
-          "type": "integer"
+          "type": "integer",
+          "description": "1-based line number of the entry within the source file."
         },
         "actions": {
           "type": "array",
@@ -8502,16 +8905,19 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Files participating in the cycle, sorted lexicographically. For a\nself-loop, exactly one entry."
         },
         "kind": {
+          "description": "Which structural shape this finding describes.",
           "$ref": "#/definitions/ReExportCycleKind"
         },
         "actions": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/IssueAction"
-          }
+          },
+          "description": "Suggested next steps. Always emitted (possibly empty for\nforward-compat)."
         },
         "introduced": {
           "anyOf": [
@@ -8521,7 +8927,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Set by the audit pass when this finding is introduced relative to\nthe merge-base."
         }
       },
       "required": [
@@ -8529,14 +8936,22 @@
         "kind",
         "actions"
       ],
-      "description": "Actions wrapper for a [`ReExportCycle`] finding."
+      "description": "Wire-shape envelope for a [`ReExportCycle`] finding. Mirrors\n[`CircularDependencyFinding`]: flattens the bare finding and carries a\ntyped `actions` array (`refactor-re-export-cycle` informational primary\nplus `suppress-file` secondary; cycles are file-scoped so a single\nfile-level suppression on the alphabetically-first member breaks the\ncycle, and no `// fallow-ignore-next-line` form makes sense because the\ndiagnostic is anchored at line 1 col 0 of each member)."
     },
     "ReExportCycleKind": {
-      "type": "string",
-      "enum": [
-        "multi-node",
-        "self-loop"
-      ]
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "multi-node",
+          "description": "Two or more barrel files re-export from each other in a loop\n(SCC of size >= 2)."
+        },
+        {
+          "type": "string",
+          "const": "self-loop",
+          "description": "A single barrel file re-exports from itself."
+        }
+      ],
+      "description": "Discriminator for [`ReExportCycle`]: which structural shape was detected."
     },
     "CombinedMeta": {
       "type": "object",
