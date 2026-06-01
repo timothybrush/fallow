@@ -3462,4 +3462,154 @@ mod tests {
                 .unwrap_or_else(|err| panic!("failed to chmod {}: {err}", path.display()));
         }
     }
+
+    #[test]
+    fn parse_sidecar_version_key_splits_on_non_digits() {
+        assert_eq!(super::parse_sidecar_version_key("1.2.3"), vec![1, 2, 3]);
+        // Prerelease and build separators are non-digit boundaries.
+        assert_eq!(
+            super::parse_sidecar_version_key("0.1.5-beta.2"),
+            vec![0, 1, 5, 2]
+        );
+        assert_eq!(super::parse_sidecar_version_key("v2"), vec![2]);
+        assert!(super::parse_sidecar_version_key("").is_empty());
+    }
+
+    #[test]
+    fn sidecar_package_version_key_reads_sibling_package_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("package.json"), r#"{"version":"3.4.5"}"#).unwrap();
+        let binary = dir.path().join("fallow-cov");
+        assert_eq!(super::sidecar_package_version_key(&binary), vec![3, 4, 5]);
+
+        // No package.json next to the binary -> empty key, never a panic.
+        let bare = tempfile::tempdir().expect("tempdir");
+        assert!(super::sidecar_package_version_key(&bare.path().join("fallow-cov")).is_empty());
+    }
+
+    #[test]
+    fn normalize_package_manager_path_joins_relative_against_root() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            super::normalize_package_manager_path(root, "node_modules/.bin/fallow-cov"),
+            PathBuf::from("/proj/node_modules/.bin/fallow-cov")
+        );
+        // Absolute candidates are returned unchanged.
+        let abs = if cfg!(windows) {
+            "C:\\tools\\fallow-cov"
+        } else {
+            "/tools/fallow-cov"
+        };
+        assert_eq!(
+            super::normalize_package_manager_path(root, abs),
+            PathBuf::from(abs)
+        );
+    }
+
+    #[test]
+    fn project_local_sidecar_names_include_the_bare_binary() {
+        let names = super::project_local_sidecar_names();
+        assert!(!names.is_empty());
+        assert!(names.contains(&"fallow-cov"));
+    }
+
+    #[test]
+    fn sidecar_missing_message_lists_checked_locations() {
+        // Without a project root: canonical path, PATH, and the default npm hint.
+        let generic = super::sidecar_missing_message(None);
+        assert!(generic.contains("PATH"), "got: {generic}");
+        assert!(generic.contains("npm install --save-dev @fallow-cli/fallow-cov"));
+        assert!(generic.contains("FALLOW_COV_BIN"));
+
+        // With a pnpm project root: the node_modules bin path and a pnpm hint.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"p","packageManager":"pnpm@9.0.0"}"#,
+        )
+        .unwrap();
+        let scoped = super::sidecar_missing_message(Some(dir.path()));
+        assert!(
+            scoped.contains("node_modules/.bin/fallow-cov"),
+            "got: {scoped}"
+        );
+        assert!(scoped.contains("pnpm"), "pnpm hint missing: {scoped}");
+    }
+
+    #[test]
+    fn utf16_offset_maps_surrogate_pairs_to_byte_offsets() {
+        // "a😀b": 'a'=1 byte/1 utf16, '😀'=4 bytes/2 utf16, 'b'=1 byte/1 utf16.
+        let s = "a😀b";
+        assert_eq!(super::utf16_source_offset_to_byte_offset(s, 0), Some(0));
+        assert_eq!(super::utf16_source_offset_to_byte_offset(s, 1), Some(1)); // start of emoji
+        assert_eq!(super::utf16_source_offset_to_byte_offset(s, 3), Some(5)); // start of 'b'
+        assert_eq!(super::utf16_source_offset_to_byte_offset(s, 4), Some(6)); // end of string
+        // An offset landing inside the surrogate pair is unmappable.
+        assert_eq!(super::utf16_source_offset_to_byte_offset(s, 2), None);
+        // Past the end is unmappable.
+        assert_eq!(super::utf16_source_offset_to_byte_offset(s, 5), None);
+    }
+
+    #[test]
+    fn file_url_to_path_accepts_file_urls_and_absolute_paths_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.js");
+        let url = file_url(&path);
+        assert_eq!(super::file_url_to_path(&url), Some(path));
+        // Non-file URLs and relative paths are rejected.
+        assert_eq!(super::file_url_to_path("https://example.com/app.js"), None);
+        assert_eq!(super::file_url_to_path("relative/app.js"), None);
+    }
+
+    #[test]
+    fn resolve_source_map_base_handles_inline_relative_and_remote_urls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let generated = file_url(&dir.path().join("app.js"));
+        // No source-map URL: base is the generated file's directory.
+        assert_eq!(
+            super::resolve_source_map_base(&generated, None),
+            Some(dir.path().to_path_buf())
+        );
+        // Relative .map URL resolves against the generated directory.
+        assert_eq!(
+            super::resolve_source_map_base(&generated, Some("app.js.map")),
+            Some(dir.path().to_path_buf())
+        );
+        // A remote http(s) source-map URL has no local base.
+        assert_eq!(
+            super::resolve_source_map_base(&generated, Some("https://cdn.example.com/app.js.map")),
+            None
+        );
+    }
+
+    #[test]
+    fn virtual_source_candidates_strip_known_pseudo_hosts() {
+        let url = Url::parse("webpack://_N_E/./src/app.ts").expect("url");
+        let candidates = super::virtual_source_candidates(&url);
+        // The `_N_E` pseudo-host is dropped and the url crate normalizes the
+        // `/.` segment, leaving the path-only candidate.
+        assert!(
+            candidates.contains(&PathBuf::from("src/app.ts")),
+            "got: {candidates:?}"
+        );
+        assert!(!candidates.iter().any(|c| c.starts_with("_N_E")));
+    }
+
+    #[test]
+    fn resolve_virtual_source_path_ignores_non_virtual_schemes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            super::resolve_virtual_source_path("https://example.com/app.ts", dir.path()),
+            None
+        );
+    }
+
+    #[test]
+    fn location_precedes_orders_by_line_then_column() {
+        let p = |line, column| Position { line, column };
+        assert!(super::location_precedes(&p(1, 0), &p(2, 0)));
+        assert!(super::location_precedes(&p(3, 4), &p(3, 9)));
+        assert!(!super::location_precedes(&p(3, 9), &p(3, 4)));
+        assert!(!super::location_precedes(&p(2, 0), &p(2, 0)));
+    }
 }
