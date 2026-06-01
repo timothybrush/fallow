@@ -39,6 +39,7 @@ Analyzes the project for unused files, exports, dependencies, types, members, an
 |------|------|---------|-------------|
 | `--format` | `human\|json\|sarif\|compact\|markdown\|codeclimate\|gitlab-codequality\|pr-comment-github\|pr-comment-gitlab\|review-github\|review-gitlab` | `human` | Output format |
 | `--quiet` | bool | `false` | Suppress progress bars and timing on stderr |
+| `--legacy-envelope` | bool | `false` | Remove the top-level `kind` field from typed JSON roots for one migration cycle |
 | `--changed-since` | string | — | Only analyze files changed since a git ref (e.g., `main`, `HEAD~3`) |
 | `--production` | bool | `false` | Exclude test/dev files, only start/build scripts (applies to every analysis) |
 | `--production-dead-code` | bool | `false` | Per-analysis production mode for dead-code. Bare combined runs and `fallow audit` only. |
@@ -481,7 +482,8 @@ fallow health --format json --quiet --trend
 
 ```json
 {
-  "schema_version": 3,
+  "kind": "health",
+  "schema_version": 7,
   "version": "2.85.0",
   "elapsed_ms": 32,
   "summary": {
@@ -869,7 +871,8 @@ fallow audit \
 
 ```json
 {
-  "schema_version": 3,
+  "kind": "audit",
+  "schema_version": 7,
   "version": "2.85.0",
   "command": "audit",
   "verdict": "fail",
@@ -942,7 +945,7 @@ fallow flags --format json --quiet --workspace my-package
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 7,
   "version": "2.85.0",
   "elapsed_ms": 116,
   "feature_flags": [],
@@ -1297,6 +1300,7 @@ Available on all commands:
 | `-w, --workspace` | string | Scope to one or more workspaces (comma-separated, globs, `!` negation) |
 | `--changed-workspaces` | string (git ref) | Git-derived monorepo CI scoping: scope to workspaces containing any file changed since `REF`. Mutually exclusive with `--workspace`. Missing ref is a hard error. |
 | `--explain` | bool | JSON: include metric definitions in `_meta`. Human: print a `Description:` line under each section header. Always on for MCP. |
+| `--legacy-envelope` | bool | Emit the previous typed JSON root envelope without top-level `kind` |
 | `--only` | string | Run only specific analyses (e.g., `--only dead-code,dupes`). Values: `dead-code` (alias: `check`), `dupes`, `health` |
 | `--skip` | string | Skip specific analyses (e.g., `--skip health`). Values: `dead-code` (alias: `check`), `dupes`, `health` |
 | `--ci` | bool | CI mode: `--format sarif --fail-on-issues --quiet` |
@@ -1418,7 +1422,8 @@ The HTTP layer mirrors the bash `gh_api_retry` / `curl_retry` helpers: `FALLOW_A
 
 ```json
 {
-  "schema_version": 3,
+  "kind": "dead-code",
+  "schema_version": 7,
   "version": "2.85.0",
   "elapsed_ms": 45,
   "total_issues": 12,
@@ -1577,7 +1582,8 @@ When `--baseline` is used in combined output, the JSON includes a `baseline_delt
 
 ```json
 {
-  "schema_version": 3,
+  "kind": "dupes",
+  "schema_version": 7,
   "version": "2.85.0",
   "elapsed_ms": 82,
   "total_clones": 15,
@@ -1620,8 +1626,12 @@ When running `fallow` with no subcommand (all analyses), the JSON output combine
 
 ```json
 {
+  "kind": "combined",
+  "schema_version": 7,
+  "version": "2.85.0",
+  "elapsed_ms": 159,
   "check": {
-    "schema_version": 3,
+    "schema_version": 7,
     "version": "2.85.0",
     "elapsed_ms": 45,
     "total_issues": 12,
@@ -1644,18 +1654,12 @@ When running `fallow` with no subcommand (all analyses), the JSON output combine
     "stale_suppressions": []
   },
   "dupes": {
-    "schema_version": 3,
-    "version": "2.85.0",
-    "elapsed_ms": 82,
     "total_clones": 15,
     "total_lines_duplicated": 230,
     "duplication_percentage": 4.2,
     "clone_groups": []
   },
   "health": {
-    "schema_version": 3,
-    "version": "2.85.0",
-    "elapsed_ms": 32,
     "summary": {},
     "findings": [],
     "vital_signs": {}

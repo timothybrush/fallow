@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **JSON envelope outputs now include a top-level `kind` discriminator.** Typed `FallowOutput` roots such as `dead-code`, `dead-code-grouped`, `health`, `dupes`, `combined`, `audit`, `explain`, `impact`, coverage setup/analyze, list boundaries, and CI review envelopes can now be identified by `kind` instead of field-presence heuristics. `schema_version` is bumped to 7, and `--legacy-envelope` keeps the previous root shape for one migration cycle. `CodeClimateOutput` remains a bare array to preserve the Code Climate / GitLab Code Quality contract. The CLI `check` subcommand remains a legacy alias for `dead-code`; new JSON discriminators use the canonical `dead-code` name. (Closes [#413](https://github.com/fallow-rs/fallow/issues/413).)
+
 ### Fixed
 
 - **Nuxt composables and utils referenced only through script auto-imports are now tracked in the module graph.** Fallow now records unresolved value identifiers in JS/TS and Vue/Svelte script blocks, then resolves Nuxt convention exports from top-level `composables/`, `app/composables/`, `utils/`, and `app/utils/`, plus recursive `shared/utils/` and `shared/types/`, during graph build. This keeps files like `composables/useCounter.ts`, `utils/format-price.ts`, and named exports from `composables/index.ts` reachable when a page calls `useCounter()` or `formatPrice()` without an import. Local declarations, explicit imports, type-only references, and known JS/Web/Vue/Nuxt built-ins do not synthesize edges. With `autoImports: true`, component entry-pattern removal remains guarded by `components:` config, while composable/util pattern removal is separately guarded by `imports:` config. (Closes [#739](https://github.com/fallow-rs/fallow/issues/739).)

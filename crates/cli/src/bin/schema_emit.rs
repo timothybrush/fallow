@@ -602,6 +602,7 @@ fn merge_with_committed(derived: &Map<String, Value>) -> Result<Value, String> {
         definitions.insert(name.clone(), value);
     }
 
+    rewrite_fallow_output_definition(definitions)?;
     rewrite_document_root_one_of(&mut document)?;
 
     Ok(document)
@@ -609,6 +610,103 @@ fn merge_with_committed(derived: &Map<String, Value>) -> Result<Value, String> {
 
 /// Hand-maintained root envelopes that still need top-level `oneOf` entries.
 const HAND_MAINTAINED_ROOT_ENVELOPES: &[&str] = &[];
+
+/// Schemars emits internally tagged newtype variants as `$ref` plus sibling
+/// constraints. The schema declares draft-07, where `$ref` siblings are ignored
+/// by many validators and code generators. Rewrite the root union into explicit
+/// intersections so the `kind` discriminator is part of the public contract.
+fn rewrite_fallow_output_definition(definitions: &mut Map<String, Value>) -> Result<(), String> {
+    const VARIANTS: &[(&str, &str, &str)] = &[
+        (
+            "audit",
+            "AuditOutput",
+            "`fallow audit --format json`. Required `command: \"audit\"` singleton\nplus `verdict` and `summary`.",
+        ),
+        (
+            "explain",
+            "ExplainOutput",
+            "`fallow explain <issue-type> --format json`. Required `id`, `name`,\n`rationale`, `example`, `how_to_fix`, `docs`; no `schema_version`.",
+        ),
+        (
+            "review-envelope",
+            "ReviewEnvelopeOutput",
+            "`fallow --format review-github` / `--format review-gitlab`. Required\n`body`, `comments`, `meta`; no `schema_version`.",
+        ),
+        (
+            "review-reconcile",
+            "ReviewReconcileOutput",
+            "`fallow ci reconcile-review --format json`. Required `schema`\nsingleton plus `provider`, `comments`, and the various\n`*_fingerprints` arrays.",
+        ),
+        (
+            "coverage-setup",
+            "CoverageSetupOutput",
+            "`fallow coverage setup --json`. Required `schema_version` singleton\nplus `framework_detected`, `members`, `commands`, `snippets`.",
+        ),
+        (
+            "coverage-analyze",
+            "CoverageAnalyzeOutput",
+            "`fallow coverage analyze --format json`. Required\n`schema_version: \"1\"` singleton plus `version`, `elapsed_ms`,\n`runtime_coverage`.",
+        ),
+        (
+            "list-boundaries",
+            "ListBoundariesOutput",
+            "`fallow list --boundaries --format json`. Required `boundaries`\nsub-object; no `schema_version`.",
+        ),
+        ("health", "HealthOutput", "`fallow health --format json`."),
+        ("dupes", "DupesOutput", "`fallow dupes --format json`."),
+        (
+            "dead-code-grouped",
+            "CheckGroupedOutput",
+            "`fallow dead-code --format json --group-by <mode>`. Required `grouped_by`\nplus a `groups` array.",
+        ),
+        (
+            "impact",
+            "ImpactReport",
+            "`fallow impact --format json`. Required `enabled`, `record_count`,\n`containment_count`, `recent_containment`; no global `schema_version`,\n`command`, `total_issues`, or `report`.",
+        ),
+        (
+            "dead-code",
+            "CheckOutput",
+            "`fallow dead-code --format json`.\nRequired `total_issues` plus `summary: CheckSummary`.",
+        ),
+        (
+            "combined",
+            "CombinedOutput",
+            "Bare `fallow --format json` (combined dead-code + dupes + health).\nRequired `schema_version`, `version`, and `elapsed_ms`, with optional\n`check`, `dupes`, and `health` subreports.",
+        ),
+    ];
+
+    let output = definitions
+        .get_mut("FallowOutput")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "derived schema has no object definition for `FallowOutput`".to_string())?;
+
+    let one_of = VARIANTS
+        .iter()
+        .map(|(kind, definition, description)| {
+            serde_json::json!({
+                "description": description,
+                "allOf": [
+                    { "$ref": format!("#/definitions/{definition}") },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "const": kind
+                            }
+                        },
+                        "required": ["kind"]
+                    }
+                ]
+            })
+        })
+        .collect();
+
+    output.remove("anyOf");
+    output.insert("oneOf".to_string(), Value::Array(one_of));
+    Ok(())
+}
 
 /// Drive the document-root `oneOf` from the typed `FallowOutput` enum.
 fn rewrite_document_root_one_of(document: &mut Value) -> Result<(), String> {
@@ -627,22 +725,17 @@ fn rewrite_document_root_one_of(document: &mut Value) -> Result<(), String> {
     root.insert(
         "description".to_string(),
         Value::String(
-            "Schemas for the JSON output of fallow commands. To identify which \
-             envelope you have, check for the unique top-level field: \
-             `summary.total_issues` (check), `health_score` (health), \
-             `clone_groups` (dupes), `runtime_coverage` (coverage analyze), \
-             `boundaries` (list --boundaries), `command: \"audit\"` (audit), \
-             `body` plus `comments` (review-github / review-gitlab), \
-             `schema: \"fallow-review-reconcile/v1\"` (ci reconcile-review), \
-             `framework_detected` plus `members` (coverage setup), `id` plus \
-             `how_to_fix` (explain), `check`+`dupes`+`health` keys together \
-             (bare combined invocation). `HealthOutput` and `DupesOutput` \
-             flatten their body (`HealthReport` / `DupesReportPayload`) into \
-             top-level fields, so the discriminator field is from the body \
-             shape itself, not a wrapper key. Every object-shaped envelope \
-             is a variant of `FallowOutput`; `CodeClimateOutput` is a bare \
-             JSON array (per the Code Climate / GitLab Code Quality spec) \
-             and stays a sibling root branch."
+            "Schemas for the JSON output of fallow commands. Object-shaped \
+             envelopes covered by the `FallowOutput` contract carry a top-level \
+             `kind` discriminator (for example `dead-code`, `dead-code-grouped`, \
+             `health`, `dupes`, `combined`, `audit`, `explain`, `impact`, \
+             `coverage-setup`, `coverage-analyze`, `list-boundaries`, \
+             `review-envelope`, and `review-reconcile`). Consumers should branch on `kind` instead of \
+             probing for unique field presence. `--legacy-envelope` removes \
+             only the document-root `kind` for one compatibility cycle. \
+             `CodeClimateOutput` is a bare JSON array (per the Code Climate / \
+             GitLab Code Quality spec) and stays a sibling root branch \
+             discriminated by checking whether the document root is an array."
                 .to_string(),
         ),
     );
@@ -852,6 +945,8 @@ mod drift_tests {
             }
             out.insert(name.clone(), value);
         }
+        rewrite_fallow_output_definition(&mut out)
+            .expect("FallowOutput postprocess must succeed in drift checks");
         out
     }
 
@@ -1353,5 +1448,43 @@ mod drift_tests {
              as a sibling root branch (the bare-array spec form); found refs: {:?}",
             refs.iter().collect::<Vec<_>>(),
         );
+    }
+
+    #[test]
+    fn fallow_output_kind_variants_use_draft07_all_of_refs() {
+        let document: Value = serde_json::from_str(COMMITTED_SCHEMA)
+            .expect("committed docs/output-schema.json must parse");
+        let variants = document
+            .pointer("/definitions/FallowOutput/oneOf")
+            .and_then(Value::as_array)
+            .expect("FallowOutput must expose oneOf variants");
+
+        for variant in variants {
+            assert!(
+                variant.get("$ref").is_none(),
+                "FallowOutput variant must not use `$ref` siblings; draft-07 validators ignore sibling constraints: {variant}"
+            );
+
+            let all_of = variant
+                .get("allOf")
+                .and_then(Value::as_array)
+                .expect("FallowOutput variant must use allOf to combine the payload ref with the root kind discriminator");
+            assert_eq!(
+                all_of.len(),
+                2,
+                "FallowOutput variant allOf should contain exactly payload ref + kind discriminator"
+            );
+            assert!(
+                all_of[0].get("$ref").is_some(),
+                "first allOf branch should be the payload ref: {variant}"
+            );
+            assert!(
+                all_of[1]
+                    .pointer("/properties/kind/const")
+                    .and_then(Value::as_str)
+                    .is_some(),
+                "second allOf branch should require a literal kind discriminator: {variant}"
+            );
+        }
     }
 }
