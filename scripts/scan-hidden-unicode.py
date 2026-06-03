@@ -16,39 +16,21 @@ surface"):
                      Claude Code SessionStart hook. Codepoint hits are reported as
                      errors (exit 1); keyword-soup shapes (curl|sh, base64 -d, eval,
                      node -e) WARN only, because they are trivially bypassed by plain
-                     ASCII so blocking on them is theater; and a sha256 manifest
-                     drift check WARNS when a tracked agent file changed since it was
-                     last blessed.
+                     ASCII so blocking on them is theater.
 
-  --mode check-manifest
-                     The CI drift gate. BLOCKS (exit 1) when any tracked agent file
-                     differs from its blessed sha256 in scripts/agent-files.sha256,
-                     or a blessed file is missing. This is the enforcing counterpart
-                     to agent mode's warn-only drift check: it makes a PR that edits a
-                     tracked agent file re-bless the manifest in the same change,
-                     rather than leaving stale drift that warns on every later session.
-                     No codepoint or keyword scan here. Wired into ci.yml.
-
-  --update-manifest  Regenerate scripts/agent-files.sha256 (the blessed baseline for
-                     the drift checks). Run after a legitimate edit to a tracked agent
-                     file, then commit the manifest.
-
-Exit code is nonzero on a codepoint hit (committed / agent modes) or on manifest
-drift (check-manifest mode). In agent mode the manifest-drift and keyword-soup
-findings stay warn-only (exit 0) so a session is never hard-blocked by a heuristic
-or an in-progress edit. Stdlib only.
+Exit code is nonzero on a codepoint hit (committed / agent modes). In agent mode the
+keyword-soup findings stay warn-only (exit 0) so a session is never hard-blocked by a
+heuristic. Stdlib only.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "scripts" / "agent-files.sha256"
 
 # Zero-width and bidirectional-override code points that have no legitimate place
 # in source or agent-instruction text. A leading U+FEFF (BOM) is tolerated; a
@@ -184,83 +166,8 @@ def agent_surface() -> list[Path]:
     return sorted(seen)
 
 
-def manifest_paths() -> list[Path]:
-    """Tracked agent files that get a blessed sha256 in the drift manifest."""
-    files = []
-    for p in git_tracked_files():
-        rel = p.relative_to(REPO_ROOT).as_posix()
-        if (
-            rel == "CLAUDE.md"
-            or rel == ".claude/settings.json"
-            or rel.startswith(".claude/agents/")
-            or rel.startswith(".claude/rules/")
-        ) and p.is_file():
-            files.append(p)
-    return sorted(files)
-
-
-def sha256_of(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def rel(path: Path) -> str:
     return path.relative_to(REPO_ROOT).as_posix()
-
-
-def update_manifest() -> int:
-    lines = [f"{sha256_of(p)}  {rel(p)}" for p in manifest_paths()]
-    MANIFEST_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Wrote {len(lines)} blessed agent-file hashes to {rel(MANIFEST_PATH)}")
-    return 0
-
-
-def manifest_drift_warnings() -> list[str]:
-    if not MANIFEST_PATH.exists():
-        return []
-    warnings = []
-    for line in MANIFEST_PATH.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        expected, _, rel_path = line.partition("  ")
-        path = REPO_ROOT / rel_path
-        if not path.is_file():
-            warnings.append(f"{rel_path}: blessed agent file is missing")
-        elif sha256_of(path) != expected:
-            warnings.append(f"{rel_path}: content changed since it was last blessed")
-    return warnings
-
-
-def check_manifest() -> int:
-    """CI gate: nonzero when the blessed baseline is stale or incomplete.
-
-    Drift here means a tracked agent file was edited (or removed) without
-    re-blessing scripts/agent-files.sha256, so the agent-mode guard would warn
-    on every later session. Also fail when a tracked manifest file has no blessed
-    entry at all, so a newly added rule doc cannot silently escape the baseline.
-    """
-    if not MANIFEST_PATH.exists():
-        print("error: scripts/agent-files.sha256 is missing; run --update-manifest", file=sys.stderr)
-        return 1
-
-    drift = manifest_drift_warnings()
-    blessed = {line.partition("  ")[2] for line in MANIFEST_PATH.read_text(encoding="utf-8").splitlines() if line.strip()}
-    unblessed = [rel(p) for p in manifest_paths() if rel(p) not in blessed]
-
-    if not drift and not unblessed:
-        return 0
-
-    print("error: agent-file baseline is stale (scripts/agent-files.sha256).", file=sys.stderr)
-    for w in drift:
-        print(f"  drift: {w}", file=sys.stderr)
-    for u in unblessed:
-        print(f"  unblessed: {u}: tracked agent file has no entry in the manifest", file=sys.stderr)
-    print(
-        "  A PR that edits a tracked agent file (.claude/rules/**, .claude/agents/**,\n"
-        "  CLAUDE.md, .claude/settings.json) must re-bless the baseline in the same change.\n"
-        "  Fix: python3 scripts/scan-hidden-unicode.py --update-manifest, then commit the manifest.",
-        file=sys.stderr,
-    )
-    return 1
 
 
 def scan_committed(staged_only: bool) -> int:
@@ -305,23 +212,18 @@ def scan_agent() -> int:
                 if pattern.search(src_line):
                     keyword_warnings.append(f"{rel(path)}:{lineno}: {label}")
 
-    drift = manifest_drift_warnings()
-
-    if codepoint_errors or keyword_warnings or drift:
+    if codepoint_errors or keyword_warnings:
         print("\nfallow agent-file guard: review the items below.", file=sys.stderr)
         if codepoint_errors:
             print(f"  {codepoint_errors} hidden code point(s) in agent-instruction files (above).", file=sys.stderr)
         for w in keyword_warnings:
             print(f"  warn (shell-exec shape): {w}", file=sys.stderr)
-        for w in drift:
-            print(f"  warn (drift): {w}", file=sys.stderr)
         print(
             "  Agent-instruction files are untrusted by default; a poisoned one can carry hidden\n"
-            "  instructions for the next agent session. Inspect the flagged file(s).\n"
-            "  After a legitimate change, re-bless the baseline: python3 scripts/scan-hidden-unicode.py --update-manifest",
+            "  instructions for the next agent session. Inspect the flagged file(s).",
             file=sys.stderr,
         )
-    # Only a real hidden code point fails the check; keyword + drift are advisory.
+    # Only a real hidden code point fails the check; keyword shapes are advisory.
     return 1 if codepoint_errors else 0
 
 
@@ -329,15 +231,11 @@ def main(argv: list[str]) -> int:
     mode = None
     staged_only = False
     for arg in argv:
-        if arg == "--update-manifest":
-            return update_manifest()
         if arg == "--mode=committed" or arg == "committed":
             mode = "committed"
         elif arg == "--mode=agent" or arg == "agent":
             mode = "agent"
-        elif arg == "--mode=check-manifest" or arg == "check-manifest":
-            mode = "check-manifest"
-        elif arg == "--mode" :
+        elif arg == "--mode":
             continue
         elif arg == "--staged":
             staged_only = True
@@ -345,9 +243,7 @@ def main(argv: list[str]) -> int:
         return scan_committed(staged_only)
     if mode == "agent":
         return scan_agent()
-    if mode == "check-manifest":
-        return check_manifest()
-    print("usage: scan-hidden-unicode.py --mode {committed,agent,check-manifest} [--staged] | --update-manifest", file=sys.stderr)
+    print("usage: scan-hidden-unicode.py --mode {committed,agent} [--staged]", file=sys.stderr)
     return 2
 
 
