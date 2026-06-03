@@ -1,2 +1,8 @@
-# Default owner for everything
-* @bartwaardenburg
+# Agent-instruction files program how AI agents behave in this repo. Edits to them
+# require @bartwaardenburg review via the "require review from Code Owners" gate on
+# main, so only the maintainer can approve changes to agent instructions. Scoped to
+# these paths (no blanket `*` owner) so ordinary contributor PRs are not gated, only
+# PRs that touch agent-instruction files are.
+
+/CLAUDE.md  @bartwaardenburg
+/.claude/   @bartwaardenburg
