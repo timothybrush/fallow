@@ -1180,10 +1180,86 @@ mod tests {
     }
 
     #[test]
+    fn validate_output_format_accepts_only_json_and_human() {
+        assert!(validate_output_format(OutputFormat::Json).is_ok());
+        assert!(validate_output_format(OutputFormat::Human).is_ok());
+
+        let error = validate_output_format(OutputFormat::Sarif)
+            .expect_err("sarif should be rejected for coverage analyze");
+        assert!(error.contains("only supports --format json or --format human"));
+        assert!(error.contains("Sarif"));
+    }
+
+    #[test]
+    fn resolve_api_key_prefers_trimmed_explicit_value() {
+        assert_eq!(
+            resolve_api_key(Some("  fallow_live_token  ")).expect("explicit key should resolve"),
+            "fallow_live_token"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_prefers_trimmed_explicit_value() {
+        let dir = tempfile::TempDir::new().expect("temp dir should be created");
+
+        assert_eq!(
+            resolve_repo(Some("  fallow-rs/fallow  "), dir.path())
+                .expect("explicit repo should resolve"),
+            "fallow-rs/fallow"
+        );
+    }
+
+    #[test]
     fn parse_git_remote_https() {
         assert_eq!(
             parse_git_remote_to_project_id("https://github.com/fallow-rs/fallow.git"),
             Some("fallow-rs/fallow".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_git_remote_ssh_and_nested_paths() {
+        assert_eq!(
+            parse_git_remote_to_project_id("git@github.com:fallow-rs/fallow.git"),
+            Some("fallow-rs/fallow".to_owned())
+        );
+        assert_eq!(
+            parse_git_remote_to_project_id("ssh://git@gitlab.com/group/subgroup/repo.git"),
+            Some("subgroup/repo".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_git_remote_rejects_incomplete_urls() {
+        assert_eq!(parse_git_remote_to_project_id("git@github.com:owner"), None);
+        assert_eq!(parse_git_remote_to_project_id("https://github.com"), None);
+        assert_eq!(parse_git_remote_to_project_id("not a remote"), None);
+    }
+
+    #[test]
+    fn resolve_repo_infers_origin_remote() {
+        let dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let init = Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git init should run");
+        assert!(init.status.success());
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:fallow-rs/fallow.git",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .expect("git remote add should run");
+        assert!(remote.status.success());
+
+        assert_eq!(
+            resolve_repo(None, dir.path()).expect("repo should resolve from origin"),
+            "fallow-rs/fallow"
         );
     }
 
