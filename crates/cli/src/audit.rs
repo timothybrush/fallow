@@ -3559,6 +3559,32 @@ mod tests {
         assert_eq!(auto_detect_base_branch(tmp.path()), None);
     }
 
+    #[test]
+    fn get_head_sha_returns_short_head_for_git_repo() {
+        let tmp = tempfile::TempDir::new().expect("temp dir should be created");
+        let repo = init_throwaway_repo(tmp.path(), "repo");
+        let output = Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(&repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .expect("git rev-parse should run");
+        assert!(output.status.success());
+
+        assert_eq!(
+            get_head_sha(&repo),
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        );
+    }
+
+    #[test]
+    fn get_head_sha_returns_none_outside_git_repo() {
+        let tmp = tempfile::TempDir::new().expect("temp dir should be created");
+
+        assert_eq!(get_head_sha(tmp.path()), None);
+    }
+
     fn worktree_is_registered_with_git(repo_root: &std::path::Path, worktree_path: &Path) -> bool {
         list_audit_worktrees(repo_root)
             .is_some_and(|paths| paths.iter().any(|p| paths_equal(p, worktree_path)))
