@@ -762,10 +762,6 @@ fn build_sarif_rules(rules: &RulesConfig) -> Vec<serde_json::Value> {
 }
 
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "SARIF builds one flat result list across every analysis family"
-)]
 pub fn build_sarif(
     results: &AnalysisResults,
     root: &Path,
@@ -822,100 +818,8 @@ pub fn build_sarif(
             )
         },
     );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_dependencies,
-        &mut snippets,
-        |d| {
-            sarif_dep_fields(
-                &d.dep,
-                root,
-                "fallow/unused-dependency",
-                severity_to_sarif_level(rules.unused_dependencies),
-                "dependencies",
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_dev_dependencies,
-        &mut snippets,
-        |d| {
-            sarif_dep_fields(
-                &d.dep,
-                root,
-                "fallow/unused-dev-dependency",
-                severity_to_sarif_level(rules.unused_dev_dependencies),
-                "devDependencies",
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_optional_dependencies,
-        &mut snippets,
-        |d| {
-            sarif_dep_fields(
-                &d.dep,
-                root,
-                "fallow/unused-optional-dependency",
-                severity_to_sarif_level(rules.unused_optional_dependencies),
-                "optionalDependencies",
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.type_only_dependencies,
-        &mut snippets,
-        |d| {
-            sarif_type_only_dep_fields(
-                &d.dep,
-                root,
-                severity_to_sarif_level(rules.type_only_dependencies),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.test_only_dependencies,
-        &mut snippets,
-        |d| {
-            sarif_test_only_dep_fields(
-                &d.dep,
-                root,
-                severity_to_sarif_level(rules.test_only_dependencies),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_enum_members,
-        &mut snippets,
-        |m| {
-            sarif_member_fields(
-                &m.member,
-                root,
-                "fallow/unused-enum-member",
-                severity_to_sarif_level(rules.unused_enum_members),
-                "Enum",
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_class_members,
-        &mut snippets,
-        |m| {
-            sarif_member_fields(
-                &m.member,
-                root,
-                "fallow/unused-class-member",
-                severity_to_sarif_level(rules.unused_class_members),
-                "Class",
-            )
-        },
-    );
+    push_dependency_sarif_results(&mut sarif_results, results, root, rules, &mut snippets);
+    push_member_sarif_results(&mut sarif_results, results, root, rules, &mut snippets);
     push_sarif_results(
         &mut sarif_results,
         &results.unresolved_imports,
@@ -928,132 +832,9 @@ pub fn build_sarif(
             )
         },
     );
-    if !results.unlisted_dependencies.is_empty() {
-        push_sarif_unlisted_deps(
-            &mut sarif_results,
-            &results.unlisted_dependencies,
-            root,
-            severity_to_sarif_level(rules.unlisted_dependencies),
-            &mut snippets,
-        );
-    }
-    if !results.duplicate_exports.is_empty() {
-        push_sarif_duplicate_exports(
-            &mut sarif_results,
-            &results.duplicate_exports,
-            root,
-            severity_to_sarif_level(rules.duplicate_exports),
-            &mut snippets,
-        );
-    }
-    push_sarif_results(
-        &mut sarif_results,
-        &results.circular_dependencies,
-        &mut snippets,
-        |c| {
-            sarif_circular_dep_fields(
-                &c.cycle,
-                root,
-                severity_to_sarif_level(rules.circular_dependencies),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.re_export_cycles,
-        &mut snippets,
-        |c| {
-            sarif_re_export_cycle_fields(
-                &c.cycle,
-                root,
-                severity_to_sarif_level(rules.re_export_cycle),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.boundary_violations,
-        &mut snippets,
-        |v| {
-            sarif_boundary_violation_fields(
-                &v.violation,
-                root,
-                severity_to_sarif_level(rules.boundary_violation),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.stale_suppressions,
-        &mut snippets,
-        |s| {
-            sarif_stale_suppression_fields(
-                s,
-                root,
-                severity_to_sarif_level(rules.stale_suppressions),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_catalog_entries,
-        &mut snippets,
-        |e| {
-            sarif_unused_catalog_entry_fields(
-                e,
-                root,
-                severity_to_sarif_level(rules.unused_catalog_entries),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.empty_catalog_groups,
-        &mut snippets,
-        |g| {
-            sarif_empty_catalog_group_fields(
-                g,
-                root,
-                severity_to_sarif_level(rules.empty_catalog_groups),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unresolved_catalog_references,
-        &mut snippets,
-        |f| {
-            sarif_unresolved_catalog_reference_fields(
-                f,
-                root,
-                severity_to_sarif_level(rules.unresolved_catalog_references),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.unused_dependency_overrides,
-        &mut snippets,
-        |f| {
-            sarif_unused_dependency_override_fields(
-                f,
-                root,
-                severity_to_sarif_level(rules.unused_dependency_overrides),
-            )
-        },
-    );
-    push_sarif_results(
-        &mut sarif_results,
-        &results.misconfigured_dependency_overrides,
-        &mut snippets,
-        |f| {
-            sarif_misconfigured_dependency_override_fields(
-                f,
-                root,
-                severity_to_sarif_level(rules.misconfigured_dependency_overrides),
-            )
-        },
-    );
+    push_misc_sarif_results(&mut sarif_results, results, root, rules, &mut snippets);
+    push_graph_sarif_results(&mut sarif_results, results, root, rules, &mut snippets);
+    push_catalog_sarif_results(&mut sarif_results, results, root, rules, &mut snippets);
 
     serde_json::json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -1070,6 +851,242 @@ pub fn build_sarif(
             "results": sarif_results
         }]
     })
+}
+
+fn push_dependency_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    results: &AnalysisResults,
+    root: &Path,
+    rules: &RulesConfig,
+    snippets: &mut SourceSnippetCache,
+) {
+    push_sarif_results(sarif_results, &results.unused_dependencies, snippets, |d| {
+        sarif_dep_fields(
+            &d.dep,
+            root,
+            "fallow/unused-dependency",
+            severity_to_sarif_level(rules.unused_dependencies),
+            "dependencies",
+        )
+    });
+    push_sarif_results(
+        sarif_results,
+        &results.unused_dev_dependencies,
+        snippets,
+        |d| {
+            sarif_dep_fields(
+                &d.dep,
+                root,
+                "fallow/unused-dev-dependency",
+                severity_to_sarif_level(rules.unused_dev_dependencies),
+                "devDependencies",
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.unused_optional_dependencies,
+        snippets,
+        |d| {
+            sarif_dep_fields(
+                &d.dep,
+                root,
+                "fallow/unused-optional-dependency",
+                severity_to_sarif_level(rules.unused_optional_dependencies),
+                "optionalDependencies",
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.type_only_dependencies,
+        snippets,
+        |d| {
+            sarif_type_only_dep_fields(
+                &d.dep,
+                root,
+                severity_to_sarif_level(rules.type_only_dependencies),
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.test_only_dependencies,
+        snippets,
+        |d| {
+            sarif_test_only_dep_fields(
+                &d.dep,
+                root,
+                severity_to_sarif_level(rules.test_only_dependencies),
+            )
+        },
+    );
+}
+
+fn push_member_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    results: &AnalysisResults,
+    root: &Path,
+    rules: &RulesConfig,
+    snippets: &mut SourceSnippetCache,
+) {
+    push_sarif_results(sarif_results, &results.unused_enum_members, snippets, |m| {
+        sarif_member_fields(
+            &m.member,
+            root,
+            "fallow/unused-enum-member",
+            severity_to_sarif_level(rules.unused_enum_members),
+            "Enum",
+        )
+    });
+    push_sarif_results(
+        sarif_results,
+        &results.unused_class_members,
+        snippets,
+        |m| {
+            sarif_member_fields(
+                &m.member,
+                root,
+                "fallow/unused-class-member",
+                severity_to_sarif_level(rules.unused_class_members),
+                "Class",
+            )
+        },
+    );
+}
+
+fn push_misc_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    results: &AnalysisResults,
+    root: &Path,
+    rules: &RulesConfig,
+    snippets: &mut SourceSnippetCache,
+) {
+    if !results.unlisted_dependencies.is_empty() {
+        push_sarif_unlisted_deps(
+            sarif_results,
+            &results.unlisted_dependencies,
+            root,
+            severity_to_sarif_level(rules.unlisted_dependencies),
+            snippets,
+        );
+    }
+    if !results.duplicate_exports.is_empty() {
+        push_sarif_duplicate_exports(
+            sarif_results,
+            &results.duplicate_exports,
+            root,
+            severity_to_sarif_level(rules.duplicate_exports),
+            snippets,
+        );
+    }
+}
+
+fn push_graph_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    results: &AnalysisResults,
+    root: &Path,
+    rules: &RulesConfig,
+    snippets: &mut SourceSnippetCache,
+) {
+    push_sarif_results(
+        sarif_results,
+        &results.circular_dependencies,
+        snippets,
+        |c| {
+            sarif_circular_dep_fields(
+                &c.cycle,
+                root,
+                severity_to_sarif_level(rules.circular_dependencies),
+            )
+        },
+    );
+    push_sarif_results(sarif_results, &results.re_export_cycles, snippets, |c| {
+        sarif_re_export_cycle_fields(
+            &c.cycle,
+            root,
+            severity_to_sarif_level(rules.re_export_cycle),
+        )
+    });
+    push_sarif_results(sarif_results, &results.boundary_violations, snippets, |v| {
+        sarif_boundary_violation_fields(
+            &v.violation,
+            root,
+            severity_to_sarif_level(rules.boundary_violation),
+        )
+    });
+    push_sarif_results(sarif_results, &results.stale_suppressions, snippets, |s| {
+        sarif_stale_suppression_fields(s, root, severity_to_sarif_level(rules.stale_suppressions))
+    });
+}
+
+fn push_catalog_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    results: &AnalysisResults,
+    root: &Path,
+    rules: &RulesConfig,
+    snippets: &mut SourceSnippetCache,
+) {
+    push_sarif_results(
+        sarif_results,
+        &results.unused_catalog_entries,
+        snippets,
+        |e| {
+            sarif_unused_catalog_entry_fields(
+                e,
+                root,
+                severity_to_sarif_level(rules.unused_catalog_entries),
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.empty_catalog_groups,
+        snippets,
+        |g| {
+            sarif_empty_catalog_group_fields(
+                g,
+                root,
+                severity_to_sarif_level(rules.empty_catalog_groups),
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.unresolved_catalog_references,
+        snippets,
+        |f| {
+            sarif_unresolved_catalog_reference_fields(
+                f,
+                root,
+                severity_to_sarif_level(rules.unresolved_catalog_references),
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.unused_dependency_overrides,
+        snippets,
+        |f| {
+            sarif_unused_dependency_override_fields(
+                f,
+                root,
+                severity_to_sarif_level(rules.unused_dependency_overrides),
+            )
+        },
+    );
+    push_sarif_results(
+        sarif_results,
+        &results.misconfigured_dependency_overrides,
+        snippets,
+        |f| {
+            sarif_misconfigured_dependency_override_fields(
+                f,
+                root,
+                severity_to_sarif_level(rules.misconfigured_dependency_overrides),
+            )
+        },
+    );
 }
 
 pub(super) fn print_sarif(results: &AnalysisResults, root: &Path, rules: &RulesConfig) -> ExitCode {
@@ -1249,85 +1266,14 @@ pub(super) fn print_grouped_duplication_sarif(
 }
 
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "flat rules + results table: adding runtime-coverage rules pushed past the 150 line threshold but each section is a straightforward sequence of sarif_rule / sarif_result calls"
-)]
 pub fn build_health_sarif(
     report: &crate::health_types::HealthReport,
     root: &Path,
 ) -> serde_json::Value {
-    use crate::health_types::ExceededThreshold;
-
     let mut sarif_results = Vec::new();
     let mut snippets = SourceSnippetCache::default();
 
-    for finding in &report.findings {
-        let uri = relative_uri(&finding.path, root);
-        let (rule_id, message) = match finding.exceeded {
-            ExceededThreshold::Cyclomatic => (
-                "fallow/high-cyclomatic-complexity",
-                format!(
-                    "'{}' has cyclomatic complexity {} (threshold: {})",
-                    finding.name, finding.cyclomatic, report.summary.max_cyclomatic_threshold,
-                ),
-            ),
-            ExceededThreshold::Cognitive => (
-                "fallow/high-cognitive-complexity",
-                format!(
-                    "'{}' has cognitive complexity {} (threshold: {})",
-                    finding.name, finding.cognitive, report.summary.max_cognitive_threshold,
-                ),
-            ),
-            ExceededThreshold::Both => (
-                "fallow/high-complexity",
-                format!(
-                    "'{}' has cyclomatic complexity {} (threshold: {}) and cognitive complexity {} (threshold: {})",
-                    finding.name,
-                    finding.cyclomatic,
-                    report.summary.max_cyclomatic_threshold,
-                    finding.cognitive,
-                    report.summary.max_cognitive_threshold,
-                ),
-            ),
-            ExceededThreshold::Crap
-            | ExceededThreshold::CyclomaticCrap
-            | ExceededThreshold::CognitiveCrap
-            | ExceededThreshold::All => {
-                let crap = finding.crap.unwrap_or(0.0);
-                let coverage = finding
-                    .coverage_pct
-                    .map(|pct| format!(", coverage {pct:.0}%"))
-                    .unwrap_or_default();
-                (
-                    "fallow/high-crap-score",
-                    format!(
-                        "'{}' has CRAP score {:.1} (threshold: {:.1}, cyclomatic {}{})",
-                        finding.name,
-                        crap,
-                        report.summary.max_crap_threshold,
-                        finding.cyclomatic,
-                        coverage,
-                    ),
-                )
-            }
-        };
-
-        let level = match finding.severity {
-            crate::health_types::FindingSeverity::Critical => "error",
-            crate::health_types::FindingSeverity::High => "warning",
-            crate::health_types::FindingSeverity::Moderate => "note",
-        };
-        let source_snippet = snippets.line(&finding.path, finding.line);
-        sarif_results.push(sarif_result_with_snippet(
-            rule_id,
-            level,
-            &message,
-            &uri,
-            Some((finding.line, finding.col + 1)),
-            source_snippet.as_deref(),
-        ));
-    }
+    append_complexity_sarif_results(&mut sarif_results, report, root, &mut snippets);
 
     if let Some(ref production) = report.runtime_coverage {
         append_runtime_coverage_sarif_results(&mut sarif_results, production, root, &mut snippets);
@@ -1341,64 +1287,8 @@ pub fn build_health_sarif(
         );
     }
 
-    for target in &report.targets {
-        let uri = relative_uri(&target.path, root);
-        let message = format!(
-            "[{}] {} (priority: {:.1}, efficiency: {:.1}, effort: {}, confidence: {})",
-            target.category.label(),
-            target.recommendation,
-            target.priority,
-            target.efficiency,
-            target.effort.label(),
-            target.confidence.label(),
-        );
-        sarif_results.push(sarif_result(
-            "fallow/refactoring-target",
-            "warning",
-            &message,
-            &uri,
-            None,
-        ));
-    }
-
-    if let Some(ref gaps) = report.coverage_gaps {
-        for item in &gaps.files {
-            let uri = relative_uri(&item.file.path, root);
-            let message = format!(
-                "File is runtime-reachable but has no test dependency path ({} value export{})",
-                item.file.value_export_count,
-                if item.file.value_export_count == 1 {
-                    ""
-                } else {
-                    "s"
-                },
-            );
-            sarif_results.push(sarif_result(
-                "fallow/untested-file",
-                "warning",
-                &message,
-                &uri,
-                None,
-            ));
-        }
-
-        for item in &gaps.exports {
-            let uri = relative_uri(&item.export.path, root);
-            let message = format!(
-                "Export '{}' is runtime-reachable but never referenced by test-reachable modules",
-                item.export.export_name
-            );
-            let source_snippet = snippets.line(&item.export.path, item.export.line);
-            sarif_results.push(sarif_result_with_snippet(
-                "fallow/untested-export",
-                "warning",
-                &message,
-                &uri,
-                Some((item.export.line, item.export.col + 1)),
-                source_snippet.as_deref(),
-            ));
-        }
-    }
+    append_refactoring_target_sarif_results(&mut sarif_results, report, root);
+    append_coverage_gap_sarif_results(&mut sarif_results, report, root, &mut snippets);
 
     let health_rules = vec![
         sarif_rule(
@@ -1498,6 +1388,159 @@ pub fn build_health_sarif(
             "results": sarif_results
         }]
     })
+}
+
+fn append_complexity_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    report: &crate::health_types::HealthReport,
+    root: &Path,
+    snippets: &mut SourceSnippetCache,
+) {
+    for finding in &report.findings {
+        let uri = relative_uri(&finding.path, root);
+        let (rule_id, message) = health_complexity_sarif_message(finding, report);
+        let level = match finding.severity {
+            crate::health_types::FindingSeverity::Critical => "error",
+            crate::health_types::FindingSeverity::High => "warning",
+            crate::health_types::FindingSeverity::Moderate => "note",
+        };
+        let source_snippet = snippets.line(&finding.path, finding.line);
+        sarif_results.push(sarif_result_with_snippet(
+            rule_id,
+            level,
+            &message,
+            &uri,
+            Some((finding.line, finding.col + 1)),
+            source_snippet.as_deref(),
+        ));
+    }
+}
+
+fn health_complexity_sarif_message(
+    finding: &crate::health_types::ComplexityViolation,
+    report: &crate::health_types::HealthReport,
+) -> (&'static str, String) {
+    match finding.exceeded {
+        crate::health_types::ExceededThreshold::Cyclomatic => (
+            "fallow/high-cyclomatic-complexity",
+            format!(
+                "'{}' has cyclomatic complexity {} (threshold: {})",
+                finding.name, finding.cyclomatic, report.summary.max_cyclomatic_threshold,
+            ),
+        ),
+        crate::health_types::ExceededThreshold::Cognitive => (
+            "fallow/high-cognitive-complexity",
+            format!(
+                "'{}' has cognitive complexity {} (threshold: {})",
+                finding.name, finding.cognitive, report.summary.max_cognitive_threshold,
+            ),
+        ),
+        crate::health_types::ExceededThreshold::Both => (
+            "fallow/high-complexity",
+            format!(
+                "'{}' has cyclomatic complexity {} (threshold: {}) and cognitive complexity {} (threshold: {})",
+                finding.name,
+                finding.cyclomatic,
+                report.summary.max_cyclomatic_threshold,
+                finding.cognitive,
+                report.summary.max_cognitive_threshold,
+            ),
+        ),
+        crate::health_types::ExceededThreshold::Crap
+        | crate::health_types::ExceededThreshold::CyclomaticCrap
+        | crate::health_types::ExceededThreshold::CognitiveCrap
+        | crate::health_types::ExceededThreshold::All => {
+            let crap = finding.crap.unwrap_or(0.0);
+            let coverage = finding
+                .coverage_pct
+                .map(|pct| format!(", coverage {pct:.0}%"))
+                .unwrap_or_default();
+            (
+                "fallow/high-crap-score",
+                format!(
+                    "'{}' has CRAP score {:.1} (threshold: {:.1}, cyclomatic {}{})",
+                    finding.name,
+                    crap,
+                    report.summary.max_crap_threshold,
+                    finding.cyclomatic,
+                    coverage,
+                ),
+            )
+        }
+    }
+}
+
+fn append_refactoring_target_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    report: &crate::health_types::HealthReport,
+    root: &Path,
+) {
+    for target in &report.targets {
+        let uri = relative_uri(&target.path, root);
+        let message = format!(
+            "[{}] {} (priority: {:.1}, efficiency: {:.1}, effort: {}, confidence: {})",
+            target.category.label(),
+            target.recommendation,
+            target.priority,
+            target.efficiency,
+            target.effort.label(),
+            target.confidence.label(),
+        );
+        sarif_results.push(sarif_result(
+            "fallow/refactoring-target",
+            "warning",
+            &message,
+            &uri,
+            None,
+        ));
+    }
+}
+
+fn append_coverage_gap_sarif_results(
+    sarif_results: &mut Vec<serde_json::Value>,
+    report: &crate::health_types::HealthReport,
+    root: &Path,
+    snippets: &mut SourceSnippetCache,
+) {
+    let Some(ref gaps) = report.coverage_gaps else {
+        return;
+    };
+    for item in &gaps.files {
+        let uri = relative_uri(&item.file.path, root);
+        let message = format!(
+            "File is runtime-reachable but has no test dependency path ({} value export{})",
+            item.file.value_export_count,
+            if item.file.value_export_count == 1 {
+                ""
+            } else {
+                "s"
+            },
+        );
+        sarif_results.push(sarif_result(
+            "fallow/untested-file",
+            "warning",
+            &message,
+            &uri,
+            None,
+        ));
+    }
+
+    for item in &gaps.exports {
+        let uri = relative_uri(&item.export.path, root);
+        let message = format!(
+            "Export '{}' is runtime-reachable but never referenced by test-reachable modules",
+            item.export.export_name
+        );
+        let source_snippet = snippets.line(&item.export.path, item.export.line);
+        sarif_results.push(sarif_result_with_snippet(
+            "fallow/untested-export",
+            "warning",
+            &message,
+            &uri,
+            Some((item.export.line, item.export.col + 1)),
+            source_snippet.as_deref(),
+        ));
+    }
 }
 
 fn append_runtime_coverage_sarif_results(

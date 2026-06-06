@@ -1204,7 +1204,7 @@ fn compare_file_score_triage(a: &FileHealthScore, b: &FileHealthScore) -> std::c
 /// density is derived from the already-parsed modules.
 #[expect(
     clippy::too_many_lines,
-    reason = "file scoring aggregates many metrics per file"
+    reason = "file scoring still coordinates per-module score assembly after setup extraction"
 )]
 pub(super) fn compute_file_scores(
     modules: &[fallow_core::extract::ModuleInfo],
@@ -1217,63 +1217,10 @@ pub(super) fn compute_file_scores(
     let graph = analysis_output.graph.ok_or("graph not available")?;
     let results = &analysis_output.results;
 
-    let circular_files: rustc_hash::FxHashSet<std::path::PathBuf> = results
-        .circular_dependencies
-        .iter()
-        .flat_map(|c| c.cycle.files.iter().cloned())
-        .collect();
-
-    let mut top_complex_fns: rustc_hash::FxHashMap<std::path::PathBuf, Vec<(String, u32, u16)>> =
-        rustc_hash::FxHashMap::default();
-    for module in modules {
-        if module.complexity.is_empty() {
-            continue;
-        }
-        let Some(path) = file_paths.get(&module.file_id) else {
-            continue;
-        };
-        let mut funcs: Vec<(String, u32, u16)> = module
-            .complexity
-            .iter()
-            .map(|f| (f.name.clone(), f.line, f.cognitive))
-            .collect();
-        funcs.sort_by_key(|f| std::cmp::Reverse(f.2));
-        funcs.truncate(3);
-        if funcs[0].2 > 0 {
-            top_complex_fns.insert((*path).clone(), funcs);
-        }
-    }
-
-    let mut cycle_members: rustc_hash::FxHashMap<std::path::PathBuf, Vec<std::path::PathBuf>> =
-        rustc_hash::FxHashMap::default();
-    for cycle in &results.circular_dependencies {
-        for file in &cycle.cycle.files {
-            let others: Vec<std::path::PathBuf> = cycle
-                .cycle
-                .files
-                .iter()
-                .filter(|f| *f != file)
-                .cloned()
-                .collect();
-            cycle_members
-                .entry(file.clone())
-                .or_default()
-                .extend(others);
-        }
-    }
-    for members in cycle_members.values_mut() {
-        members.sort();
-        members.dedup();
-    }
-
-    let mut unused_export_names: rustc_hash::FxHashMap<std::path::PathBuf, Vec<String>> =
-        rustc_hash::FxHashMap::default();
-    for exp in &results.unused_exports {
-        unused_export_names
-            .entry(exp.export.path.clone())
-            .or_default()
-            .push(exp.export.export_name.clone());
-    }
+    let circular_files = collect_circular_files(results);
+    let top_complex_fns = collect_top_complex_fns(modules, file_paths);
+    let cycle_members = collect_cycle_members(results);
+    let mut unused_export_names = collect_unused_export_names(results);
 
     let mut entry_points: rustc_hash::FxHashSet<std::path::PathBuf> =
         rustc_hash::FxHashSet::default();
@@ -1446,54 +1393,8 @@ pub(super) fn compute_file_scores(
         + results.unused_optional_dependencies.len();
     let total_deps = 0usize;
 
-    let mut module_export_counts: rustc_hash::FxHashMap<std::path::PathBuf, usize> =
-        rustc_hash::FxHashMap::with_capacity_and_hasher(
-            graph.modules.len(),
-            rustc_hash::FxBuildHasher,
-        );
-    for module in &graph.modules {
-        if let Some(path) = file_paths.get(&module.file_id) {
-            module_export_counts.insert((*path).clone(), module.exports.len());
-        }
-    }
-    let mut unused_export_paths: Vec<std::path::PathBuf> =
-        Vec::with_capacity(results.unused_exports.len() + results.unused_types.len());
-    unused_export_paths.extend(results.unused_exports.iter().map(|e| e.export.path.clone()));
-    unused_export_paths.extend(results.unused_types.iter().map(|e| e.export.path.clone()));
-    let mut unused_dep_package_paths: Vec<std::path::PathBuf> = Vec::with_capacity(unused_deps);
-    unused_dep_package_paths.extend(
-        results
-            .unused_dependencies
-            .iter()
-            .map(|d| d.dep.path.clone()),
-    );
-    unused_dep_package_paths.extend(
-        results
-            .unused_dev_dependencies
-            .iter()
-            .map(|d| d.dep.path.clone()),
-    );
-    unused_dep_package_paths.extend(
-        results
-            .unused_optional_dependencies
-            .iter()
-            .map(|d| d.dep.path.clone()),
-    );
-    let analysis_snapshot = AnalysisCountsSnapshot {
-        unused_file_paths: results
-            .unused_files
-            .iter()
-            .map(|f| f.file.path.clone())
-            .collect(),
-        unused_export_paths,
-        unused_dep_package_paths,
-        circular_dep_groups: results
-            .circular_dependencies
-            .iter()
-            .map(|c| c.cycle.files.clone())
-            .collect(),
-        module_export_counts,
-    };
+    let analysis_snapshot =
+        build_analysis_counts_snapshot(&graph, file_paths, results, unused_deps);
 
     Ok(FileScoreOutput {
         scores,
@@ -1525,6 +1426,141 @@ pub(super) fn compute_file_scores(
             })
             .collect(),
     })
+}
+
+fn collect_circular_files(
+    results: &fallow_core::results::AnalysisResults,
+) -> rustc_hash::FxHashSet<std::path::PathBuf> {
+    results
+        .circular_dependencies
+        .iter()
+        .flat_map(|c| c.cycle.files.iter().cloned())
+        .collect()
+}
+
+fn collect_top_complex_fns(
+    modules: &[fallow_core::extract::ModuleInfo],
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+) -> rustc_hash::FxHashMap<std::path::PathBuf, Vec<(String, u32, u16)>> {
+    let mut top_complex_fns = rustc_hash::FxHashMap::default();
+    for module in modules {
+        if module.complexity.is_empty() {
+            continue;
+        }
+        let Some(path) = file_paths.get(&module.file_id) else {
+            continue;
+        };
+        let mut funcs: Vec<(String, u32, u16)> = module
+            .complexity
+            .iter()
+            .map(|f| (f.name.clone(), f.line, f.cognitive))
+            .collect();
+        funcs.sort_by_key(|f| std::cmp::Reverse(f.2));
+        funcs.truncate(3);
+        if funcs[0].2 > 0 {
+            top_complex_fns.insert((*path).clone(), funcs);
+        }
+    }
+    top_complex_fns
+}
+
+fn collect_cycle_members(
+    results: &fallow_core::results::AnalysisResults,
+) -> rustc_hash::FxHashMap<std::path::PathBuf, Vec<std::path::PathBuf>> {
+    let mut cycle_members: rustc_hash::FxHashMap<std::path::PathBuf, Vec<std::path::PathBuf>> =
+        rustc_hash::FxHashMap::default();
+    for cycle in &results.circular_dependencies {
+        for file in &cycle.cycle.files {
+            let others: Vec<std::path::PathBuf> = cycle
+                .cycle
+                .files
+                .iter()
+                .filter(|f| *f != file)
+                .cloned()
+                .collect();
+            cycle_members
+                .entry(file.clone())
+                .or_default()
+                .extend(others);
+        }
+    }
+    for members in cycle_members.values_mut() {
+        members.sort();
+        members.dedup();
+    }
+    cycle_members
+}
+
+fn collect_unused_export_names(
+    results: &fallow_core::results::AnalysisResults,
+) -> rustc_hash::FxHashMap<std::path::PathBuf, Vec<String>> {
+    let mut unused_export_names: rustc_hash::FxHashMap<std::path::PathBuf, Vec<String>> =
+        rustc_hash::FxHashMap::default();
+    for exp in &results.unused_exports {
+        unused_export_names
+            .entry(exp.export.path.clone())
+            .or_default()
+            .push(exp.export.export_name.clone());
+    }
+    unused_export_names
+}
+
+fn build_analysis_counts_snapshot(
+    graph: &fallow_core::graph::ModuleGraph,
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    results: &fallow_core::results::AnalysisResults,
+    unused_deps: usize,
+) -> AnalysisCountsSnapshot {
+    let mut module_export_counts = rustc_hash::FxHashMap::with_capacity_and_hasher(
+        graph.modules.len(),
+        rustc_hash::FxBuildHasher,
+    );
+    for module in &graph.modules {
+        if let Some(path) = file_paths.get(&module.file_id) {
+            module_export_counts.insert((*path).clone(), module.exports.len());
+        }
+    }
+
+    let mut unused_export_paths =
+        Vec::with_capacity(results.unused_exports.len() + results.unused_types.len());
+    unused_export_paths.extend(results.unused_exports.iter().map(|e| e.export.path.clone()));
+    unused_export_paths.extend(results.unused_types.iter().map(|e| e.export.path.clone()));
+
+    let mut unused_dep_package_paths = Vec::with_capacity(unused_deps);
+    unused_dep_package_paths.extend(
+        results
+            .unused_dependencies
+            .iter()
+            .map(|d| d.dep.path.clone()),
+    );
+    unused_dep_package_paths.extend(
+        results
+            .unused_dev_dependencies
+            .iter()
+            .map(|d| d.dep.path.clone()),
+    );
+    unused_dep_package_paths.extend(
+        results
+            .unused_optional_dependencies
+            .iter()
+            .map(|d| d.dep.path.clone()),
+    );
+
+    AnalysisCountsSnapshot {
+        unused_file_paths: results
+            .unused_files
+            .iter()
+            .map(|f| f.file.path.clone())
+            .collect(),
+        unused_export_paths,
+        unused_dep_package_paths,
+        circular_dep_groups: results
+            .circular_dependencies
+            .iter()
+            .map(|c| c.cycle.files.clone())
+            .collect(),
+        module_export_counts,
+    }
 }
 
 #[cfg(test)]

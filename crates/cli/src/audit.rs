@@ -2058,10 +2058,6 @@ where
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "keeps audit attribution keys adjacent to the JSON arrays they annotate"
-)]
 fn annotate_dead_code_json(
     json: &mut serde_json::Value,
     results: &fallow_core::results::AnalysisResults,
@@ -2121,50 +2117,8 @@ fn annotate_dead_code_json(
             )
         }),
     );
-    annotate_issue_array(
-        json,
-        "unused_dependencies",
-        results
-            .unused_dependencies
-            .iter()
-            .map(|item| issue_was_introduced(&unused_dependency_key(&item.dep, root), base)),
-    );
-    annotate_issue_array(
-        json,
-        "unused_dev_dependencies",
-        results
-            .unused_dev_dependencies
-            .iter()
-            .map(|item| issue_was_introduced(&unused_dependency_key(&item.dep, root), base)),
-    );
-    annotate_issue_array(
-        json,
-        "unused_optional_dependencies",
-        results
-            .unused_optional_dependencies
-            .iter()
-            .map(|item| issue_was_introduced(&unused_dependency_key(&item.dep, root), base)),
-    );
-    annotate_issue_array(
-        json,
-        "unused_enum_members",
-        results.unused_enum_members.iter().map(|item| {
-            issue_was_introduced(
-                &unused_member_key("unused-enum-member", &item.member, root),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "unused_class_members",
-        results.unused_class_members.iter().map(|item| {
-            issue_was_introduced(
-                &unused_member_key("unused-class-member", &item.member, root),
-                base,
-            )
-        }),
-    );
+    annotate_dependency_json(json, results, root, base);
+    annotate_member_json(json, results, root, base);
     annotate_issue_array(
         json,
         "unresolved_imports",
@@ -2237,6 +2191,76 @@ fn annotate_dead_code_json(
             )
         }),
     );
+    annotate_graph_json(json, results, root, base);
+    annotate_catalog_json(json, results, root, base);
+}
+
+fn annotate_dependency_json(
+    json: &mut serde_json::Value,
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+    base: &FxHashSet<String>,
+) {
+    annotate_issue_array(
+        json,
+        "unused_dependencies",
+        results
+            .unused_dependencies
+            .iter()
+            .map(|item| issue_was_introduced(&unused_dependency_key(&item.dep, root), base)),
+    );
+    annotate_issue_array(
+        json,
+        "unused_dev_dependencies",
+        results
+            .unused_dev_dependencies
+            .iter()
+            .map(|item| issue_was_introduced(&unused_dependency_key(&item.dep, root), base)),
+    );
+    annotate_issue_array(
+        json,
+        "unused_optional_dependencies",
+        results
+            .unused_optional_dependencies
+            .iter()
+            .map(|item| issue_was_introduced(&unused_dependency_key(&item.dep, root), base)),
+    );
+}
+
+fn annotate_member_json(
+    json: &mut serde_json::Value,
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+    base: &FxHashSet<String>,
+) {
+    annotate_issue_array(
+        json,
+        "unused_enum_members",
+        results.unused_enum_members.iter().map(|item| {
+            issue_was_introduced(
+                &unused_member_key("unused-enum-member", &item.member, root),
+                base,
+            )
+        }),
+    );
+    annotate_issue_array(
+        json,
+        "unused_class_members",
+        results.unused_class_members.iter().map(|item| {
+            issue_was_introduced(
+                &unused_member_key("unused-class-member", &item.member, root),
+                base,
+            )
+        }),
+    );
+}
+
+fn annotate_graph_json(
+    json: &mut serde_json::Value,
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+    base: &FxHashSet<String>,
+) {
     annotate_issue_array(
         json,
         "circular_dependencies",
@@ -2298,6 +2322,14 @@ fn annotate_dead_code_json(
             )
         }),
     );
+}
+
+fn annotate_catalog_json(
+    json: &mut serde_json::Value,
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+    base: &FxHashSet<String>,
+) {
     annotate_issue_array(
         json,
         "unresolved_catalog_references",

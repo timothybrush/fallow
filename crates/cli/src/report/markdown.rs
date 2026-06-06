@@ -3,8 +3,9 @@ use std::path::Path;
 
 use fallow_core::duplicates::DuplicationReport;
 use fallow_core::results::{
-    AnalysisResults, UnusedClassMemberFinding, UnusedEnumMemberFinding, UnusedExport,
-    UnusedExportFinding, UnusedMember, UnusedTypeFinding,
+    AnalysisResults, UnresolvedCatalogReferenceFinding, UnusedCatalogEntryFinding,
+    UnusedClassMemberFinding, UnusedDependencyOverrideFinding, UnusedEnumMemberFinding,
+    UnusedExport, UnusedExportFinding, UnusedMember, UnusedTypeFinding,
 };
 
 use super::grouping::ResultGroup;
@@ -20,10 +21,6 @@ pub(super) fn print_markdown(results: &AnalysisResults, root: &Path) {
 }
 
 /// Build markdown output for analysis results.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one section per issue type; splitting would fragment the output builder"
-)]
 pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
     let rel = |p: &Path| {
         escape_backticks(&normalize_uri(
@@ -72,65 +69,8 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
         format_private_type_leak,
     );
 
-    markdown_section(
-        &mut out,
-        &results.unused_dependencies,
-        "Unused dependencies",
-        |dep| {
-            format_dependency(
-                &dep.dep.package_name,
-                &dep.dep.path,
-                &dep.dep.used_in_workspaces,
-                root,
-            )
-        },
-    );
-
-    markdown_section(
-        &mut out,
-        &results.unused_dev_dependencies,
-        "Unused devDependencies",
-        |dep| {
-            format_dependency(
-                &dep.dep.package_name,
-                &dep.dep.path,
-                &dep.dep.used_in_workspaces,
-                root,
-            )
-        },
-    );
-
-    markdown_section(
-        &mut out,
-        &results.unused_optional_dependencies,
-        "Unused optionalDependencies",
-        |dep| {
-            format_dependency(
-                &dep.dep.package_name,
-                &dep.dep.path,
-                &dep.dep.used_in_workspaces,
-                root,
-            )
-        },
-    );
-
-    markdown_grouped_section(
-        &mut out,
-        &results.unused_enum_members,
-        "Unused enum members",
-        root,
-        |m| m.member.path.as_path(),
-        |m: &UnusedEnumMemberFinding| format_member(&m.member),
-    );
-
-    markdown_grouped_section(
-        &mut out,
-        &results.unused_class_members,
-        "Unused class members",
-        root,
-        |m| m.member.path.as_path(),
-        |m: &UnusedClassMemberFinding| format_member(&m.member),
-    );
+    push_markdown_dependency_sections(&mut out, results, root);
+    push_markdown_member_sections(&mut out, results, root);
 
     markdown_grouped_section(
         &mut out,
@@ -173,22 +113,100 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
         },
     );
 
+    push_markdown_dependency_detail_sections(&mut out, results, root);
+    push_markdown_graph_sections(&mut out, results, &rel);
+    push_markdown_catalog_sections(&mut out, results, &rel);
+
+    out
+}
+
+fn push_markdown_dependency_sections(out: &mut String, results: &AnalysisResults, root: &Path) {
     markdown_section(
-        &mut out,
+        out,
+        &results.unused_dependencies,
+        "Unused dependencies",
+        |dep| {
+            format_dependency(
+                &dep.dep.package_name,
+                &dep.dep.path,
+                &dep.dep.used_in_workspaces,
+                root,
+            )
+        },
+    );
+    markdown_section(
+        out,
+        &results.unused_dev_dependencies,
+        "Unused devDependencies",
+        |dep| {
+            format_dependency(
+                &dep.dep.package_name,
+                &dep.dep.path,
+                &dep.dep.used_in_workspaces,
+                root,
+            )
+        },
+    );
+    markdown_section(
+        out,
+        &results.unused_optional_dependencies,
+        "Unused optionalDependencies",
+        |dep| {
+            format_dependency(
+                &dep.dep.package_name,
+                &dep.dep.path,
+                &dep.dep.used_in_workspaces,
+                root,
+            )
+        },
+    );
+}
+
+fn push_markdown_member_sections(out: &mut String, results: &AnalysisResults, root: &Path) {
+    markdown_grouped_section(
+        out,
+        &results.unused_enum_members,
+        "Unused enum members",
+        root,
+        |m| m.member.path.as_path(),
+        |m: &UnusedEnumMemberFinding| format_member(&m.member),
+    );
+    markdown_grouped_section(
+        out,
+        &results.unused_class_members,
+        "Unused class members",
+        root,
+        |m| m.member.path.as_path(),
+        |m: &UnusedClassMemberFinding| format_member(&m.member),
+    );
+}
+
+fn push_markdown_dependency_detail_sections(
+    out: &mut String,
+    results: &AnalysisResults,
+    root: &Path,
+) {
+    markdown_section(
+        out,
         &results.type_only_dependencies,
         "Type-only dependencies (consider moving to devDependencies)",
         |dep| format_dependency(&dep.dep.package_name, &dep.dep.path, &[], root),
     );
-
     markdown_section(
-        &mut out,
+        out,
         &results.test_only_dependencies,
         "Test-only production dependencies (consider moving to devDependencies)",
         |dep| format_dependency(&dep.dep.package_name, &dep.dep.path, &[], root),
     );
+}
 
+fn push_markdown_graph_sections(
+    out: &mut String,
+    results: &AnalysisResults,
+    rel: &dyn Fn(&Path) -> String,
+) {
     markdown_section(
-        &mut out,
+        out,
         &results.circular_dependencies,
         "Circular dependencies",
         |cycle| {
@@ -213,9 +231,8 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
             )]
         },
     );
-
     markdown_section(
-        &mut out,
+        out,
         &results.re_export_cycles,
         "Re-export cycles",
         |cycle| {
@@ -235,9 +252,8 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
             )]
         },
     );
-
     markdown_section(
-        &mut out,
+        out,
         &results.boundary_violations,
         "Boundary violations",
         |v| {
@@ -251,9 +267,8 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
             )]
         },
     );
-
     markdown_section(
-        &mut out,
+        out,
         &results.stale_suppressions,
         "Stale suppressions",
         |s| {
@@ -266,34 +281,21 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
             )]
         },
     );
+}
+
+fn push_markdown_catalog_sections(
+    out: &mut String,
+    results: &AnalysisResults,
+    rel: &dyn Fn(&Path) -> String,
+) {
     markdown_section(
-        &mut out,
+        out,
         &results.unused_catalog_entries,
         "Unused catalog entries",
-        |entry| {
-            let mut row = format!(
-                "- `{}` (`{}`) `{}`:{}",
-                escape_backticks(&entry.entry.entry_name),
-                escape_backticks(&entry.entry.catalog_name),
-                rel(&entry.entry.path),
-                entry.entry.line,
-            );
-            if !entry.entry.hardcoded_consumers.is_empty() {
-                use std::fmt::Write as _;
-                let consumers = entry
-                    .entry
-                    .hardcoded_consumers
-                    .iter()
-                    .map(|p| format!("`{}`", rel(p)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = write!(row, " (hardcoded in {consumers})");
-            }
-            vec![row]
-        },
+        |entry| format_unused_catalog_entry(entry, rel),
     );
     markdown_section(
-        &mut out,
+        out,
         &results.empty_catalog_groups,
         "Empty catalog groups",
         |group| {
@@ -306,53 +308,19 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
         },
     );
     markdown_section(
-        &mut out,
+        out,
         &results.unresolved_catalog_references,
         "Unresolved catalog references",
-        |finding| {
-            let mut row = format!(
-                "- `{}` (`{}`) `{}`:{}",
-                escape_backticks(&finding.reference.entry_name),
-                escape_backticks(&finding.reference.catalog_name),
-                rel(&finding.reference.path),
-                finding.reference.line,
-            );
-            if !finding.reference.available_in_catalogs.is_empty() {
-                use std::fmt::Write as _;
-                let alts = finding
-                    .reference
-                    .available_in_catalogs
-                    .iter()
-                    .map(|c| format!("`{}`", escape_backticks(c)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = write!(row, " (available in: {alts})");
-            }
-            vec![row]
-        },
+        |finding| format_unresolved_catalog_reference(finding, rel),
     );
     markdown_section(
-        &mut out,
+        out,
         &results.unused_dependency_overrides,
         "Unused dependency overrides",
-        |finding| {
-            use std::fmt::Write as _;
-            let mut row = format!(
-                "- `{}` -> `{}` (`{}`) `{}`:{}",
-                escape_backticks(&finding.entry.raw_key),
-                escape_backticks(&finding.entry.version_range),
-                finding.entry.source.as_label(),
-                rel(&finding.entry.path),
-                finding.entry.line,
-            );
-            if let Some(hint) = &finding.entry.hint {
-                let _ = write!(row, " (hint: {})", escape_backticks(hint));
-            }
-            vec![row]
-        },
+        |finding| format_unused_dependency_override(finding, rel),
     );
     markdown_section(
-        &mut out,
+        out,
         &results.misconfigured_dependency_overrides,
         "Misconfigured dependency overrides",
         |finding| {
@@ -367,8 +335,72 @@ pub fn build_markdown(results: &AnalysisResults, root: &Path) -> String {
             )]
         },
     );
+}
 
-    out
+fn format_unused_catalog_entry(
+    entry: &UnusedCatalogEntryFinding,
+    rel: &dyn Fn(&Path) -> String,
+) -> Vec<String> {
+    let mut row = format!(
+        "- `{}` (`{}`) `{}`:{}",
+        escape_backticks(&entry.entry.entry_name),
+        escape_backticks(&entry.entry.catalog_name),
+        rel(&entry.entry.path),
+        entry.entry.line,
+    );
+    if !entry.entry.hardcoded_consumers.is_empty() {
+        let consumers = entry
+            .entry
+            .hardcoded_consumers
+            .iter()
+            .map(|p| format!("`{}`", rel(p)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(row, " (hardcoded in {consumers})");
+    }
+    vec![row]
+}
+
+fn format_unresolved_catalog_reference(
+    finding: &UnresolvedCatalogReferenceFinding,
+    rel: &dyn Fn(&Path) -> String,
+) -> Vec<String> {
+    let mut row = format!(
+        "- `{}` (`{}`) `{}`:{}",
+        escape_backticks(&finding.reference.entry_name),
+        escape_backticks(&finding.reference.catalog_name),
+        rel(&finding.reference.path),
+        finding.reference.line,
+    );
+    if !finding.reference.available_in_catalogs.is_empty() {
+        let alts = finding
+            .reference
+            .available_in_catalogs
+            .iter()
+            .map(|c| format!("`{}`", escape_backticks(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(row, " (available in: {alts})");
+    }
+    vec![row]
+}
+
+fn format_unused_dependency_override(
+    finding: &UnusedDependencyOverrideFinding,
+    rel: &dyn Fn(&Path) -> String,
+) -> Vec<String> {
+    let mut row = format!(
+        "- `{}` -> `{}` (`{}`) `{}`:{}",
+        escape_backticks(&finding.entry.raw_key),
+        escape_backticks(&finding.entry.version_range),
+        finding.entry.source.as_label(),
+        rel(&finding.entry.path),
+        finding.entry.line,
+    );
+    if let Some(hint) = &finding.entry.hint {
+        let _ = write!(row, " (hint: {})", escape_backticks(hint));
+    }
+    vec![row]
 }
 
 /// Print grouped markdown output: each group gets an `## owner (N issues)` heading.
