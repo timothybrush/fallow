@@ -2646,25 +2646,14 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             dry_run,
             yes,
             no_create_config,
-        } => {
-            let production = match resolve_production_modes(cli, root, output, false, false, false)
-            {
-                Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
-                Err(code) => return code,
-            };
-            fix::run_fix(&fix::FixOptions {
-                root,
-                config_path: &cli.config,
-                output,
-                no_cache: cli.no_cache,
-                threads,
-                quiet,
+        } => dispatch_fix(
+            dispatch,
+            FixDispatchArgs {
                 dry_run,
                 yes,
-                production,
                 no_create_config,
-            })
-        }
+            },
+        ),
         Command::Init {
             toml,
             hooks,
@@ -3339,6 +3328,33 @@ fn dispatch_watch(dispatch: &DispatchContext<'_>, no_clear: bool) -> ExitCode {
         clear_screen: !no_clear,
         explain: cli.explain,
         include_entry_exports: cli.include_entry_exports,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct FixDispatchArgs {
+    dry_run: bool,
+    yes: bool,
+    no_create_config: bool,
+}
+
+fn dispatch_fix(dispatch: &DispatchContext<'_>, args: FixDispatchArgs) -> ExitCode {
+    let cli = dispatch.cli;
+    let production = match dispatch.production_for(fallow_config::ProductionAnalysis::DeadCode) {
+        Ok(production) => production,
+        Err(code) => return code,
+    };
+    fix::run_fix(&fix::FixOptions {
+        root: dispatch.root,
+        config_path: &cli.config,
+        output: dispatch.output,
+        no_cache: cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        dry_run: args.dry_run,
+        yes: args.yes,
+        production,
+        no_create_config: args.no_create_config,
     })
 }
 
