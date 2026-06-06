@@ -2422,6 +2422,99 @@ mod tests {
     }
 
     #[test]
+    fn finds_project_local_sidecar_from_ancestor_node_modules_bin() {
+        let root = make_temp_dir("sidecar-project-local");
+        let app = root.join("apps").join("web");
+        let bin_dir = root.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&app)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", app.display()));
+        std::fs::create_dir_all(&bin_dir)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", bin_dir.display()));
+        let sidecar = bin_dir.join(sidecar_binary_name());
+        std::fs::write(&sidecar, "")
+            .unwrap_or_else(|err| panic!("failed to write {}: {err}", sidecar.display()));
+
+        assert_eq!(super::find_project_local_sidecar(&app), Some(sidecar));
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn detects_package_manager_from_field_before_lockfiles() {
+        let root = make_temp_dir("sidecar-package-manager-field");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"demo","packageManager":"pnpm@9.15.0"}"#,
+        )
+        .unwrap_or_else(|err| panic!("failed to write package.json: {err}"));
+        std::fs::write(root.join("package-lock.json"), "")
+            .unwrap_or_else(|err| panic!("failed to write package-lock.json: {err}"));
+
+        assert_eq!(
+            super::detect_package_manager(&root),
+            Some(super::LocalPackageManager::Pnpm)
+        );
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn detects_package_manager_from_lockfiles() {
+        for (lockfile, expected) in [
+            ("bun.lock", super::LocalPackageManager::Bun),
+            ("pnpm-lock.yaml", super::LocalPackageManager::Pnpm),
+            ("yarn.lock", super::LocalPackageManager::Yarn),
+            ("npm-shrinkwrap.json", super::LocalPackageManager::Npm),
+        ] {
+            let root = make_temp_dir(&format!("sidecar-lockfile-{lockfile}"));
+            std::fs::create_dir_all(&root)
+                .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
+            std::fs::write(root.join(lockfile), "")
+                .unwrap_or_else(|err| panic!("failed to write {lockfile}: {err}"));
+
+            assert_eq!(super::detect_package_manager(&root), Some(expected));
+
+            std::fs::remove_dir_all(&root)
+                .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+        }
+    }
+
+    #[test]
+    fn package_store_sidecar_prefers_highest_version() {
+        let root = make_temp_dir("sidecar-store-version");
+        let node_modules = root.join("node_modules");
+        let store = node_modules.join(".pnpm");
+        for version in ["0.1.4", "0.1.8"] {
+            let package_dir = store
+                .join(format!("@fallow-cli+fallow-cov-darwin-arm64@{version}"))
+                .join("node_modules")
+                .join("@fallow-cli")
+                .join("fallow-cov-darwin-arm64");
+            std::fs::create_dir_all(&package_dir)
+                .unwrap_or_else(|err| panic!("failed to create {}: {err}", package_dir.display()));
+            std::fs::write(
+                package_dir.join("package.json"),
+                format!(r#"{{"version":"{version}"}}"#),
+            )
+            .unwrap_or_else(|err| panic!("failed to write package.json: {err}"));
+            std::fs::write(package_dir.join(sidecar_binary_name()), "")
+                .unwrap_or_else(|err| panic!("failed to write sidecar: {err}"));
+        }
+
+        let resolved = super::find_package_store_platform_sidecar(&node_modules, ".pnpm")
+            .expect("store sidecar should resolve");
+
+        assert!(resolved.display().to_string().contains("0.1.8"));
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
     fn resolves_yarn_sidecar_without_node_modules_bin() {
         let root = make_temp_dir("sidecar-yarn");
         let command_dir = root.join("commands");
