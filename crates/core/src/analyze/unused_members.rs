@@ -1333,17 +1333,7 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
     let allowlist = ClassMemberAllowlist::from_rules(user_class_member_allowlist);
     let ignore_decorators = IgnoreDecoratorSet::from_config(ignore_decorators);
 
-    if !ignore_decorators.is_empty() {
-        for module in &graph.modules {
-            for export in &module.exports {
-                for member in &export.members {
-                    for decorator in &member.decorator_names {
-                        ignore_decorators.record_seen(decorator);
-                    }
-                }
-            }
-        }
-    }
+    record_seen_ignore_decorators(graph, &ignore_decorators);
 
     let mut class_heritage_by_export: FxHashMap<ExportKey, (Option<String>, Vec<String>)> =
         FxHashMap::default();
@@ -1800,6 +1790,21 @@ pub(super) fn find_unused_members_with_public_api_entry_points(
     ignore_decorators.warn_unmatched();
 
     (unused_enum_members, unused_class_members)
+}
+
+fn record_seen_ignore_decorators(graph: &ModuleGraph, ignore_decorators: &IgnoreDecoratorSet) {
+    if ignore_decorators.is_empty() {
+        return;
+    }
+    for module in &graph.modules {
+        for export in &module.exports {
+            for member in &export.members {
+                for decorator in &member.decorator_names {
+                    ignore_decorators.record_seen(decorator);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
