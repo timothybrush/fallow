@@ -11,6 +11,16 @@ use super::types::ModuleNode;
 use super::types::{ExportSymbol, ReExportEdge};
 use super::{Edge, ImportedSymbol, ModuleGraph};
 
+pub(super) struct PopulateEdgesInput<'a> {
+    pub(super) files: &'a [DiscoveredFile],
+    pub(super) module_by_id: &'a FxHashMap<FileId, &'a ResolvedModule>,
+    pub(super) entry_point_ids: &'a FxHashSet<FileId>,
+    pub(super) runtime_entry_point_ids: &'a FxHashSet<FileId>,
+    pub(super) test_entry_point_ids: &'a FxHashSet<FileId>,
+    pub(super) module_count: usize,
+    pub(super) total_capacity: usize,
+}
+
 /// Mutable accumulator state shared across all files during edge population.
 struct EdgeAccumulator {
     package_usage: FxHashMap<String, Vec<FileId>>,
@@ -245,15 +255,14 @@ impl ModuleGraph {
     ///
     /// Creates `ModuleNode` entries, flat `Edge` storage, reverse dependency
     /// indices, package usage maps, and the namespace-imported bitset.
-    pub(super) fn populate_edges(
-        files: &[DiscoveredFile],
-        module_by_id: &FxHashMap<FileId, &ResolvedModule>,
-        entry_point_ids: &FxHashSet<FileId>,
-        runtime_entry_point_ids: &FxHashSet<FileId>,
-        test_entry_point_ids: &FxHashSet<FileId>,
-        module_count: usize,
-        total_capacity: usize,
-    ) -> Self {
+    pub(super) fn populate_edges(input: &PopulateEdgesInput<'_>) -> Self {
+        let files = input.files;
+        let module_by_id = input.module_by_id;
+        let entry_point_ids = input.entry_point_ids;
+        let runtime_entry_point_ids = input.runtime_entry_point_ids;
+        let test_entry_point_ids = input.test_entry_point_ids;
+        let module_count = input.module_count;
+        let total_capacity = input.total_capacity;
         let mut all_edges = Vec::new();
         let mut modules = Vec::with_capacity(module_count);
         let mut reverse_deps = vec![Vec::new(); total_capacity];

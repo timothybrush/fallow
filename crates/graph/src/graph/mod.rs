@@ -172,15 +172,15 @@ impl ModuleGraph {
             }
         }
 
-        let mut graph = Self::populate_edges(
+        let mut graph = Self::populate_edges(&build::PopulateEdgesInput {
             files,
-            &module_by_id,
-            &entry_point_ids,
-            &runtime_entry_point_ids,
-            &test_entry_point_ids,
+            module_by_id: &module_by_id,
+            entry_point_ids: &entry_point_ids,
+            runtime_entry_point_ids: &runtime_entry_point_ids,
+            test_entry_point_ids: &test_entry_point_ids,
             module_count,
             total_capacity,
-        );
+        });
 
         graph.populate_references(&module_by_id, &entry_point_ids);
 
