@@ -14,7 +14,7 @@ use fallow_core::results::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
-    MAX_FLAT_ITEMS, build_grouped_by_file, build_section_header, format_path,
+    GroupedByFileInput, MAX_FLAT_ITEMS, build_grouped_by_file, build_section_header, format_path,
     print_explain_tip_if_tty, push_section_footer_rollup, push_section_footer_with_count,
 };
 use crate::report::grouping::OwnershipResolver;
@@ -1357,15 +1357,15 @@ where
         return;
     }
     lines.push(build_section_header(title, items.len(), level));
-    build_grouped_by_file(
+    build_grouped_by_file(GroupedByFileInput {
         lines,
         items,
         root,
         get_path,
         format_detail,
         max_files,
-        MAX_ITEMS_PER_FILE,
-    );
+        max_items_per_file: MAX_ITEMS_PER_FILE,
+    });
     push_section_footer_with_count(lines, title, items.len());
     lines.push(String::new());
 }

@@ -267,15 +267,36 @@ fn push_section_footer_impl(lines: &mut Vec<String>, title: &str, item_count: us
 }
 
 /// Build items grouped by file path, sorted by count descending, with truncation.
-pub(super) fn build_grouped_by_file<'a, T>(
-    lines: &mut Vec<String>,
-    items: &'a [T],
-    root: &Path,
-    get_path: impl Fn(&'a T) -> &'a Path,
-    format_detail: &impl Fn(&T) -> String,
-    max_files: usize,
-    max_items_per_file: usize,
-) {
+pub(super) struct GroupedByFileInput<'out, 'items, T, P, F>
+where
+    P: Fn(&'items T) -> &'items Path,
+    F: Fn(&T) -> String,
+{
+    pub(super) lines: &'out mut Vec<String>,
+    pub(super) items: &'items [T],
+    pub(super) root: &'out Path,
+    pub(super) get_path: P,
+    pub(super) format_detail: &'out F,
+    pub(super) max_files: usize,
+    pub(super) max_items_per_file: usize,
+}
+
+pub(super) fn build_grouped_by_file<'out, 'items, T, P, F>(
+    input: GroupedByFileInput<'out, 'items, T, P, F>,
+)
+where
+    P: Fn(&'items T) -> &'items Path,
+    F: Fn(&T) -> String,
+{
+    let GroupedByFileInput {
+        lines,
+        items,
+        root,
+        get_path,
+        format_detail,
+        max_files,
+        max_items_per_file,
+    } = input;
     let mut file_groups: Vec<(String, Vec<usize>)> = Vec::new();
     let mut file_map: rustc_hash::FxHashMap<String, usize> = rustc_hash::FxHashMap::default();
 
