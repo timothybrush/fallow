@@ -7,7 +7,7 @@ use oxc_ast_visit::walk;
 use oxc_semantic::ScopeFlags;
 use oxc_span::Span;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 
 use crate::{
     DynamicImportInfo, DynamicImportPattern, ExportInfo, ExportName, ImportInfo, ImportedName,
@@ -36,731 +36,10 @@ use super::{
     try_extract_import_then_callback, try_extract_property_callback_import, try_extract_require,
 };
 
-const PINO_PACKAGE: &str = "pino";
-const PINO_FACTORY_EXPORT: &str = "pino";
-const PINO_TRANSPORT_KEY: &str = "transport";
-const PINO_TARGET_KEY: &str = "target";
-const PINO_TARGETS_KEY: &str = "targets";
-const FRAMEWORK_REQUEST_SOURCE: &str = "framework.request";
-const NEXT_REQUEST_SOURCE: &str = "next.request";
-const NEXT_FORM_DATA_SOURCE: &str = "next.form-data";
-const QUEUE_JOB_SOURCE: &str = "queue.job";
-const MCP_TOOL_INPUT_SOURCE: &str = "mcp.tool-input";
+#[path = "visit_impl_helpers.rs"]
+mod visit_helpers;
 
-type StaticPackageStringBindings = FxHashMap<String, Vec<String>>;
-type StaticPackageObjectBindings = FxHashMap<String, FxHashMap<String, Vec<String>>>;
-type StaticPackageLoopBindings = (StaticPackageStringBindings, StaticPackageObjectBindings);
-
-#[derive(Default)]
-struct SignatureTypeCollector {
-    refs: Vec<(String, Span)>,
-}
-
-impl<'a> Visit<'a> for SignatureTypeCollector {
-    fn visit_ts_type_reference(&mut self, type_ref: &TSTypeReference<'a>) {
-        if let Some((name, span)) = type_name_root(&type_ref.type_name) {
-            self.refs.push((name, span));
-        }
-        walk::walk_ts_type_reference(self, type_ref);
-    }
-}
-
-struct StructuralParamMemberCollector {
-    target_params: FxHashSet<String>,
-    shadowed_stack: Vec<FxHashSet<String>>,
-    members: FxHashMap<String, FxHashSet<String>>,
-}
-
-impl StructuralParamMemberCollector {
-    fn new(target_params: FxHashSet<String>) -> Self {
-        Self {
-            target_params,
-            shadowed_stack: Vec::new(),
-            members: FxHashMap::default(),
-        }
-    }
-
-    fn is_shadowed(&self, name: &str) -> bool {
-        self.shadowed_stack.iter().any(|scope| scope.contains(name))
-    }
-
-    fn collect_shadowed_params(&self, params: &FormalParameters<'_>) -> FxHashSet<String> {
-        let mut shadowed = FxHashSet::default();
-        for param in &params.items {
-            if let BindingPattern::BindingIdentifier(id) = &param.pattern
-                && self.target_params.contains(id.name.as_str())
-            {
-                shadowed.insert(id.name.to_string());
-            }
-        }
-        shadowed
-    }
-
-    fn record_shadowed_bindings<'a>(
-        &mut self,
-        bindings: impl Iterator<Item = &'a BindingIdentifier<'a>>,
-    ) {
-        let Some(scope) = self.shadowed_stack.last_mut() else {
-            return;
-        };
-        for binding in bindings {
-            if self.target_params.contains(binding.name.as_str()) {
-                scope.insert(binding.name.to_string());
-            }
-        }
-    }
-}
-
-impl<'a> Visit<'a> for StructuralParamMemberCollector {
-    fn visit_static_member_expression(&mut self, expr: &StaticMemberExpression<'a>) {
-        if let Expression::Identifier(object) = &expr.object
-            && self.target_params.contains(object.name.as_str())
-            && !self.is_shadowed(object.name.as_str())
-        {
-            self.members
-                .entry(object.name.to_string())
-                .or_default()
-                .insert(expr.property.name.to_string());
-        }
-        walk::walk_static_member_expression(self, expr);
-    }
-
-    fn visit_function(&mut self, func: &Function<'a>, flags: ScopeFlags) {
-        let shadowed = self.collect_shadowed_params(&func.params);
-        self.shadowed_stack.push(shadowed);
-        walk::walk_function(self, func, flags);
-        self.shadowed_stack.pop();
-    }
-
-    fn visit_arrow_function_expression(&mut self, expr: &ArrowFunctionExpression<'a>) {
-        let shadowed = self.collect_shadowed_params(&expr.params);
-        self.shadowed_stack.push(shadowed);
-        walk::walk_arrow_function_expression(self, expr);
-        self.shadowed_stack.pop();
-    }
-
-    fn visit_block_statement(&mut self, stmt: &BlockStatement<'a>) {
-        self.shadowed_stack.push(FxHashSet::default());
-        walk::walk_block_statement(self, stmt);
-        self.shadowed_stack.pop();
-    }
-
-    fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
-        if matches!(
-            decl.kind,
-            VariableDeclarationKind::Const | VariableDeclarationKind::Let
-        ) {
-            self.record_shadowed_bindings(
-                decl.declarations
-                    .iter()
-                    .flat_map(|declarator| declarator.id.get_binding_identifiers()),
-            );
-        }
-        walk::walk_variable_declaration(self, decl);
-    }
-}
-
-fn type_name_root(name: &TSTypeName<'_>) -> Option<(String, Span)> {
-    match name {
-        TSTypeName::IdentifierReference(ident) => Some((ident.name.to_string(), ident.span)),
-        TSTypeName::QualifiedName(qualified) => type_name_root(&qualified.left),
-        TSTypeName::ThisExpression(_) => None,
-    }
-}
-
-fn expression_root_name(expr: &Expression<'_>) -> Option<(String, Span)> {
-    match expr {
-        Expression::Identifier(ident) => Some((ident.name.to_string(), ident.span)),
-        Expression::StaticMemberExpression(member) => expression_root_name(&member.object),
-        _ => None,
-    }
-}
-
-fn is_private_member_key(key: &PropertyKey<'_>) -> bool {
-    matches!(key, PropertyKey::PrivateIdentifier(_))
-}
-
-fn vitest_mock_source(call: &CallExpression<'_>) -> Option<String> {
-    let Expression::StaticMemberExpression(member) = &call.callee else {
-        return None;
-    };
-    if member.property.name != "mock" {
-        return None;
-    }
-    let Expression::Identifier(object) = &member.object else {
-        return None;
-    };
-    if object.name != "vi" {
-        return None;
-    }
-
-    call.arguments.first().and_then(|argument| match argument {
-        Argument::StringLiteral(value) => Some(value.value.to_string()),
-        Argument::TemplateLiteral(value) if value.expressions.is_empty() => value
-            .quasis
-            .first()
-            .map(|quasi| quasi.value.raw.to_string()),
-        Argument::ImportExpression(value) => match &value.source {
-            Expression::StringLiteral(source) => Some(source.value.to_string()),
-            _ => None,
-        },
-        _ => None,
-    })
-}
-
-fn vitest_auto_mock_source(source: &str) -> Option<String> {
-    if source.is_empty()
-        || source.contains("://")
-        || source.starts_with("data:")
-        || source.split('/').any(|segment| segment == "__mocks__")
-    {
-        return None;
-    }
-
-    let (dir, file_name) = source.rsplit_once('/')?;
-    if file_name.is_empty() {
-        return None;
-    }
-
-    Some(format!("{dir}/__mocks__/{file_name}"))
-}
-
-fn pino_factory_callee_name(callee: &Expression<'_>) -> Option<String> {
-    match unwrap_static_expr(callee) {
-        Expression::Identifier(ident) => Some(ident.name.to_string()),
-        _ => None,
-    }
-}
-
-fn collect_pino_config_targets(expr: &Expression<'_>, out: &mut Vec<String>) {
-    match unwrap_static_expr(expr) {
-        Expression::ObjectExpression(obj) => {
-            for prop in &obj.properties {
-                let ObjectPropertyKind::ObjectProperty(prop) = prop else {
-                    continue;
-                };
-                if prop
-                    .key
-                    .static_name()
-                    .is_some_and(|name| name == PINO_TRANSPORT_KEY)
-                {
-                    collect_pino_transport_targets(&prop.value, out);
-                }
-            }
-        }
-        Expression::ConditionalExpression(cond) => {
-            collect_pino_config_targets(&cond.consequent, out);
-            collect_pino_config_targets(&cond.alternate, out);
-        }
-        _ => {}
-    }
-}
-
-fn collect_pino_transport_targets(expr: &Expression<'_>, out: &mut Vec<String>) {
-    match unwrap_static_expr(expr) {
-        Expression::ObjectExpression(obj) => collect_pino_transport_object_targets(obj, out),
-        Expression::ConditionalExpression(cond) => {
-            collect_pino_transport_targets(&cond.consequent, out);
-            collect_pino_transport_targets(&cond.alternate, out);
-        }
-        _ => {}
-    }
-}
-
-fn collect_pino_transport_object_targets(obj: &ObjectExpression<'_>, out: &mut Vec<String>) {
-    for prop in &obj.properties {
-        let ObjectPropertyKind::ObjectProperty(prop) = prop else {
-            continue;
-        };
-        match prop.key.static_name().as_deref() {
-            Some(PINO_TARGET_KEY) => record_pino_target_value(&prop.value, out),
-            Some(PINO_TARGETS_KEY) => record_pino_targets_array(&prop.value, out),
-            _ => {}
-        }
-    }
-}
-
-fn record_pino_target_value(expr: &Expression<'_>, out: &mut Vec<String>) {
-    if let Expression::StringLiteral(lit) = unwrap_static_expr(expr) {
-        record_pino_target(lit.value.as_str(), out);
-    }
-}
-
-fn record_pino_targets_array(expr: &Expression<'_>, out: &mut Vec<String>) {
-    let Expression::ArrayExpression(array) = unwrap_static_expr(expr) else {
-        return;
-    };
-    for element in &array.elements {
-        match element {
-            ArrayExpressionElement::ObjectExpression(obj) => {
-                collect_pino_transport_object_targets(obj, out);
-            }
-            ArrayExpressionElement::ParenthesizedExpression(paren) => {
-                if let Expression::ObjectExpression(obj) = unwrap_static_expr(&paren.expression) {
-                    collect_pino_transport_object_targets(obj, out);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn record_pino_target(source: &str, out: &mut Vec<String>) {
-    if source.is_empty() || out.iter().any(|existing| existing == source) {
-        return;
-    }
-    out.push(source.to_string());
-}
-
-fn is_dompurify_source(source: &str) -> bool {
-    matches!(source, "dompurify" | "isomorphic-dompurify")
-}
-
-/// Detect whether `vi.mock(specifier, factory, ...)` passes a factory.
-fn vi_mock_has_factory(call: &CallExpression<'_>) -> bool {
-    fn is_factory_expression(expr: &Expression<'_>) -> bool {
-        match expr {
-            Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_) => true,
-            Expression::ParenthesizedExpression(paren) => is_factory_expression(&paren.expression),
-            _ => false,
-        }
-    }
-
-    fn is_factory_arg(arg: &Argument<'_>) -> bool {
-        match arg {
-            Argument::ArrowFunctionExpression(_) | Argument::FunctionExpression(_) => true,
-            Argument::ParenthesizedExpression(paren) => is_factory_expression(&paren.expression),
-            _ => false,
-        }
-    }
-
-    call.arguments.get(1).is_some_and(is_factory_arg)
-}
-
-/// Whether `callee` is a `useMemo` / `React.useMemo` reference.
-///
-/// `useMemo(factory)` returns the factory's product directly, so
-/// `const svc = useMemo(() => new Svc())` binds `svc` to a `Svc` instance.
-/// This is unlike `useState`, which returns a `[value, setter]` tuple (handled
-/// only through the array-destructure factory path), so an unqualified
-/// `const x = useState(() => new Foo())` must NOT bind. Scoped to `useMemo`
-/// because an arbitrary wrapper does not necessarily return the instance;
-/// binding generically would over-credit and hide genuinely-unused members.
-/// See issue #844.
-fn is_value_returning_memo_callee(callee: &Expression<'_>) -> bool {
-    match callee {
-        Expression::Identifier(id) => id.name == "useMemo",
-        Expression::StaticMemberExpression(member) => member.property.name == "useMemo",
-        _ => false,
-    }
-}
-
-/// Specifier source string from the first argument of `register(...)`.
-fn node_module_register_specifier(call: &CallExpression<'_>) -> Option<String> {
-    match call.arguments.first()? {
-        Argument::StringLiteral(value) => Some(value.value.to_string()),
-        Argument::TemplateLiteral(value) if value.expressions.is_empty() => value
-            .quasis
-            .first()
-            .map(|quasi| quasi.value.raw.to_string()),
-        _ => None,
-    }
-}
-
-/// Allowlisted loader-hook exports for `module.register()`.
-const NODE_MODULE_REGISTER_HOOK_EXPORTS: &[&str] = &[
-    "initialize",
-    "resolve",
-    "load",
-    "globalPreload",
-    "getFormat",
-    "getSource",
-    "transformSource",
-];
-
-fn loader_hook_exports_for_source(source: &str) -> Vec<String> {
-    if source.starts_with("./")
-        || source.starts_with("../")
-        || source.starts_with('/')
-        || source.starts_with("file:")
-    {
-        NODE_MODULE_REGISTER_HOOK_EXPORTS
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
-fn new_url_import_source(expr: &NewExpression<'_>) -> Option<String> {
-    if let Expression::Identifier(callee) = &expr.callee
-        && callee.name == "URL"
-        && expr.arguments.len() == 2
-        && let Some(Argument::StringLiteral(path_lit)) = expr.arguments.first()
-        && is_meta_url_arg(&expr.arguments[1])
-        && (path_lit.value.starts_with("./") || path_lit.value.starts_with("../"))
-        && !path_lit.value.ends_with('/')
-    {
-        Some(path_lit.value.to_string())
-    } else {
-        None
-    }
-}
-
-fn is_child_process_source(source: &str) -> bool {
-    matches!(source, "node:child_process" | "child_process")
-}
-
-fn is_node_path_source(source: &str) -> bool {
-    matches!(source, "node:path" | "path")
-}
-
-fn is_node_url_source(source: &str) -> bool {
-    matches!(source, "node:url" | "url")
-}
-
-fn local_fork_source(source: &str) -> Option<String> {
-    if (source.starts_with("./") || source.starts_with("../")) && !source.ends_with('/') {
-        Some(source.to_string())
-    } else {
-        None
-    }
-}
-
-fn normalize_module_file_relative_path(relative: &str) -> Option<String> {
-    if relative.is_empty() || relative.starts_with('/') || relative.ends_with('/') {
-        return None;
-    }
-
-    let normalized = PathBuf::from("__fallow_current_file__").join(relative);
-
-    let mut parts = Vec::new();
-    for component in normalized.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => parts.push(part.to_string_lossy().to_string()),
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-
-    if parts
-        .first()
-        .is_some_and(|part| part == "__fallow_current_file__")
-        || parts.is_empty()
-    {
-        return None;
-    }
-
-    let joined = parts.join("/");
-    if joined.starts_with("../") {
-        Some(joined)
-    } else {
-        Some(format!("./{joined}"))
-    }
-}
-
-#[derive(Default)]
-struct PlaywrightFixtureMemberCollector {
-    fixture_by_local: FxHashMap<String, String>,
-    accesses: Vec<MemberAccess>,
-}
-
-impl PlaywrightFixtureMemberCollector {
-    fn new(fixture_by_local: FxHashMap<String, String>) -> Self {
-        Self {
-            fixture_by_local,
-            accesses: Vec::new(),
-        }
-    }
-}
-
-impl<'a> Visit<'a> for PlaywrightFixtureMemberCollector {
-    fn visit_static_member_expression(&mut self, expr: &StaticMemberExpression<'a>) {
-        if let Some(object_dotted) = static_member_object_name(&expr.object)
-            && let Some(fixture_path) =
-                resolve_object_to_fixture_path(&object_dotted, &self.fixture_by_local)
-        {
-            self.accesses.push(MemberAccess {
-                object: fixture_path,
-                member: expr.property.name.to_string(),
-            });
-            return;
-        }
-        walk::walk_static_member_expression(self, expr);
-    }
-}
-
-fn extract_binding_local_name<'a>(pattern: &'a BindingPattern<'a>) -> Option<&'a str> {
-    match pattern {
-        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str()),
-        BindingPattern::AssignmentPattern(assign) => extract_binding_local_name(&assign.left),
-        _ => None,
-    }
-}
-
-/// Collect `property -> class type` mappings from an object-type member list.
-fn collect_object_type_property_types(members: &[TSSignature<'_>]) -> FxHashMap<String, String> {
-    let mut properties = FxHashMap::default();
-    for member in members {
-        let TSSignature::TSPropertySignature(prop) = member else {
-            continue;
-        };
-        let Some(property_name) = prop.key.static_name() else {
-            continue;
-        };
-        let Some(type_annotation) = prop.type_annotation.as_deref() else {
-            continue;
-        };
-        if let Some(type_name) = extract_type_annotation_name(type_annotation) {
-            properties.insert(property_name.to_string(), type_name);
-        }
-    }
-    properties
-}
-
-fn extract_object_pattern_bindings(pattern: &ObjectPattern<'_>) -> FxHashMap<String, String> {
-    let mut bindings = FxHashMap::default();
-    collect_object_pattern_bindings(pattern, "", &mut bindings);
-    bindings
-}
-
-fn collect_object_pattern_bindings(
-    pattern: &ObjectPattern<'_>,
-    path_prefix: &str,
-    bindings: &mut FxHashMap<String, String>,
-) {
-    for prop in &pattern.properties {
-        let Some(fixture_name) = prop.key.static_name() else {
-            continue;
-        };
-        let next_path = if path_prefix.is_empty() {
-            fixture_name.to_string()
-        } else {
-            format!("{path_prefix}.{fixture_name}")
-        };
-        match &prop.value {
-            BindingPattern::ObjectPattern(inner) => {
-                collect_object_pattern_bindings(inner, &next_path, bindings);
-            }
-            other => {
-                if let Some(local_name) = extract_binding_local_name(other) {
-                    bindings.insert(local_name.to_string(), next_path);
-                }
-            }
-        }
-    }
-}
-
-fn resolve_object_to_fixture_path(
-    object_dotted: &str,
-    fixture_by_local: &FxHashMap<String, String>,
-) -> Option<String> {
-    let (root, rest) = object_dotted
-        .split_once('.')
-        .map_or((object_dotted, ""), |(r, x)| (r, x));
-    let base = fixture_by_local.get(root)?;
-    if rest.is_empty() {
-        Some(base.clone())
-    } else {
-        Some(format!("{base}.{rest}"))
-    }
-}
-
-fn playwright_test_callee_name(expr: &Expression<'_>) -> Option<String> {
-    match expr {
-        Expression::Identifier(ident) => Some(ident.name.to_string()),
-        Expression::StaticMemberExpression(member) => playwright_test_callee_name(&member.object),
-        Expression::CallExpression(call) => playwright_test_callee_name(&call.callee),
-        _ => None,
-    }
-}
-
-/// Find the call expression returned by a function body.
-fn extract_function_body_final_return_call<'a, 'b>(
-    body: &'b oxc_ast::ast::FunctionBody<'a>,
-) -> Option<&'b CallExpression<'a>> {
-    let Expression::CallExpression(call) = extract_function_body_final_return_expr(body)? else {
-        return None;
-    };
-    Some(call.as_ref())
-}
-
-fn extract_function_body_final_return_expr<'a, 'b>(
-    body: &'b oxc_ast::ast::FunctionBody<'a>,
-) -> Option<&'b Expression<'a>> {
-    let Statement::ReturnStatement(ret) = body.statements.last()? else {
-        return None;
-    };
-    ret.argument.as_ref()
-}
-
-/// Find the call expression used as an arrow function body.
-fn extract_arrow_return_call<'a, 'b>(
-    arrow: &'b oxc_ast::ast::ArrowFunctionExpression<'a>,
-) -> Option<&'b CallExpression<'a>> {
-    let Expression::CallExpression(call) = extract_arrow_return_expr(arrow)? else {
-        return None;
-    };
-    Some(call.as_ref())
-}
-
-fn extract_arrow_return_expr<'a, 'b>(
-    arrow: &'b oxc_ast::ast::ArrowFunctionExpression<'a>,
-) -> Option<&'b Expression<'a>> {
-    if arrow.expression {
-        if arrow.body.statements.len() != 1 {
-            return None;
-        }
-        let Statement::ExpressionStatement(stmt) = arrow.body.statements.first()? else {
-            return None;
-        };
-        return Some(&stmt.expression);
-    }
-    extract_function_body_final_return_expr(&arrow.body)
-}
-
-fn collect_playwright_fixture_member_uses(
-    test_name: &str,
-    arguments: &[Argument<'_>],
-) -> Vec<MemberAccess> {
-    let Some(callback) = arguments.iter().find_map(|arg| match arg {
-        Argument::ArrowFunctionExpression(arrow) => {
-            Some((arrow.params.items.first()?, arrow.body.as_ref()))
-        }
-        Argument::FunctionExpression(function) => {
-            Some((function.params.items.first()?, function.body.as_deref()?))
-        }
-        _ => None,
-    }) else {
-        return Vec::new();
-    };
-
-    let BindingPattern::ObjectPattern(pattern) = &callback.0.pattern else {
-        return Vec::new();
-    };
-    let fixture_by_local = extract_object_pattern_bindings(pattern);
-    if fixture_by_local.is_empty() {
-        return Vec::new();
-    }
-
-    let mut collector = PlaywrightFixtureMemberCollector::new(fixture_by_local);
-    collector.visit_function_body(callback.1);
-    collector
-        .accesses
-        .into_iter()
-        .map(|access| MemberAccess {
-            object: format!(
-                "{}{}:{}",
-                crate::PLAYWRIGHT_FIXTURE_USE_SENTINEL,
-                test_name,
-                access.object
-            ),
-            member: access.member,
-        })
-        .collect()
-}
-
-fn playwright_extend_base_name(call: &CallExpression<'_>) -> Option<String> {
-    let Expression::StaticMemberExpression(member) = &call.callee else {
-        return None;
-    };
-    if member.property.name != "extend" {
-        return None;
-    }
-    let Expression::Identifier(base) = &member.object else {
-        return None;
-    };
-    Some(base.name.to_string())
-}
-
-fn collect_fixture_type_bindings_from_type(
-    ty: &TSType<'_>,
-    path_prefix: &str,
-    aliases: &FxHashMap<String, Vec<(String, String)>>,
-    bindings: &mut Vec<(String, String)>,
-) {
-    match ty {
-        TSType::TSTypeLiteral(type_lit) => {
-            for member in &type_lit.members {
-                let TSSignature::TSPropertySignature(prop) = member else {
-                    continue;
-                };
-                let Some(fixture_name) = prop.key.static_name() else {
-                    continue;
-                };
-                let Some(type_annotation) = prop.type_annotation.as_deref() else {
-                    continue;
-                };
-                let next_path = if path_prefix.is_empty() {
-                    fixture_name.to_string()
-                } else {
-                    format!("{path_prefix}.{fixture_name}")
-                };
-                if let Some((alias_name, _)) =
-                    fixture_type_reference_name(&type_annotation.type_annotation)
-                    && aliases.contains_key(alias_name.as_str())
-                {
-                    collect_fixture_type_bindings_from_type(
-                        &type_annotation.type_annotation,
-                        &next_path,
-                        aliases,
-                        bindings,
-                    );
-                } else if let Some(type_name) = extract_type_annotation_name(type_annotation) {
-                    bindings.push((next_path, type_name));
-                } else {
-                    collect_fixture_type_bindings_from_type(
-                        &type_annotation.type_annotation,
-                        &next_path,
-                        aliases,
-                        bindings,
-                    );
-                }
-            }
-        }
-        TSType::TSTypeReference(type_ref) => {
-            let Some((alias_name, _)) = type_name_root(&type_ref.type_name) else {
-                return;
-            };
-            if let Some(alias_bindings) = aliases.get(alias_name.as_str()) {
-                for (suffix, type_name) in alias_bindings {
-                    let combined = if path_prefix.is_empty() {
-                        suffix.clone()
-                    } else {
-                        format!("{path_prefix}.{suffix}")
-                    };
-                    bindings.push((combined, type_name.clone()));
-                }
-            }
-        }
-        TSType::TSIntersectionType(intersection) => {
-            for branch in &intersection.types {
-                collect_fixture_type_bindings_from_type(branch, path_prefix, aliases, bindings);
-            }
-        }
-        TSType::TSParenthesizedType(paren) => {
-            collect_fixture_type_bindings_from_type(
-                &paren.type_annotation,
-                path_prefix,
-                aliases,
-                bindings,
-            );
-        }
-        _ => {}
-    }
-}
-
-fn fixture_type_reference_name(ty: &TSType<'_>) -> Option<(String, Span)> {
-    match ty {
-        TSType::TSTypeReference(type_ref) => type_name_root(&type_ref.type_name),
-        TSType::TSParenthesizedType(paren) => fixture_type_reference_name(&paren.type_annotation),
-        _ => None,
-    }
-}
+use visit_helpers::*;
 
 impl ModuleInfoExtractor {
     fn is_module_scope(&self) -> bool {
@@ -810,28 +89,6 @@ impl ModuleInfoExtractor {
             .get(name)
             .copied()
             .unwrap_or(false)
-    }
-
-    fn record_risky_regex_binding(&mut self, name: &str, pattern: Option<String>) {
-        if self.is_module_scope() {
-            self.module_risky_regex_bindings
-                .insert(name.to_string(), pattern);
-            return;
-        }
-        if let Some(bindings) = self.risky_regex_binding_stack.last_mut() {
-            bindings.insert(name.to_string(), pattern);
-        }
-    }
-
-    fn risky_regex_binding(&self, name: &str) -> Option<&str> {
-        for bindings in self.risky_regex_binding_stack.iter().rev() {
-            if let Some(pattern) = bindings.get(name) {
-                return pattern.as_deref();
-            }
-        }
-        self.module_risky_regex_bindings
-            .get(name)
-            .and_then(Option::as_deref)
     }
 
     fn record_path_sink_binding(&mut self, name: &str, binding: Option<SecurityPathSinkBinding>) {
@@ -925,10 +182,6 @@ impl ModuleInfoExtractor {
             .iter()
             .map(|name| (name.clone(), false))
             .collect::<FxHashMap<_, _>>();
-        let risky_regex_scope = scope
-            .iter()
-            .map(|name| (name.clone(), None))
-            .collect::<FxHashMap<_, _>>();
         let path_sink_scope = scope
             .iter()
             .map(|name| (name.clone(), None))
@@ -940,7 +193,6 @@ impl ModuleInfoExtractor {
         self.nested_declaration_stack.push(scope);
         self.sanitizer_binding_stack.push(sanitizer_scope);
         self.literal_allowlist_binding_stack.push(allowlist_scope);
-        self.risky_regex_binding_stack.push(risky_regex_scope);
         self.path_sink_binding_stack.push(path_sink_scope);
         self.path_relative_binding_stack.push(path_relative_scope);
     }
@@ -950,7 +202,6 @@ impl ModuleInfoExtractor {
             self.nested_declaration_stack.pop();
             self.sanitizer_binding_stack.pop();
             self.literal_allowlist_binding_stack.pop();
-            self.risky_regex_binding_stack.pop();
             self.path_sink_binding_stack.pop();
             self.path_relative_binding_stack.pop();
         }
@@ -1852,107 +1103,6 @@ impl ModuleInfoExtractor {
         }
     }
 
-    fn record_tainted_helper_call_binding(&mut self, name: &str, expr: &Expression<'_>) {
-        let Expression::CallExpression(call) = unwrap_parens(expr) else {
-            return;
-        };
-        let Expression::Identifier(callee) = &call.callee else {
-            return;
-        };
-        if self.nested_scope_shadows(callee.name.as_str()) {
-            return;
-        }
-        let Some(helper) = self
-            .source_returning_helpers
-            .get(callee.name.as_str())
-            .cloned()
-        else {
-            return;
-        };
-
-        let mut source_paths = Vec::new();
-        for path in &helper.paths {
-            let Some(arg_expr) = call
-                .arguments
-                .get(path.arg_index)
-                .and_then(Argument::as_expression)
-            else {
-                continue;
-            };
-            source_paths.extend(apply_source_return_path(arg_expr, &path.suffixes));
-        }
-        source_paths.sort();
-        source_paths.dedup();
-        for source_path in source_paths {
-            self.tainted_bindings.push(TaintedBinding {
-                local: name.to_string(),
-                source_path,
-            });
-        }
-    }
-
-    fn record_source_returning_function_helper(
-        &mut self,
-        name: &str,
-        params: &FormalParameters<'_>,
-        body: &oxc_ast::ast::FunctionBody<'_>,
-    ) {
-        if !self.is_module_scope() {
-            return;
-        }
-        let Some(expr) = extract_function_body_final_return_expr(body) else {
-            self.source_returning_helpers.remove(name);
-            return;
-        };
-        if let Some(helper) = source_returning_helper(params, expr) {
-            self.source_returning_helpers
-                .insert(name.to_string(), helper);
-        } else {
-            self.source_returning_helpers.remove(name);
-        }
-    }
-
-    fn record_source_returning_function_declaration(&mut self, function: &Function<'_>) {
-        let (Some(id), Some(body)) = (function.id.as_ref(), function.body.as_deref()) else {
-            return;
-        };
-        self.record_source_returning_function_helper(id.name.as_str(), &function.params, body);
-    }
-
-    fn record_source_returning_helper_from_variable_declarator(
-        &mut self,
-        decl: &VariableDeclaration<'_>,
-        declarator: &VariableDeclarator<'_>,
-        init: &Expression<'_>,
-    ) {
-        if !self.is_module_scope() {
-            return;
-        }
-        let BindingPattern::BindingIdentifier(id) = &declarator.id else {
-            return;
-        };
-        if decl.kind != VariableDeclarationKind::Const {
-            self.source_returning_helpers.remove(id.name.as_str());
-            return;
-        }
-        let helper = match init {
-            Expression::ArrowFunctionExpression(arrow) => extract_arrow_return_expr(arrow)
-                .and_then(|expr| source_returning_helper(&arrow.params, expr)),
-            Expression::FunctionExpression(function) => function
-                .body
-                .as_deref()
-                .and_then(extract_function_body_final_return_expr)
-                .and_then(|expr| source_returning_helper(&function.params, expr)),
-            _ => None,
-        };
-        if let Some(helper) = helper {
-            self.source_returning_helpers
-                .insert(id.name.to_string(), helper);
-        } else {
-            self.source_returning_helpers.remove(id.name.as_str());
-        }
-    }
-
     fn record_dompurify_import_binding(&mut self, source: &str, local: &str, is_type_only: bool) {
         if !is_type_only && self.is_module_scope() && is_dompurify_source(source) {
             self.dompurify_bindings.insert(local.to_string());
@@ -2582,7 +1732,6 @@ impl ModuleInfoExtractor {
             self.record_injection_token(id.name.as_str(), init);
             self.record_child_process_fork_target_binding(id.name.as_str(), init);
             self.record_tainted_source_binding(id.name.as_str(), init);
-            self.record_tainted_helper_call_binding(id.name.as_str(), init);
             let sanitizer_scope = self.sanitizer_scope_for_expr(init);
             self.record_sanitizer_binding(id.name.as_str(), sanitizer_scope);
             let allowlist = decl.kind == VariableDeclarationKind::Const
@@ -2694,26 +1843,6 @@ impl ModuleInfoExtractor {
 
 impl<'a> Visit<'a> for ModuleInfoExtractor {
     fn visit_program(&mut self, program: &Program<'a>) {
-        for statement in &program.body {
-            match statement {
-                Statement::FunctionDeclaration(function) => {
-                    self.record_source_returning_function_declaration(function);
-                }
-                Statement::ExportNamedDeclaration(export)
-                    if export.source.is_none()
-                        && matches!(
-                            export.declaration,
-                            Some(Declaration::FunctionDeclaration(_))
-                        ) =>
-                {
-                    if let Some(Declaration::FunctionDeclaration(function)) = &export.declaration {
-                        self.record_source_returning_function_declaration(function);
-                    }
-                }
-                _ => {}
-            }
-        }
-
         // Capture file-level string directives (`"use client"`, `"use server"`)
         // for the security client-server-leak detector. `directive.directive` is
         // the cooked directive text without surrounding quotes.
@@ -2781,10 +1910,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                     self.binding_target_names.insert(call_key, query.type_arg);
                 }
             }
-
-            if let Some(value) = prop.value.as_ref() {
-                self.capture_hardcoded_secret_literal_sink(name.as_ref(), value, prop.span);
-            }
         }
 
         walk::walk_property_definition(self, prop);
@@ -2797,7 +1922,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
             self.sanitizer_binding_stack.push(FxHashMap::default());
             self.literal_allowlist_binding_stack
                 .push(FxHashMap::default());
-            self.risky_regex_binding_stack.push(FxHashMap::default());
             self.path_sink_binding_stack.push(FxHashMap::default());
             self.path_relative_binding_stack.push(FxHashMap::default());
         }
@@ -2811,7 +1935,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
             self.nested_declaration_stack.pop();
             self.sanitizer_binding_stack.pop();
             self.literal_allowlist_binding_stack.pop();
-            self.risky_regex_binding_stack.pop();
             self.path_sink_binding_stack.pop();
             self.path_relative_binding_stack.pop();
         }
@@ -2833,7 +1956,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                         self.record_local_declaration_name(&id.name);
                         self.record_sanitizer_binding(id.name.as_str(), None);
                         self.record_literal_allowlist_binding(id.name.as_str(), false);
-                        self.record_risky_regex_binding(id.name.as_str(), None);
                         self.record_path_sink_binding(id.name.as_str(), None);
                         self.record_path_relative_binding(id.name.as_str(), None);
                         self.record_local_type_declaration(&id.name, id.span);
@@ -2860,7 +1982,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                         self.record_local_declaration_name(&id.name);
                         self.record_sanitizer_binding(id.name.as_str(), None);
                         self.record_literal_allowlist_binding(id.name.as_str(), false);
-                        self.record_risky_regex_binding(id.name.as_str(), None);
                         self.record_path_sink_binding(id.name.as_str(), None);
                         self.record_path_relative_binding(id.name.as_str(), None);
                         let refs = Self::collect_function_signature_refs(function);
@@ -2870,7 +1991,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                             &function.params,
                             function.body.as_deref(),
                         );
-                        self.record_source_returning_function_declaration(function);
                         if let Some(body) = function.body.as_deref()
                             && let Some(arg_index) = package_resolution_arg_index(
                                 &function.params,
@@ -2940,7 +2060,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                         self.record_nested_declaration_names(std::iter::once(id));
                         self.record_sanitizer_binding(id.name.as_str(), None);
                         self.record_literal_allowlist_binding(id.name.as_str(), false);
-                        self.record_risky_regex_binding(id.name.as_str(), None);
                         self.record_path_sink_binding(id.name.as_str(), None);
                         self.record_path_relative_binding(id.name.as_str(), None);
                     }
@@ -2950,7 +2069,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                         self.record_nested_declaration_names(std::iter::once(id));
                         self.record_sanitizer_binding(id.name.as_str(), None);
                         self.record_literal_allowlist_binding(id.name.as_str(), false);
-                        self.record_risky_regex_binding(id.name.as_str(), None);
                         self.record_path_sink_binding(id.name.as_str(), None);
                         self.record_path_relative_binding(id.name.as_str(), None);
                     }
@@ -3338,7 +2456,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                 for id in declarator.id.get_binding_identifiers() {
                     self.record_sanitizer_binding(id.name.as_str(), None);
                     self.record_literal_allowlist_binding(id.name.as_str(), false);
-                    self.record_risky_regex_binding(id.name.as_str(), None);
                     self.record_path_sink_binding(id.name.as_str(), None);
                     self.record_path_relative_binding(id.name.as_str(), None);
                 }
@@ -3346,17 +2463,9 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
             };
 
             self.record_local_structural_function_from_variable_declarator(declarator, init);
-            self.record_source_returning_helper_from_variable_declarator(decl, declarator, init);
             self.record_initialized_declarator_bindings(decl, declarator, init);
             if let BindingPattern::BindingIdentifier(id) = &declarator.id {
                 self.capture_math_random_context_sink(id.name.as_str(), init, declarator.span);
-                self.capture_hardcoded_secret_literal_sink(id.name.as_str(), init, declarator.span);
-                let risky_pattern = if decl.kind == VariableDeclarationKind::Const {
-                    self.risky_regex_fragment_for_expr(init)
-                } else {
-                    None
-                };
-                self.record_risky_regex_binding(id.name.as_str(), risky_pattern);
             }
 
             if let BindingPattern::ObjectPattern(obj_pat) = &declarator.id {
@@ -3480,10 +2589,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                 is_speculative: false,
             });
             self.handled_import_spans.insert(import_expr.span);
-        }
-
-        if let Some(name) = prop.key.static_name() {
-            self.capture_hardcoded_secret_literal_sink(name.as_ref(), &prop.value, prop.span);
         }
 
         walk::walk_object_property(self, prop);
@@ -3651,7 +2756,6 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
 
         self.try_record_fluent_chain_access(expr);
 
-        self.capture_redos_regex_sink(expr);
         self.capture_call_sink(expr);
 
         walk::walk_call_expression(self, expr);
@@ -3735,13 +2839,11 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
     fn visit_assignment_expression(&mut self, expr: &AssignmentExpression<'a>) {
         if let Some(name) = assignment_target_security_context_name(&expr.left) {
             self.capture_math_random_context_sink(name.as_str(), &expr.right, expr.span);
-            self.capture_hardcoded_secret_literal_sink(name.as_str(), &expr.right, expr.span);
         }
 
         if let Some(name) = assignment_target_identifier_name(&expr.left) {
             self.record_sanitizer_binding(name, None);
             self.record_literal_allowlist_binding(name, false);
-            self.record_risky_regex_binding(name, None);
             self.record_path_sink_binding(name, None);
             self.record_path_relative_binding(name, None);
         } else if let Some(name) = assignment_target_member_object_name(&expr.left)
@@ -4232,6 +3334,71 @@ fn flatten_callee_path(expr: &Expression<'_>) -> Option<String> {
     }
 }
 
+fn is_http_route_handler_name(name: &str) -> bool {
+    matches!(
+        name,
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD"
+    )
+}
+
+fn is_route_registration_method(method: &str) -> bool {
+    matches!(
+        method,
+        "all" | "delete" | "get" | "head" | "options" | "patch" | "post" | "put" | "use"
+    )
+}
+
+fn is_framework_route_receiver_path(callee_path: &str, method: &str) -> bool {
+    let Some(receiver_path) = callee_path.strip_suffix(&format!(".{method}")) else {
+        return false;
+    };
+    let Some(receiver) = receiver_path.rsplit('.').next() else {
+        return false;
+    };
+    let receiver = receiver.to_ascii_lowercase();
+    matches!(
+        receiver.as_str(),
+        "app" | "router" | "route" | "routes" | "server" | "fastify"
+    ) || receiver.ends_with("app")
+        || receiver.ends_with("router")
+        || receiver.ends_with("routes")
+        || receiver.ends_with("server")
+}
+
+fn function_body_has_use_server(body: Option<&FunctionBody<'_>>) -> bool {
+    body.is_some_and(|body| {
+        body.directives
+            .iter()
+            .any(|directive| directive.directive.as_str() == "use server")
+    })
+}
+
+fn callback_params<'a>(arg: &'a Argument<'a>) -> Option<&'a FormalParameters<'a>> {
+    match arg {
+        Argument::ArrowFunctionExpression(expr) => Some(&expr.params),
+        Argument::FunctionExpression(expr) => Some(&expr.params),
+        _ => arg.as_expression().and_then(|expr| match expr {
+            Expression::ArrowFunctionExpression(expr) => Some(&*expr.params),
+            Expression::FunctionExpression(expr) => Some(&*expr.params),
+            _ => None,
+        }),
+    }
+}
+
+fn last_callback_params<'a>(args: &'a [Argument<'a>]) -> Option<&'a FormalParameters<'a>> {
+    args.iter().rev().find_map(callback_params)
+}
+
+fn route_callback_params<'a>(
+    args: &'a [Argument<'a>],
+    method: &str,
+) -> Option<&'a FormalParameters<'a>> {
+    if method == "use" {
+        return last_callback_params(args);
+    }
+    args.iter().skip(1).find_map(callback_params)
+}
+
 /// Flatten an expression to a dotted member path, unwrapping `await` and parens.
 /// Returns `None` for anything that is not an identifier-rooted static-member
 /// chain (call results, computed members, etc. are not flattened: a conservative
@@ -4261,85 +3428,6 @@ fn tainted_source_path(expr: &Expression<'_>) -> Option<String> {
         Expression::StaticMemberExpression(member) => flatten_member_path(&member.object),
         _ => None,
     }
-}
-
-fn push_unique_string(out: &mut Vec<String>, value: String) {
-    if !out.iter().any(|existing| existing == &value) {
-        out.push(value);
-    }
-}
-
-fn source_path_candidates(expr: &Expression<'_>) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(path) = flatten_member_path(expr) {
-        push_unique_string(&mut out, path);
-    }
-    if let Some(path) = tainted_source_path(expr) {
-        push_unique_string(&mut out, path);
-    }
-    out
-}
-
-fn source_returning_helper(
-    params: &FormalParameters<'_>,
-    expr: &Expression<'_>,
-) -> Option<super::SourceReturningHelper> {
-    let param_names = params
-        .items
-        .iter()
-        .map(|param| match &param.pattern {
-            BindingPattern::BindingIdentifier(id) => Some(id.name.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut paths = Vec::new();
-    for source_path in source_path_candidates(expr) {
-        for (arg_index, param_name) in param_names.iter().enumerate() {
-            let Some(param_name) = param_name else {
-                continue;
-            };
-            if source_path == *param_name {
-                paths.push(super::SourceReturnPath {
-                    arg_index,
-                    suffixes: vec![String::new()],
-                });
-                break;
-            }
-            let Some(suffix) = source_path.strip_prefix(&format!("{param_name}.")) else {
-                continue;
-            };
-            paths.push(super::SourceReturnPath {
-                arg_index,
-                suffixes: vec![suffix.to_string()],
-            });
-            break;
-        }
-    }
-    if paths.is_empty() {
-        None
-    } else {
-        Some(super::SourceReturningHelper { paths })
-    }
-}
-
-fn apply_source_return_path(expr: &Expression<'_>, suffixes: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    if suffixes.iter().any(String::is_empty) {
-        for candidate in source_path_candidates(expr) {
-            push_unique_string(&mut out, candidate);
-        }
-    }
-    let Some(base) = flatten_member_path(expr) else {
-        return out;
-    };
-    for suffix in suffixes {
-        if suffix.is_empty() {
-            push_unique_string(&mut out, base.clone());
-        } else {
-            push_unique_string(&mut out, format!("{base}.{suffix}"));
-        }
-    }
-    out
 }
 
 /// The source path for a DESTRUCTURE binding (`const { id } = req.query`): the
@@ -4387,356 +3475,27 @@ fn classify_arg_kind(expr: &Expression<'_>) -> SinkArgKind {
 fn sink_literal_value(expr: &Expression<'_>) -> Option<SinkLiteralValue> {
     match unwrap_static_expr(expr) {
         Expression::StringLiteral(lit) => Some(SinkLiteralValue::String(lit.value.to_string())),
-        Expression::NumericLiteral(lit) if lit.value.is_finite() && lit.value.fract() == 0.0 => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "finite integer JS literals in the safe i64 range are the only admitted numeric sink metadata"
-            )]
-            let value = lit.value as i64;
-            if (value as f64 - lit.value).abs() < f64::EPSILON {
-                Some(SinkLiteralValue::Integer(value))
-            } else {
-                None
-            }
-        }
         Expression::BooleanLiteral(lit) => Some(SinkLiteralValue::Boolean(lit.value)),
         Expression::NullLiteral(_) => Some(SinkLiteralValue::Null),
         _ => None,
     }
 }
 
-fn static_string_literal_value(expr: &Expression<'_>) -> Option<String> {
-    match unwrap_static_expr(expr) {
-        Expression::StringLiteral(lit) => Some(lit.value.to_string()),
-        Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() && tpl.quasis.len() == 1 => {
-            tpl.quasis
-                .first()
-                .and_then(|quasi| quasi.value.cooked.as_ref())
-                .map(ToString::to_string)
-        }
-        _ => None,
-    }
-}
-
-fn risky_redos_fragment(pattern: &str) -> Option<String> {
-    let mut cursor = 0;
-    while let Some(relative) = pattern[cursor..].find('(') {
-        let start = cursor + relative;
-        let close = find_group_close(pattern, start)?;
-        let Some(outer_end) = unbounded_quantifier_end(pattern, close + 1) else {
-            cursor = close + 1;
-            continue;
-        };
-        let body_start = group_body_start(pattern, start + 1);
-        let body = &pattern[body_start..close];
-        if has_unbounded_quantifier(body) || has_ambiguous_alternation(body) {
-            return Some(pattern[start..outer_end].to_string());
-        }
-        cursor = close + 1;
-    }
-    None
-}
-
-fn find_group_close(pattern: &str, open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut in_class = false;
-    let mut escaped = false;
-    for (idx, ch) in pattern[open..].char_indices() {
-        let absolute = open + idx;
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if in_class {
-            if ch == ']' {
-                in_class = false;
-            }
-            continue;
-        }
-        match ch {
-            '[' => in_class = true,
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(absolute);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn group_body_start(pattern: &str, body_start: usize) -> usize {
-    let Some(rest) = pattern.get(body_start..) else {
-        return body_start;
-    };
-    if rest.starts_with("?:") || rest.starts_with("?=") || rest.starts_with("?!") {
-        return body_start + 2;
-    }
-    if rest.starts_with("?<=") || rest.starts_with("?<!") {
-        return body_start + 3;
-    }
-    if rest.starts_with("?<")
-        && let Some(end) = rest.find('>')
-    {
-        return body_start + end + 1;
-    }
-    body_start
-}
-
-fn unbounded_quantifier_end(pattern: &str, idx: usize) -> Option<usize> {
-    let rest = pattern.get(idx..)?;
-    if rest.starts_with('+') || rest.starts_with('*') {
-        return Some(idx + 1);
-    }
-    if !rest.starts_with('{') {
-        return None;
-    }
-    let close = rest.find('}')?;
-    let body = &rest[1..close];
-    let (min, max) = body.split_once(',')?;
-    if min.chars().all(|ch| ch.is_ascii_digit()) && max.is_empty() {
-        return Some(idx + close + 1);
-    }
-    None
-}
-
-fn has_unbounded_quantifier(pattern: &str) -> bool {
-    let mut in_class = false;
-    let mut escaped = false;
-    let mut idx = 0;
-    while idx < pattern.len() {
-        let Some(ch) = pattern[idx..].chars().next() else {
-            break;
-        };
-        if escaped {
-            escaped = false;
-            idx += ch.len_utf8();
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            idx += ch.len_utf8();
-            continue;
-        }
-        if in_class {
-            if ch == ']' {
-                in_class = false;
-            }
-            idx += ch.len_utf8();
-            continue;
-        }
-        if ch == '[' {
-            in_class = true;
-            idx += ch.len_utf8();
-            continue;
-        }
-        if unbounded_quantifier_end(pattern, idx).is_some() {
-            return true;
-        }
-        idx += ch.len_utf8();
-    }
-    false
-}
-
-fn has_ambiguous_alternation(pattern: &str) -> bool {
-    let branches = top_level_alternation_branches(pattern);
-    if branches.len() < 2 {
-        return false;
-    }
-    let tokens = branches
-        .iter()
-        .map(|branch| regex_branch_tokens(branch))
-        .collect::<Vec<_>>();
-    tokens.iter().enumerate().any(|(left_idx, left)| {
-        !left.is_empty()
-            && tokens
-                .iter()
-                .enumerate()
-                .any(|(right_idx, right)| left_idx != right_idx && is_prefix_tokens(left, right))
-    })
-}
-
-fn top_level_alternation_branches(pattern: &str) -> Vec<&str> {
-    let mut branches = Vec::new();
-    let mut start = 0;
-    let mut depth = 0usize;
-    let mut in_class = false;
-    let mut escaped = false;
-    for (idx, ch) in pattern.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if in_class {
-            if ch == ']' {
-                in_class = false;
-            }
-            continue;
-        }
-        match ch {
-            '[' => in_class = true,
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            '|' if depth == 0 => {
-                branches.push(&pattern[start..idx]);
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-    branches.push(&pattern[start..]);
-    branches
-}
-
-fn regex_branch_tokens(branch: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut chars = branch.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => {
-                let escaped = chars
-                    .next()
-                    .map_or_else(|| "\\".to_string(), |next| format!("\\{next}"));
-                tokens.push(escaped);
-            }
-            '[' => {
-                let mut token = String::from("[");
-                for next in chars.by_ref() {
-                    token.push(next);
-                    if next == ']' {
-                        break;
-                    }
-                }
-                tokens.push(token);
-            }
-            '^' | '$' | '+' | '*' | '?' => {}
-            '{' => {
-                for next in chars.by_ref() {
-                    if next == '}' {
-                        break;
-                    }
-                }
-            }
-            _ => tokens.push(ch.to_string()),
-        }
-    }
-    tokens
-}
-
-fn is_prefix_tokens(left: &[String], right: &[String]) -> bool {
-    left.len() < right.len() && right.starts_with(left)
-}
-
-fn should_capture_hardcoded_secret_literal(context_name: &str, value: &str) -> bool {
-    is_secret_shaped_context_name(context_name) || has_provider_prefix_capture_hint(value)
-}
-
-fn is_secret_shaped_context_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [
-        "apikey",
-        "api_key",
-        "accesskey",
-        "access_key",
-        "privatekey",
-        "private_key",
-        "clientsecret",
-        "client_secret",
-        "token",
-        "secret",
-        "password",
-        "passwd",
-        "credential",
-        "jwt",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
-fn has_provider_prefix_capture_hint(value: &str) -> bool {
-    value.starts_with("AKIA")
-        || value.starts_with("ASIA")
-        || value.starts_with("ghp_")
-        || value.starts_with("gho_")
-        || value.starts_with("ghu_")
-        || value.starts_with("ghs_")
-        || value.starts_with("ghr_")
-        || value.starts_with("github_pat_")
-        || value.starts_with("glpat-")
-        || value.starts_with("xoxb-")
-        || value.starts_with("xoxp-")
-        || value.starts_with("xoxa-")
-        || value.starts_with("xoxr-")
-        || value.starts_with("xoxs-")
-        || value.starts_with("sk_live_")
-        || value.starts_with("rk_live_")
-        || value.starts_with("sk-ant-")
-        || value.starts_with("sk-proj-")
-        || value.starts_with("AIza")
-        || value.starts_with("SG.")
-        || value.starts_with("npm_")
-        || value.starts_with("pypi-")
-        || value.starts_with("sq0atp-")
-        || value.starts_with("shpat_")
-        || value.starts_with("shpss_")
-        || value.starts_with("shpca_")
-        || value.starts_with("shppa_")
-        || value.starts_with("dp.pt.")
-        || value.starts_with("doo_v1_")
-        || value.starts_with("dop_v1_")
-        || value.starts_with("dor_v1_")
-        || value.starts_with("dot_v1_")
-        || value.starts_with("dapi")
-        || value.starts_with("lin_api_")
-        || value.starts_with("PMAK-")
-        || value.starts_with("hf_")
-        || value.starts_with("AGE-SECRET-KEY-1")
-        || value.contains("-----BEGIN")
-}
-
 fn object_literal_properties(expr: &Expression<'_>) -> Vec<SinkObjectProperty> {
-    let mut properties = Vec::new();
-    collect_object_literal_properties(expr, "", &mut properties);
-    properties
-}
-
-fn collect_object_literal_properties(
-    expr: &Expression<'_>,
-    prefix: &str,
-    properties: &mut Vec<SinkObjectProperty>,
-) {
     let Expression::ObjectExpression(obj) = unwrap_static_expr(expr) else {
-        return;
+        return Vec::new();
     };
-    for prop in &obj.properties {
-        let ObjectPropertyKind::ObjectProperty(prop) = prop else {
-            continue;
-        };
-        let Some(key) = prop.key.static_name() else {
-            continue;
-        };
-        let key = if prefix.is_empty() {
-            key.to_string()
-        } else {
-            format!("{prefix}.{key}")
-        };
-        if let Some(value) = sink_literal_value(&prop.value) {
-            properties.push(SinkObjectProperty { key, value });
-        } else {
-            collect_object_literal_properties(&prop.value, &key, properties);
-        }
-    }
+    obj.properties
+        .iter()
+        .filter_map(|prop| {
+            let ObjectPropertyKind::ObjectProperty(prop) = prop else {
+                return None;
+            };
+            let key = prop.key.static_name()?.to_string();
+            let value = sink_literal_value(&prop.value)?;
+            Some(SinkObjectProperty { key, value })
+        })
+        .collect()
 }
 
 struct ObjectKeyMetadata {
@@ -4779,37 +3538,23 @@ fn should_capture_literal_sink_arg(
     let Some(literal) = sink_literal_value(expr) else {
         return false;
     };
+    let SinkLiteralValue::String(value) = literal else {
+        return false;
+    };
     match sink_shape {
-        SinkShape::Call | SinkShape::MemberCall => match literal {
-            SinkLiteralValue::String(value) => {
-                (arg_index == 1 && is_post_message_callee(callee_path) && value == "*")
-                    || (arg_index == 0 && is_weak_crypto_literal_callee(callee_path))
-                    || (arg_index == 0 && is_string_code_callee(callee_path))
-                    || (arg_index == 0 && is_temp_file_literal_callee(callee_path))
-                    || (arg_index == 0
-                        && is_cleartext_transport_literal_callee(callee_path)
-                        && is_cleartext_transport_literal(&value))
-                    || (arg_index == 0
-                        && is_literal_metadata_url_callee(callee_path)
-                        && is_metadata_service_literal(&value))
-            }
-            SinkLiteralValue::Integer(_) => arg_index == 1 && is_chmod_literal_callee(callee_path),
-            SinkLiteralValue::Boolean(_) | SinkLiteralValue::Null => false,
-        },
-        SinkShape::NewExpression => match literal {
-            SinkLiteralValue::String(value) => {
-                arg_index == 0
-                    && (callee_path == "Function"
-                        || (callee_path == "WebSocket" && is_cleartext_websocket_literal(&value)))
-            }
-            SinkLiteralValue::Integer(_)
-            | SinkLiteralValue::Boolean(_)
-            | SinkLiteralValue::Null => false,
-        },
+        SinkShape::Call | SinkShape::MemberCall => {
+            (arg_index == 1 && is_post_message_callee(callee_path) && value == "*")
+                || (arg_index == 0 && is_weak_crypto_literal_callee(callee_path))
+                || (arg_index == 0 && is_string_code_callee(callee_path))
+                || (arg_index == 0
+                    && is_literal_metadata_url_callee(callee_path)
+                    && is_metadata_service_literal(&value))
+        }
+        SinkShape::NewExpression => arg_index == 0 && callee_path == "Function",
         SinkShape::MemberAssign => {
             arg_index == 0
                 && callee_path == "process.env.NODE_TLS_REJECT_UNAUTHORIZED"
-                && matches!(literal, SinkLiteralValue::String(value) if value == "0")
+                && value == "0"
         }
         SinkShape::TaggedTemplate | SinkShape::JsxAttr | SinkShape::SecretLiteral => false,
     }
@@ -4837,57 +3582,6 @@ fn is_weak_crypto_literal_callee(callee_path: &str) -> bool {
 
 fn is_string_code_callee(callee_path: &str) -> bool {
     matches!(callee_path, "setTimeout" | "setInterval")
-}
-
-fn is_chmod_literal_callee(callee_path: &str) -> bool {
-    matches!(
-        callee_path,
-        "fs.chmod" | "fs.chmodSync" | "fs.promises.chmod" | "chmod" | "chmodSync"
-    )
-}
-
-fn is_temp_file_literal_callee(callee_path: &str) -> bool {
-    matches!(
-        callee_path,
-        "fs.writeFile"
-            | "fs.writeFileSync"
-            | "fs.appendFile"
-            | "fs.appendFileSync"
-            | "fs.createWriteStream"
-            | "fs.promises.writeFile"
-            | "fs.promises.appendFile"
-            | "writeFile"
-            | "writeFileSync"
-            | "appendFile"
-            | "appendFileSync"
-            | "createWriteStream"
-    )
-}
-
-fn is_cleartext_transport_literal_callee(callee_path: &str) -> bool {
-    matches!(
-        callee_path,
-        "fetch"
-            | "axios.get"
-            | "axios.post"
-            | "got"
-            | "ky"
-            | "needle"
-            | "request"
-            | "http.request"
-            | "http.get"
-            | "superagent.get"
-            | "undici.request"
-    )
-}
-
-fn is_cleartext_transport_literal(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("ftp://")
-}
-
-fn is_cleartext_websocket_literal(value: &str) -> bool {
-    value.to_ascii_lowercase().starts_with("ws://")
 }
 
 fn is_literal_metadata_url_callee(callee_path: &str) -> bool {
@@ -5130,71 +3824,6 @@ fn collect_source_paths_into(expr: &Expression<'_>, out: &mut Vec<String>) {
         }
         _ => {}
     }
-}
-
-fn is_http_route_handler_name(name: &str) -> bool {
-    matches!(
-        name,
-        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD"
-    )
-}
-
-fn is_route_registration_method(method: &str) -> bool {
-    matches!(
-        method,
-        "all" | "delete" | "get" | "head" | "options" | "patch" | "post" | "put" | "use"
-    )
-}
-
-fn is_framework_route_receiver_path(callee_path: &str, method: &str) -> bool {
-    let Some(receiver_path) = callee_path.strip_suffix(&format!(".{method}")) else {
-        return false;
-    };
-    let Some(receiver) = receiver_path.rsplit('.').next() else {
-        return false;
-    };
-    let receiver = receiver.to_ascii_lowercase();
-    matches!(
-        receiver.as_str(),
-        "app" | "router" | "route" | "routes" | "server" | "fastify"
-    ) || receiver.ends_with("app")
-        || receiver.ends_with("router")
-        || receiver.ends_with("routes")
-        || receiver.ends_with("server")
-}
-
-fn function_body_has_use_server(body: Option<&FunctionBody<'_>>) -> bool {
-    body.is_some_and(|body| {
-        body.directives
-            .iter()
-            .any(|directive| directive.directive.as_str() == "use server")
-    })
-}
-
-fn callback_params<'a>(arg: &'a Argument<'a>) -> Option<&'a FormalParameters<'a>> {
-    match arg {
-        Argument::ArrowFunctionExpression(expr) => Some(&expr.params),
-        Argument::FunctionExpression(expr) => Some(&expr.params),
-        _ => arg.as_expression().and_then(|expr| match expr {
-            Expression::ArrowFunctionExpression(expr) => Some(&*expr.params),
-            Expression::FunctionExpression(expr) => Some(&*expr.params),
-            _ => None,
-        }),
-    }
-}
-
-fn last_callback_params<'a>(args: &'a [Argument<'a>]) -> Option<&'a FormalParameters<'a>> {
-    args.iter().rev().find_map(callback_params)
-}
-
-fn route_callback_params<'a>(
-    args: &'a [Argument<'a>],
-    method: &str,
-) -> Option<&'a FormalParameters<'a>> {
-    if method == "use" {
-        return last_callback_params(args);
-    }
-    args.iter().skip(1).find_map(callback_params)
 }
 
 fn collect_idents_into(expr: &Expression<'_>, out: &mut Vec<String>) {
@@ -5605,108 +4234,11 @@ fn collect_instanceof_narrowings<'a>(expr: &'a Expression<'a>, out: &mut Vec<(St
 }
 
 impl ModuleInfoExtractor {
-    fn risky_regex_fragment_for_expr(&self, expr: &Expression<'_>) -> Option<String> {
-        match unwrap_static_expr(expr) {
-            Expression::RegExpLiteral(lit) => risky_redos_fragment(&lit.regex.pattern.text),
-            Expression::NewExpression(new_expr) => Self::risky_regex_fragment_for_new(new_expr),
-            Expression::CallExpression(call) => Self::risky_regex_fragment_for_call(call),
-            Expression::Identifier(ident) => self
-                .risky_regex_binding(ident.name.as_str())
-                .map(ToString::to_string),
-            _ => None,
-        }
-    }
-
-    fn risky_regex_fragment_for_new(expr: &oxc_ast::ast::NewExpression<'_>) -> Option<String> {
-        let Expression::Identifier(callee) = &expr.callee else {
-            return None;
-        };
-        if callee.name != "RegExp" {
-            return None;
-        }
-        let pattern = expr
-            .arguments
-            .first()
-            .and_then(Argument::as_expression)
-            .and_then(static_string_literal_value)?;
-        risky_redos_fragment(&pattern)
-    }
-
-    fn risky_regex_fragment_for_call(expr: &CallExpression<'_>) -> Option<String> {
-        let Expression::Identifier(callee) = &expr.callee else {
-            return None;
-        };
-        if callee.name != "RegExp" {
-            return None;
-        }
-        let pattern = expr
-            .arguments
-            .first()
-            .and_then(Argument::as_expression)
-            .and_then(static_string_literal_value)?;
-        risky_redos_fragment(&pattern)
-    }
-
-    fn redos_regex_application<'b, 'c>(
-        &self,
-        expr: &'b CallExpression<'c>,
-    ) -> Option<(&'b Expression<'c>, String)> {
-        let Expression::StaticMemberExpression(member) = &expr.callee else {
-            return None;
-        };
-        let method = member.property.name.as_str();
-        if matches!(method, "test" | "exec") {
-            let input = expr.arguments.first().and_then(Argument::as_expression)?;
-            let pattern = self.risky_regex_fragment_for_expr(&member.object)?;
-            return Some((input, pattern));
-        }
-        if matches!(
-            method,
-            "match" | "search" | "replace" | "replaceAll" | "split"
-        ) {
-            let pattern = expr
-                .arguments
-                .first()
-                .and_then(Argument::as_expression)
-                .and_then(|arg| self.risky_regex_fragment_for_expr(arg))?;
-            return Some((&member.object, pattern));
-        }
-        None
-    }
-
-    fn capture_redos_regex_sink(&mut self, expr: &CallExpression<'_>) {
-        let Some((input_expr, pattern)) = self.redos_regex_application(expr) else {
-            return;
-        };
-        if !is_non_literal_arg(input_expr) {
-            return;
-        }
-        self.security_sinks.push(SinkSite {
-            sink_shape: SinkShape::MemberCall,
-            callee_path: "RegExp.redos".to_string(),
-            arg_index: 0,
-            arg_is_non_literal: true,
-            arg_kind: classify_arg_kind(input_expr),
-            arg_literal: None,
-            regex_pattern: Some(pattern),
-            object_properties: Vec::new(),
-            object_property_keys: Vec::new(),
-            object_property_keys_complete: false,
-            arg_idents: collect_arg_idents(input_expr),
-            arg_source_paths: collect_arg_source_paths(input_expr),
-            span_start: expr.span.start,
-            span_end: expr.span.end,
-        });
-    }
-
     /// Capture a call/member-call sink site (category-blind). Pushes one
     /// `SinkSite` per admitted positional argument; a callee that cannot be
     /// flattened to a static path increments the blind-spot counter instead.
     fn capture_call_sink(&mut self, expr: &CallExpression<'_>) {
         let Some(callee_path) = flatten_callee_path(&expr.callee) else {
-            if self.redos_regex_application(expr).is_some() {
-                return;
-            }
             self.security_sinks_skipped += 1;
             return;
         };
@@ -5743,7 +4275,6 @@ impl ModuleInfoExtractor {
                     SinkArgKind::Literal
                 },
                 arg_literal: sink_literal_value(arg_expr),
-                regex_pattern: None,
                 object_properties: object_literal_properties(arg_expr),
                 object_property_keys: object_keys.keys,
                 object_property_keys_complete: object_keys.complete,
@@ -5757,6 +4288,7 @@ impl ModuleInfoExtractor {
                 } else {
                     Vec::new()
                 },
+                regex_pattern: None,
                 span_start: expr.span.start,
                 span_end: expr.span.end,
             });
@@ -5770,12 +4302,12 @@ impl ModuleInfoExtractor {
                 arg_is_non_literal: false,
                 arg_kind: SinkArgKind::Object,
                 arg_literal: None,
-                regex_pattern: None,
                 object_properties: Vec::new(),
                 object_property_keys: Vec::new(),
                 object_property_keys_complete: true,
                 arg_idents: Vec::new(),
                 arg_source_paths: Vec::new(),
+                regex_pattern: None,
                 span_start: expr.span.start,
                 span_end: expr.span.end,
             });
@@ -5819,7 +4351,6 @@ impl ModuleInfoExtractor {
                     SinkArgKind::Literal
                 },
                 arg_literal: sink_literal_value(arg_expr),
-                regex_pattern: None,
                 object_properties: object_literal_properties(arg_expr),
                 object_property_keys: object_keys.keys,
                 object_property_keys_complete: object_keys.complete,
@@ -5833,6 +4364,7 @@ impl ModuleInfoExtractor {
                 } else {
                     Vec::new()
                 },
+                regex_pattern: None,
                 span_start: expr.span.start,
                 span_end: expr.span.end,
             });
@@ -5856,42 +4388,12 @@ impl ModuleInfoExtractor {
             arg_is_non_literal: false,
             arg_kind: SinkArgKind::NoArg,
             arg_literal: None,
-            regex_pattern: None,
             object_properties: Vec::new(),
             object_property_keys: Vec::new(),
             object_property_keys_complete: false,
             arg_idents: vec![context_name.to_string()],
             arg_source_paths: Vec::new(),
-            span_start: span.start,
-            span_end: span.end,
-        });
-    }
-
-    fn capture_hardcoded_secret_literal_sink(
-        &mut self,
-        context_name: &str,
-        expr: &Expression<'_>,
-        span: Span,
-    ) {
-        let Some(value) = static_string_literal_value(expr) else {
-            return;
-        };
-        if !should_capture_hardcoded_secret_literal(context_name, &value) {
-            return;
-        }
-        self.security_sinks.push(SinkSite {
-            sink_shape: SinkShape::SecretLiteral,
-            callee_path: context_name.to_string(),
-            arg_index: 0,
-            arg_is_non_literal: false,
-            arg_kind: SinkArgKind::Literal,
-            arg_literal: Some(SinkLiteralValue::String(value)),
             regex_pattern: None,
-            object_properties: Vec::new(),
-            object_property_keys: Vec::new(),
-            object_property_keys_complete: false,
-            arg_idents: vec![context_name.to_string()],
-            arg_source_paths: Vec::new(),
             span_start: span.start,
             span_end: span.end,
         });
@@ -5937,7 +4439,6 @@ impl ModuleInfoExtractor {
                 SinkArgKind::Literal
             },
             arg_literal: sink_literal_value(&expr.right),
-            regex_pattern: None,
             object_properties: object_literal_properties(&expr.right),
             object_property_keys: object_keys.keys,
             object_property_keys_complete: object_keys.complete,
@@ -5951,6 +4452,7 @@ impl ModuleInfoExtractor {
             } else {
                 Vec::new()
             },
+            regex_pattern: None,
             span_start: expr.span.start,
             span_end: expr.span.end,
         });
@@ -5980,12 +4482,12 @@ impl ModuleInfoExtractor {
             // argument is always a template-with-substitution.
             arg_kind: SinkArgKind::TemplateWithSubst,
             arg_literal: None,
-            regex_pattern: None,
             object_properties: Vec::new(),
             object_property_keys: Vec::new(),
             object_property_keys_complete: false,
             arg_idents,
             arg_source_paths,
+            regex_pattern: None,
             span_start: expr.span.start,
             span_end: expr.span.end,
         });
@@ -6017,12 +4519,12 @@ impl ModuleInfoExtractor {
             arg_is_non_literal: true,
             arg_kind: classify_arg_kind(value_expr),
             arg_literal: None,
-            regex_pattern: None,
             object_properties: object_literal_properties(value_expr),
             object_property_keys: object_keys.keys,
             object_property_keys_complete: object_keys.complete,
             arg_idents: collect_arg_idents(value_expr),
             arg_source_paths: collect_arg_source_paths(value_expr),
+            regex_pattern: None,
             span_start: attr.span.start,
             span_end: attr.span.end,
         });
