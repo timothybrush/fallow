@@ -587,73 +587,15 @@ pub fn find_dead_code_full(
                             )
                         },
                         || {
-                            let mut results = AnalysisResults::default();
-                            if let Some(ref pkg) = pkg {
-                                if config.rules.unused_dependencies != Severity::Off
-                                    || config.rules.unused_dev_dependencies != Severity::Off
-                                    || config.rules.unused_optional_dependencies != Severity::Off
-                                {
-                                    let (deps, dev_deps, optional_deps) = find_unused_dependencies(
-                                        graph,
-                                        pkg,
-                                        config,
-                                        plugin_result,
-                                        workspaces,
-                                    );
-                                    if config.rules.unused_dependencies != Severity::Off {
-                                        results.unused_dependencies = deps
-                                            .into_iter()
-                                            .map(UnusedDependencyFinding::with_actions)
-                                            .collect();
-                                    }
-                                    if config.rules.unused_dev_dependencies != Severity::Off {
-                                        results.unused_dev_dependencies = dev_deps
-                                            .into_iter()
-                                            .map(UnusedDevDependencyFinding::with_actions)
-                                            .collect();
-                                    }
-                                    if config.rules.unused_optional_dependencies != Severity::Off {
-                                        results.unused_optional_dependencies = optional_deps
-                                            .into_iter()
-                                            .map(UnusedOptionalDependencyFinding::with_actions)
-                                            .collect();
-                                    }
-                                }
-
-                                if config.rules.unlisted_dependencies != Severity::Off {
-                                    results.unlisted_dependencies = find_unlisted_dependencies(
-                                        graph,
-                                        pkg,
-                                        config,
-                                        workspaces,
-                                        plugin_result,
-                                        resolved_modules,
-                                        &line_offsets_by_file,
-                                    )
-                                    .into_iter()
-                                    .map(UnlistedDependencyFinding::with_actions)
-                                    .collect();
-                                }
-
-                                if config.production {
-                                    results.type_only_dependencies =
-                                        find_type_only_dependencies(graph, pkg, config, workspaces)
-                                            .into_iter()
-                                            .map(TypeOnlyDependencyFinding::with_actions)
-                                            .collect();
-                                }
-
-                                if !config.production
-                                    && config.rules.test_only_dependencies != Severity::Off
-                                {
-                                    results.test_only_dependencies =
-                                        find_test_only_dependencies(graph, pkg, config, workspaces)
-                                            .into_iter()
-                                            .map(TestOnlyDependencyFinding::with_actions)
-                                            .collect();
-                                }
-                            }
-                            results
+                            run_dependency_detectors(
+                                graph,
+                                pkg.as_ref(),
+                                config,
+                                plugin_result,
+                                workspaces,
+                                resolved_modules,
+                                &line_offsets_by_file,
+                            )
                         },
                     )
                 },
@@ -1064,6 +1006,83 @@ fn run_member_detectors(
             .into_iter()
             .map(UnusedClassMemberFinding::with_actions)
             .collect();
+    }
+    results
+}
+
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+)]
+fn run_dependency_detectors(
+    graph: &ModuleGraph,
+    pkg: Option<&PackageJson>,
+    config: &ResolvedConfig,
+    plugin_result: Option<&crate::plugins::AggregatedPluginResult>,
+    workspaces: &[fallow_config::WorkspaceInfo],
+    resolved_modules: &[ResolvedModule],
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> AnalysisResults {
+    let mut results = AnalysisResults::default();
+    let Some(pkg) = pkg else {
+        return results;
+    };
+
+    if config.rules.unused_dependencies != Severity::Off
+        || config.rules.unused_dev_dependencies != Severity::Off
+        || config.rules.unused_optional_dependencies != Severity::Off
+    {
+        let (deps, dev_deps, optional_deps) =
+            find_unused_dependencies(graph, pkg, config, plugin_result, workspaces);
+        if config.rules.unused_dependencies != Severity::Off {
+            results.unused_dependencies = deps
+                .into_iter()
+                .map(UnusedDependencyFinding::with_actions)
+                .collect();
+        }
+        if config.rules.unused_dev_dependencies != Severity::Off {
+            results.unused_dev_dependencies = dev_deps
+                .into_iter()
+                .map(UnusedDevDependencyFinding::with_actions)
+                .collect();
+        }
+        if config.rules.unused_optional_dependencies != Severity::Off {
+            results.unused_optional_dependencies = optional_deps
+                .into_iter()
+                .map(UnusedOptionalDependencyFinding::with_actions)
+                .collect();
+        }
+    }
+
+    if config.rules.unlisted_dependencies != Severity::Off {
+        results.unlisted_dependencies = find_unlisted_dependencies(
+            graph,
+            pkg,
+            config,
+            workspaces,
+            plugin_result,
+            resolved_modules,
+            line_offsets_by_file,
+        )
+        .into_iter()
+        .map(UnlistedDependencyFinding::with_actions)
+        .collect();
+    }
+
+    if config.production {
+        results.type_only_dependencies =
+            find_type_only_dependencies(graph, pkg, config, workspaces)
+                .into_iter()
+                .map(TypeOnlyDependencyFinding::with_actions)
+                .collect();
+    }
+
+    if !config.production && config.rules.test_only_dependencies != Severity::Off {
+        results.test_only_dependencies =
+            find_test_only_dependencies(graph, pkg, config, workspaces)
+                .into_iter()
+                .map(TestOnlyDependencyFinding::with_actions)
+                .collect();
     }
     results
 }
