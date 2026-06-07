@@ -508,18 +508,20 @@ fn execute_health_inner(
     if enforce_crap && let Some(ref score_out) = score_output {
         merge_crap_findings(
             &mut findings,
-            &modules,
-            &file_paths,
-            &config.root,
-            &ignore_set,
-            changed_files.as_ref(),
-            ws_roots.as_deref(),
-            &score_out.per_function_crap,
-            &score_out.template_inherit_provenance,
-            max_crap,
-            max_cyclomatic,
-            max_cognitive,
-            opts.complexity_breakdown,
+            &CrapFindingMergeInput {
+                modules: &modules,
+                file_paths: &file_paths,
+                config_root: &config.root,
+                ignore_set: &ignore_set,
+                changed_files: changed_files.as_ref(),
+                ws_roots: ws_roots.as_deref(),
+                per_function_crap: &score_out.per_function_crap,
+                template_inherit_provenance: &score_out.template_inherit_provenance,
+                max_crap,
+                max_cyclomatic,
+                max_cognitive,
+                complexity_breakdown: opts.complexity_breakdown,
+            },
         );
     }
     let template_owner_lookup = score_output
@@ -1988,25 +1990,22 @@ fn contributions_for(
 /// for cyclomatic/cognitive get their `crap` and `coverage_pct` fields
 /// populated, and the `exceeded` discriminant plus `severity` are recomputed
 /// to reflect CRAP's contribution.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "CRAP merge needs the same filter pipeline as collect_findings"
-)]
-fn merge_crap_findings(
-    findings: &mut Vec<ComplexityViolation>,
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    config_root: &std::path::Path,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    per_function_crap: &rustc_hash::FxHashMap<std::path::PathBuf, Vec<scoring::PerFunctionCrap>>,
-    template_inherit_provenance: &rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
+struct CrapFindingMergeInput<'a> {
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    config_root: &'a std::path::Path,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    per_function_crap: &'a rustc_hash::FxHashMap<std::path::PathBuf, Vec<scoring::PerFunctionCrap>>,
+    template_inherit_provenance: &'a rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
     max_crap: f64,
     max_cyclomatic: u16,
     max_cognitive: u16,
     complexity_breakdown: bool,
-) {
+}
+
+fn merge_crap_findings(findings: &mut Vec<ComplexityViolation>, input: &CrapFindingMergeInput<'_>) {
     let finding_index: rustc_hash::FxHashMap<(std::path::PathBuf, u32, u32), usize> = findings
         .iter()
         .enumerate()
@@ -2016,8 +2015,8 @@ fn merge_crap_findings(
         &std::path::Path,
         rustc_hash::FxHashMap<(u32, u32), &fallow_types::extract::FunctionComplexity>,
     > = rustc_hash::FxHashMap::default();
-    for module in modules {
-        let Some(&path) = file_paths.get(&module.file_id) else {
+    for module in input.modules {
+        let Some(&path) = input.file_paths.get(&module.file_id) else {
             continue;
         };
         let entry = complexity_by_pos.entry(path.as_path()).or_default();
@@ -2025,34 +2024,36 @@ fn merge_crap_findings(
             entry.insert((fc.line, fc.col), fc);
         }
     }
-    let suppressions_by_path: rustc_hash::FxHashMap<&std::path::Path, _> = modules
+    let suppressions_by_path: rustc_hash::FxHashMap<&std::path::Path, _> = input
+        .modules
         .iter()
         .filter_map(|m| {
-            file_paths
+            input
+                .file_paths
                 .get(&m.file_id)
                 .map(|p| (p.as_path(), &m.suppressions))
         })
         .collect();
 
     let mut new_findings: Vec<ComplexityViolation> = Vec::new();
-    for (path, per_fn) in per_function_crap {
-        let relative = path.strip_prefix(config_root).unwrap_or(path);
-        if ignore_set.is_match(relative) {
+    for (path, per_fn) in input.per_function_crap {
+        let relative = path.strip_prefix(input.config_root).unwrap_or(path);
+        if input.ignore_set.is_match(relative) {
             continue;
         }
-        if let Some(changed) = changed_files
+        if let Some(changed) = input.changed_files
             && !changed.contains(path)
         {
             continue;
         }
-        if let Some(ws) = ws_roots
+        if let Some(ws) = input.ws_roots
             && !ws.iter().any(|r| path.starts_with(r))
         {
             continue;
         }
 
         for pf in per_fn {
-            if pf.crap < max_crap {
+            if pf.crap < input.max_crap {
                 continue;
             }
             if let Some(sups) = suppressions_by_path.get(path.as_path())
@@ -2074,7 +2075,7 @@ fn merge_crap_findings(
                 finding.inherited_from = inherited_from_for(
                     pf.coverage_source,
                     path.as_path(),
-                    template_inherit_provenance,
+                    input.template_inherit_provenance,
                 );
                 let exceeds_cyclomatic = finding.exceeded.includes_cyclomatic();
                 let exceeds_cognitive = finding.exceeded.includes_cognitive();
@@ -2096,8 +2097,8 @@ fn merge_crap_findings(
                 else {
                     continue;
                 };
-                let exceeds_cyclomatic = fc.cyclomatic > max_cyclomatic;
-                let exceeds_cognitive = fc.cognitive > max_cognitive;
+                let exceeds_cyclomatic = fc.cyclomatic > input.max_cyclomatic;
+                let exceeds_cognitive = fc.cognitive > input.max_cognitive;
                 new_findings.push(ComplexityViolation {
                     path: path.clone(),
                     name: fc.name.clone(),
@@ -2128,10 +2129,10 @@ fn merge_crap_findings(
                     inherited_from: inherited_from_for(
                         pf.coverage_source,
                         path.as_path(),
-                        template_inherit_provenance,
+                        input.template_inherit_provenance,
                     ),
                     component_rollup: None,
-                    contributions: contributions_for(complexity_breakdown, fc),
+                    contributions: contributions_for(input.complexity_breakdown, fc),
                 });
             }
         }
@@ -3314,18 +3315,20 @@ mod tests {
 
         merge_crap_findings(
             &mut findings,
-            &modules,
-            &file_paths,
-            Path::new("/project"),
-            &globset::GlobSet::empty(),
-            None,
-            None,
-            &per_function_crap,
-            &FxHashMap::default(),
-            30.0,
-            20,
-            15,
-            false,
+            &CrapFindingMergeInput {
+                modules: &modules,
+                file_paths: &file_paths,
+                config_root: Path::new("/project"),
+                ignore_set: &globset::GlobSet::empty(),
+                changed_files: None,
+                ws_roots: None,
+                per_function_crap: &per_function_crap,
+                template_inherit_provenance: &FxHashMap::default(),
+                max_crap: 30.0,
+                max_cyclomatic: 20,
+                max_cognitive: 15,
+                complexity_breakdown: false,
+            },
         );
 
         assert_eq!(
@@ -3413,18 +3416,20 @@ mod tests {
 
         merge_crap_findings(
             &mut findings,
-            &modules,
-            &file_paths,
-            Path::new("/project"),
-            &globset::GlobSet::empty(),
-            None,
-            None,
-            &per_function_crap,
-            &FxHashMap::default(),
-            30.0,
-            20,
-            15,
-            false,
+            &CrapFindingMergeInput {
+                modules: &modules,
+                file_paths: &file_paths,
+                config_root: Path::new("/project"),
+                ignore_set: &globset::GlobSet::empty(),
+                changed_files: None,
+                ws_roots: None,
+                per_function_crap: &per_function_crap,
+                template_inherit_provenance: &FxHashMap::default(),
+                max_crap: 30.0,
+                max_cyclomatic: 20,
+                max_cognitive: 15,
+                complexity_breakdown: false,
+            },
         );
 
         assert_eq!(findings.len(), 1);
