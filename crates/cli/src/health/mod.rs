@@ -362,26 +362,7 @@ fn execute_health_inner(
     let enforce_coverage_gaps = opts.enforce_coverage_gap_gate
         && config.rules.coverage_gaps == fallow_config::Severity::Error;
 
-    let istanbul_coverage = if let Some(coverage_path) = opts.coverage {
-        match scoring::load_istanbul_coverage(coverage_path, opts.coverage_root, Some(&config.root))
-        {
-            Ok(cov) => Some(cov),
-            Err(e) => {
-                emit_error(&format!("coverage: {e}"), 2, opts.output);
-                return Err(ExitCode::from(2));
-            }
-        }
-    } else if let Some(auto_path) = scoring::auto_detect_coverage(&config.root) {
-        if std::env::var("CI").is_ok_and(|v| !v.is_empty()) {
-            eprintln!(
-                "note: using auto-detected coverage at {}; pass --coverage explicitly for deterministic CI scores",
-                auto_path.display()
-            );
-        }
-        scoring::load_istanbul_coverage(&auto_path, opts.coverage_root, Some(&config.root)).ok()
-    } else {
-        None
-    };
+    let istanbul_coverage = load_health_coverage(opts, &config)?;
 
     let needs_file_scores = opts.file_scores
         || report_coverage_gaps
@@ -838,6 +819,35 @@ fn execute_health_inner(
         coverage_gaps_has_findings,
         should_fail_on_coverage_gaps: enforce_coverage_gaps,
     })
+}
+
+fn load_health_coverage(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+) -> Result<Option<scoring::IstanbulCoverage>, ExitCode> {
+    if let Some(coverage_path) = opts.coverage {
+        return scoring::load_istanbul_coverage(
+            coverage_path,
+            opts.coverage_root,
+            Some(&config.root),
+        )
+        .map(Some)
+        .map_err(|e| {
+            emit_error(&format!("coverage: {e}"), 2, opts.output);
+            ExitCode::from(2)
+        });
+    }
+
+    let Some(auto_path) = scoring::auto_detect_coverage(&config.root) else {
+        return Ok(None);
+    };
+    if std::env::var("CI").is_ok_and(|v| !v.is_empty()) {
+        eprintln!(
+            "note: using auto-detected coverage at {}; pass --coverage explicitly for deterministic CI scores",
+            auto_path.display()
+        );
+    }
+    Ok(scoring::load_istanbul_coverage(&auto_path, opts.coverage_root, Some(&config.root)).ok())
 }
 
 /// Drop complexity findings whose function body span does NOT overlap any
