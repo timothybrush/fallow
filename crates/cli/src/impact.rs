@@ -473,15 +473,16 @@ fn apply_attribution(
 
     uncredit_cross_run_moves(store, &appeared_move_keys);
 
-    classify_file_disappearances(
+    let mut disappearance_input = FileDisappearancesInput {
         store,
-        &changed,
-        &current_findings,
-        &current_supps,
-        &appeared_move_keys,
+        changed: &changed,
+        current_findings: &current_findings,
+        current_supps: &current_supps,
+        appeared_move_keys: &appeared_move_keys,
         git_sha,
         timestamp,
-    );
+    };
+    classify_file_disappearances(&mut disappearance_input);
     update_file_frontier(store, &changed, current_findings, current_supps);
     classify_clone_disappearances(store, input, &changed, git_sha, timestamp);
     prune_frontier(store, root);
@@ -510,15 +511,24 @@ fn whole_project_scope(
     set
 }
 
-fn classify_file_disappearances(
-    store: &mut ImpactStore,
-    changed: &FxHashSet<String>,
-    current_findings: &FxHashMap<String, Vec<FrontierFinding>>,
-    current_supps: &FxHashMap<String, FxHashSet<String>>,
-    appeared_move_keys: &FxHashSet<String>,
-    git_sha: Option<&str>,
-    timestamp: &str,
-) {
+struct FileDisappearancesInput<'a> {
+    store: &'a mut ImpactStore,
+    changed: &'a FxHashSet<String>,
+    current_findings: &'a FxHashMap<String, Vec<FrontierFinding>>,
+    current_supps: &'a FxHashMap<String, FxHashSet<String>>,
+    appeared_move_keys: &'a FxHashSet<String>,
+    git_sha: Option<&'a str>,
+    timestamp: &'a str,
+}
+
+fn classify_file_disappearances(input: &mut FileDisappearancesInput<'_>) {
+    let store = &mut *input.store;
+    let changed = input.changed;
+    let current_findings = input.current_findings;
+    let current_supps = input.current_supps;
+    let appeared_move_keys = input.appeared_move_keys;
+    let git_sha = input.git_sha;
+    let timestamp = input.timestamp;
     let empty_supps = FxHashSet::default();
     for rel in changed {
         let Some(prior) = store.frontier.get(rel) else {
