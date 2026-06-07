@@ -145,15 +145,15 @@ pub fn run_list(opts: &ListOptions<'_>) -> ExitCode {
             workspace_data: workspace_data.as_ref(),
         }),
         _ => {
-            print_list_human(
+            print_list_human(&ListHumanInput {
                 opts,
                 show_all,
-                plugin_result.as_ref(),
-                discovered.as_deref(),
-                all_entry_points.as_deref(),
-                boundary_data.as_ref(),
-                workspace_data.as_ref(),
-            );
+                plugin_result: plugin_result.as_ref(),
+                discovered: discovered.as_deref(),
+                entry_points: all_entry_points.as_deref(),
+                boundary_data: boundary_data.as_ref(),
+                workspace_data: workspace_data.as_ref(),
+            });
             ExitCode::SUCCESS
         }
     }
@@ -297,15 +297,24 @@ fn workspace_data_to_output(root: &std::path::Path, ws: &WorkspaceData) -> Works
 }
 
 /// Print list results in human-readable format.
-fn print_list_human(
-    opts: &ListOptions<'_>,
+struct ListHumanInput<'a> {
+    opts: &'a ListOptions<'a>,
     show_all: bool,
-    plugin_result: Option<&fallow_core::plugins::AggregatedPluginResult>,
-    discovered: Option<&[fallow_core::discover::DiscoveredFile]>,
-    entry_points: Option<&[fallow_core::discover::EntryPoint]>,
-    boundary_data: Option<&BoundaryData>,
-    workspace_data: Option<&WorkspaceData>,
-) {
+    plugin_result: Option<&'a fallow_core::plugins::AggregatedPluginResult>,
+    discovered: Option<&'a [fallow_core::discover::DiscoveredFile]>,
+    entry_points: Option<&'a [fallow_core::discover::EntryPoint]>,
+    boundary_data: Option<&'a BoundaryData>,
+    workspace_data: Option<&'a WorkspaceData>,
+}
+
+fn print_list_human(input: &ListHumanInput<'_>) {
+    let opts = input.opts;
+    let show_all = input.show_all;
+    let plugin_result = input.plugin_result;
+    let discovered = input.discovered;
+    let entry_points = input.entry_points;
+    let boundary_data = input.boundary_data;
+    let workspace_data = input.workspace_data;
     if (opts.plugins || show_all)
         && let Some(pr) = plugin_result
     {
