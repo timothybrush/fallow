@@ -19,11 +19,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, RwLock};
-use tower_lsp::jsonrpc::Result;
 #[allow(clippy::wildcard_imports, reason = "many LSP types used")]
-use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use ls_types::*;
+use tokio::sync::{Mutex, RwLock};
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 use serde::{Deserialize, Serialize};
 
@@ -346,7 +346,7 @@ struct DocumentState {
 /// document has been edited during the analysis run. A type alias so future
 /// readers can grep for the snapshot's identity (it is also a stable seam
 /// for tests).
-type VersionSnapshot = FxHashMap<Url, i32>;
+type VersionSnapshot = FxHashMap<Uri, i32>;
 
 fn initialization_config_path(opts: &serde_json::Value, root: Option<&Path>) -> Option<PathBuf> {
     let raw = opts.get("configPath").and_then(|v| v.as_str())?.trim();
@@ -502,7 +502,7 @@ struct FallowLspServer {
     results: Arc<RwLock<Option<AnalysisResults>>>,
     duplication: Arc<RwLock<Option<DuplicationReport>>>,
     inline_complexity: Arc<RwLock<Vec<InlineComplexityFinding>>>,
-    previous_diagnostic_uris: Arc<RwLock<FxHashSet<Url>>>,
+    previous_diagnostic_uris: Arc<RwLock<FxHashSet<Uri>>>,
     last_analysis: Arc<Mutex<Instant>>,
     analysis_guard: Arc<tokio::sync::Mutex<()>>,
     /// Per-URI document state tracked from `did_open` / `did_change` /
@@ -510,7 +510,7 @@ struct FallowLspServer {
     /// `run_analysis` to snapshot the document state at analysis start and
     /// by `publish_collected_diagnostics` to skip stale publishes; see
     /// `.claude/rules/lsp-server.md` for the staleness invariant.
-    documents: Arc<RwLock<FxHashMap<Url, DocumentState>>>,
+    documents: Arc<RwLock<FxHashMap<Uri, DocumentState>>>,
     /// Diagnostic codes to suppress (parsed from initializationOptions.issueTypes)
     disabled_diagnostic_codes: Arc<RwLock<FxHashSet<String>>>,
     /// Optional git ref from `initializationOptions.changedSince`. When set,
@@ -541,7 +541,18 @@ struct FallowLspServer {
     /// this cache (and `self.root`) to avoid stale path joins.
     git_toplevel: Arc<RwLock<Option<PathBuf>>>,
     /// Cached diagnostics for pull-model support (textDocument/diagnostic)
-    cached_diagnostics: Arc<RwLock<FxHashMap<Url, Vec<Diagnostic>>>>,
+    cached_diagnostics: Arc<RwLock<FxHashMap<Uri, Vec<Diagnostic>>>>,
+    /// Set to `true` the first time the client issues a `textDocument/diagnostic`
+    /// request. This is the only reliable signal that a client genuinely
+    /// consumes pull diagnostics. Advertising `workspace.diagnostics.refreshSupport`
+    /// is NOT sufficient: the VS Code extension advertises it (vscode-languageclient
+    /// sets it unconditionally) yet disables pull client-side
+    /// (`diagnosticPullOptions.match = () => false`), so it never pulls. Keying
+    /// push-suppression on the advertised capability silently blanked open-file
+    /// diagnostics in VS Code. Push-suppression, the `did_open` push clear, and
+    /// the `workspace/diagnostic/refresh` nudge therefore all key on THIS flag so
+    /// push-only clients keep receiving open-file diagnostics.
+    client_pulls: Arc<AtomicBool>,
     /// Set by `shutdown()`. `run_analysis` checks this at the top and
     /// before publishing diagnostics so a closing client does not receive
     /// spurious post-shutdown publishes. The 250ms grace on the
@@ -554,14 +565,13 @@ struct FallowLspServer {
 
 /// Build the `ServerCapabilities` advertised by `initialize`.
 ///
-/// `diagnostic_provider` is required for strict LSP 3.17 clients
-/// (Helix, Zed, and other editors that gate the pull-model diagnostic
-/// request on the advertised capability). Without it, `textDocument/diagnostic`
-/// is dead code for those clients even though the handler is wired up.
+/// `diagnostic_provider` is advertised only for clients that can refresh pulled
+/// diagnostics. Clients without refresh support stay push-only so empty
+/// `publishDiagnostics` notifications can clear their diagnostics immediately.
 /// `inter_file_dependencies = true` because changing exports or imports in one
 /// file can flip diagnostics in another (unused exports, unused dependencies).
 /// `workspace_diagnostics = false` because we do not serve `workspace/diagnostic`.
-fn build_server_capabilities() -> ServerCapabilities {
+fn build_server_capabilities(advertise_pull_diagnostics: bool) -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
@@ -572,28 +582,42 @@ fn build_server_capabilities() -> ServerCapabilities {
             resolve_provider: Some(false),
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
-        diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
-            identifier: Some("fallow".to_string()),
-            inter_file_dependencies: true,
-            workspace_diagnostics: false,
-            work_done_progress_options: WorkDoneProgressOptions::default(),
-        })),
+        diagnostic_provider: advertise_pull_diagnostics.then(|| {
+            DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                identifier: Some("fallow".to_string()),
+                inter_file_dependencies: true,
+                workspace_diagnostics: false,
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            })
+        }),
         ..Default::default()
     }
 }
 
-#[tower_lsp::async_trait]
+fn client_supports_workspace_diagnostic_refresh(capabilities: &ClientCapabilities) -> bool {
+    capabilities
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.diagnostics.as_ref())
+        .and_then(|diagnostics| diagnostics.refresh_support)
+        .unwrap_or(false)
+}
+
 impl LanguageServer for FallowLspServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let root = params
-            .root_uri
-            .and_then(|u| u.to_file_path().ok())
+            .workspace_folders
+            .as_deref()
+            .and_then(|fs| fs.first())
+            .and_then(|f| f.uri.to_file_path().map(|path| path.into_owned()))
             .or_else(|| {
+                #[expect(
+                    deprecated,
+                    reason = "root_uri remains a fallback for legacy LSP clients"
+                )]
                 params
-                    .workspace_folders
-                    .as_deref()
-                    .and_then(|fs| fs.first())
-                    .and_then(|f| f.uri.to_file_path().ok())
+                    .root_uri
+                    .and_then(|u| u.to_file_path().map(|path| path.into_owned()))
             });
         let canonical_root = root.map(|path| path.canonicalize().unwrap_or(path));
         if let Some(path) = &canonical_root {
@@ -634,8 +658,11 @@ impl LanguageServer for FallowLspServer {
                 initialization_inline_complexity_enabled(opts);
         }
 
+        let advertise_pull_diagnostics =
+            client_supports_workspace_diagnostic_refresh(&params.capabilities);
+
         Ok(InitializeResult {
-            capabilities: build_server_capabilities(),
+            capabilities: build_server_capabilities(advertise_pull_diagnostics),
             ..Default::default()
         })
     }
@@ -670,6 +697,23 @@ impl LanguageServer for FallowLspServer {
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = params.text_document.uri;
+
+        // The first pull request proves this client genuinely consumes pull
+        // diagnostics (unlike the VS Code extension, which advertises refresh
+        // support but disables pull). On that transition, clear any push-model
+        // diagnostics emitted for open documents during startup (before the
+        // first pull) so they do not double with the pull namespace in clients
+        // like Neovim that surface both. The client re-pulls each open buffer,
+        // so the pull namespace stays authoritative.
+        if !self.client_pulls.swap(true, Ordering::SeqCst) {
+            let open_uris: Vec<Uri> = self.documents.read().await.keys().cloned().collect();
+            for open_uri in open_uris {
+                self.client
+                    .publish_diagnostics(open_uri, vec![], None)
+                    .await;
+            }
+        }
+
         let items = self
             .cached_diagnostics
             .read()
@@ -708,7 +752,14 @@ impl LanguageServer for FallowLspServer {
         self.documents
             .write()
             .await
-            .insert(uri, DocumentState { version, text });
+            .insert(uri.clone(), DocumentState { version, text });
+
+        if self.client_pulls.load(Ordering::SeqCst) {
+            self.client
+                .publish_diagnostics(uri, vec![], Some(version))
+                .await;
+            self.spawn_diagnostic_refresh();
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -741,7 +792,7 @@ impl LanguageServer for FallowLspServer {
         };
 
         let uri = &params.text_document.uri;
-        let Ok(file_path) = uri.to_file_path() else {
+        let Some(file_path) = uri.to_file_path() else {
             return Ok(None);
         };
 
@@ -805,7 +856,7 @@ impl LanguageServer for FallowLspServer {
             return Ok(None);
         };
 
-        let Ok(file_path) = params.text_document.uri.to_file_path() else {
+        let Some(file_path) = params.text_document.uri.to_file_path() else {
             return Ok(None);
         };
 
@@ -835,7 +886,7 @@ impl LanguageServer for FallowLspServer {
         };
 
         let uri = &params.text_document_position_params.text_document.uri;
-        let Ok(file_path) = uri.to_file_path() else {
+        let Some(file_path) = uri.to_file_path() else {
             return Ok(None);
         };
 
@@ -877,13 +928,14 @@ impl FallowLspServer {
             inline_complexity_enabled: Arc::new(RwLock::new(false)),
             git_toplevel: Arc::new(RwLock::new(None)),
             cached_diagnostics: Arc::new(RwLock::new(FxHashMap::default())),
+            client_pulls: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(AtomicBool::new(false)),
         }
     }
 
     #[expect(
         clippy::unused_async,
-        reason = "tower-lsp custom_method handlers are async methods"
+        reason = "tower-lsp-server custom_method handlers are async methods"
     )]
     async fn issue_types(&self) -> Result<Vec<IssueTypeInfo>> {
         Ok(diagnostic_issue_types())
@@ -1095,7 +1147,7 @@ impl FallowLspServer {
                 *self.duplication.write().await = Some(duplication);
                 *self.inline_complexity.write().await = inline_complexity;
 
-                let _ = self.client.code_lens_refresh().await;
+                self.spawn_code_lens_refresh();
 
                 self.client
                     .log_message(MessageType::INFO, "Analysis complete")
@@ -1120,26 +1172,31 @@ impl FallowLspServer {
     ///   2. The URI was in the snapshot AND the live document is now absent
     ///      (closed via `did_close` between snapshot and publish; we cannot
     ///      prove the client still owns the document).
-    ///   3. The URI is absent from the snapshot BUT present in `live_versions`
-    ///      (opened via `did_open` between snapshot and publish; the analysis
-    ///      ran without seeing the buffer the client now holds, and we have
-    ///      no version to attach to the publish so the client cannot drop a
-    ///      mismatched payload server-to-client). The next analysis triggered
-    ///      by `did_save` will publish a fresh result with a version slot.
+    ///   3. The URI is absent from the snapshot BUT present in `live_documents`
+    ///      and the live buffer differs from the on-disk file (opened or edited
+    ///      between snapshot and publish; the analysis ran without seeing the
+    ///      buffer the client now holds). If the live buffer still matches disk,
+    ///      the analysis did see the same text and the URI is safe to publish/cache.
     ///
-    /// Only URIs absent from BOTH the snapshot AND `live_versions` are NOT
-    /// stale: these are cross-file diagnostics anchored to files the user
-    /// never `did_open`'d via the LSP (e.g. `package.json` for unlisted
-    /// dependencies, `pnpm-workspace.yaml` for catalog references). No
-    /// version race exists for them.
+    /// URIs absent from BOTH the snapshot AND `live_documents` are NOT stale:
+    /// these are cross-file diagnostics anchored to files the user never
+    /// `did_open`'d via the LSP (e.g. `package.json` for unlisted dependencies,
+    /// `pnpm-workspace.yaml` for catalog references). No version race exists for them.
+    fn opened_mid_run_buffer_matches_disk(uri: &Uri, state: &DocumentState) -> bool {
+        uri.to_file_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .is_some_and(|disk_text| disk_text == state.text)
+    }
+
     fn uri_is_stale(
-        uri: &Url,
+        uri: &Uri,
         snapshot: &VersionSnapshot,
-        live_versions: &FxHashMap<Url, i32>,
+        live_documents: &FxHashMap<Uri, DocumentState>,
     ) -> bool {
-        match (snapshot.get(uri), live_versions.get(uri)) {
-            (Some(&snapshot_version), Some(&live_version)) => live_version > snapshot_version,
-            (Some(_), None) | (None, Some(_)) => true,
+        match (snapshot.get(uri), live_documents.get(uri)) {
+            (Some(&snapshot_version), Some(live_state)) => live_state.version > snapshot_version,
+            (Some(_), None) => true,
+            (None, Some(live_state)) => !Self::opened_mid_run_buffer_matches_disk(uri, live_state),
             (None, None) => false,
         }
     }
@@ -1150,25 +1207,26 @@ impl FallowLspServer {
     )]
     async fn publish_collected_diagnostics(
         &self,
-        diagnostics_by_file: FxHashMap<Url, Vec<Diagnostic>>,
+        diagnostics_by_file: FxHashMap<Uri, Vec<Diagnostic>>,
         snapshot: &VersionSnapshot,
     ) {
         let disabled = self.disabled_diagnostic_codes.read().await;
 
-        let live_versions: FxHashMap<Url, i32> = self
+        let live_documents: FxHashMap<Uri, DocumentState> = self
             .documents
             .read()
             .await
             .iter()
-            .map(|(uri, state)| (uri.clone(), state.version))
+            .map(|(uri, state)| (uri.clone(), state.clone()))
             .collect();
 
-        let mut new_uris: FxHashSet<Url> = FxHashSet::default();
+        let use_pull_diagnostics = self.client_pulls.load(Ordering::SeqCst);
+        let mut new_uris: FxHashSet<Uri> = FxHashSet::default();
 
         for (uri, diags) in &diagnostics_by_file {
             new_uris.insert(uri.clone());
 
-            if Self::uri_is_stale(uri, snapshot, &live_versions) {
+            if Self::uri_is_stale(uri, snapshot, &live_documents) {
                 continue;
             }
 
@@ -1187,9 +1245,11 @@ impl FallowLspServer {
                     .collect()
             };
 
-            self.client
-                .publish_diagnostics(uri.clone(), filtered.clone(), snapshot.get(uri).copied())
-                .await;
+            if !use_pull_diagnostics || !live_documents.contains_key(uri) {
+                self.client
+                    .publish_diagnostics(uri.clone(), filtered.clone(), snapshot.get(uri).copied())
+                    .await;
+            }
 
             self.cached_diagnostics
                 .write()
@@ -1204,18 +1264,52 @@ impl FallowLspServer {
                 if new_uris.contains(old_uri) {
                     continue;
                 }
-                if Self::uri_is_stale(old_uri, snapshot, &live_versions) {
+                if Self::uri_is_stale(old_uri, snapshot, &live_documents) {
                     new_uris.insert(old_uri.clone());
                     continue;
                 }
-                self.client
-                    .publish_diagnostics(old_uri.clone(), vec![], snapshot.get(old_uri).copied())
-                    .await;
+                if !use_pull_diagnostics || !live_documents.contains_key(old_uri) {
+                    self.client
+                        .publish_diagnostics(
+                            old_uri.clone(),
+                            vec![],
+                            snapshot.get(old_uri).copied(),
+                        )
+                        .await;
+                }
                 cache.remove(old_uri);
             }
         }
 
         *self.previous_diagnostic_uris.write().await = new_uris;
+
+        if use_pull_diagnostics {
+            self.spawn_diagnostic_refresh();
+        }
+    }
+
+    /// Fire `workspace/diagnostic/refresh` without blocking on the client's
+    /// response. The refresh is a server-to-client request that
+    /// `tower-lsp-server` resolves only once the client replies; awaiting it
+    /// inline would let a slow or unresponsive client stall `run_analysis`
+    /// (which holds `analysis_guard`) and delay the `fallow/analysisComplete`
+    /// signal. Spawning keeps the request on the wire while decoupling analysis
+    /// throughput from client responsiveness.
+    fn spawn_diagnostic_refresh(&self) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.workspace_diagnostic_refresh().await;
+        });
+    }
+
+    /// Fire `workspace/codeLens/refresh` detached, for the same reason as
+    /// [`Self::spawn_diagnostic_refresh`]: it is a server-to-client request whose
+    /// reply must not gate `run_analysis` completion.
+    fn spawn_code_lens_refresh(&self) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.code_lens_refresh().await;
+        });
     }
 }
 
@@ -1304,7 +1398,7 @@ fn find_project_roots(workspace_root: &std::path::Path) -> Vec<std::path::PathBu
 /// not used by `build_diagnostics` today and is logged via the structured
 /// fact that `data` for any fallow diagnostic should be an object.
 fn attach_changed_since_data(
-    diagnostics_by_file: &mut FxHashMap<Url, Vec<Diagnostic>>,
+    diagnostics_by_file: &mut FxHashMap<Uri, Vec<Diagnostic>>,
     changed_since: Option<&str>,
 ) {
     let Some(git_ref) = changed_since else {
@@ -1376,14 +1470,14 @@ mod tests {
     };
     use serde_json::json;
     use tower::{Service, ServiceExt};
-    use tower_lsp::jsonrpc::Request;
+    use tower_lsp_server::jsonrpc::Request;
 
     #[test]
     fn server_capabilities_advertise_pull_diagnostics() {
-        let caps = build_server_capabilities();
+        let caps = build_server_capabilities(true);
         let provider = caps
             .diagnostic_provider
-            .expect("diagnostic_provider must be advertised so strict LSP 3.17 clients (Helix, Zed) call textDocument/diagnostic");
+            .expect("diagnostic_provider must be advertised for clients that can refresh pulled diagnostics");
         match provider {
             DiagnosticServerCapabilities::Options(opts) => {
                 assert_eq!(opts.identifier.as_deref(), Some("fallow"));
@@ -1403,12 +1497,43 @@ mod tests {
     }
 
     #[test]
-    fn server_capabilities_keep_existing_providers() {
-        let caps = build_server_capabilities();
+    fn server_capabilities_omit_pull_diagnostics_when_not_refreshable() {
+        let caps = build_server_capabilities(false);
+        assert!(caps.diagnostic_provider.is_none());
         assert!(caps.text_document_sync.is_some());
         assert!(caps.code_action_provider.is_some());
         assert!(caps.code_lens_provider.is_some());
         assert!(caps.hover_provider.is_some());
+    }
+
+    #[test]
+    fn server_capabilities_keep_existing_providers() {
+        let caps = build_server_capabilities(true);
+        assert!(caps.text_document_sync.is_some());
+        assert!(caps.code_action_provider.is_some());
+        assert!(caps.code_lens_provider.is_some());
+        assert!(caps.hover_provider.is_some());
+    }
+
+    #[test]
+    fn default_client_capabilities_do_not_support_workspace_diagnostic_refresh() {
+        assert!(!client_supports_workspace_diagnostic_refresh(
+            &ClientCapabilities::default()
+        ));
+    }
+
+    #[test]
+    fn client_capabilities_support_workspace_diagnostic_refresh() {
+        let capabilities: ClientCapabilities = serde_json::from_value(json!({
+            "workspace": {
+                "diagnostics": {
+                    "refreshSupport": true
+                }
+            }
+        }))
+        .expect("workspace.diagnostics.refreshSupport should deserialize");
+
+        assert!(client_supports_workspace_diagnostic_refresh(&capabilities));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1479,6 +1604,8 @@ mod tests {
             .expect("initialize request should be handled")
             .expect("initialize request should return a response");
         assert!(response.is_ok());
+        let result = response.result().expect("initialize response should be ok");
+        assert_eq!(result["capabilities"].get("diagnosticProvider"), None);
 
         let diagnostics = Request::build("textDocument/diagnostic")
             .params(json!({
@@ -1505,6 +1632,38 @@ mod tests {
         let result = response.result().expect("diagnostic response should be ok");
         assert_eq!(result["kind"], json!("full"));
         assert_eq!(result["items"], json!([]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn initialize_advertises_pull_diagnostics_for_refreshable_clients() {
+        let (mut service, _) = LspService::build(FallowLspServer::new).finish();
+
+        let initialize = Request::build("initialize")
+            .params(json!({
+                "capabilities": {
+                    "workspace": {
+                        "diagnostics": {
+                            "refreshSupport": true
+                        }
+                    }
+                }
+            }))
+            .id(1)
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .expect("service should be ready")
+            .call(initialize)
+            .await
+            .expect("initialize request should be handled")
+            .expect("initialize request should return a response");
+
+        let result = response.result().expect("initialize response should be ok");
+        assert_eq!(
+            result["capabilities"]["diagnosticProvider"]["identifier"],
+            json!("fallow")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2329,8 +2488,8 @@ export function choose(value: number): string {
 
     #[test]
     fn attach_changed_since_data_sets_payload_when_active() {
-        let mut map: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
-        let uri = Url::parse("file:///a.ts").unwrap();
+        let mut map: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        let uri = "file:///a.ts".parse::<Uri>().unwrap();
         map.insert(uri.clone(), vec![make_diagnostic(), make_diagnostic()]);
 
         attach_changed_since_data(&mut map, Some("fallow-baseline"));
@@ -2347,8 +2506,8 @@ export function choose(value: number): string {
 
     #[test]
     fn attach_changed_since_data_noop_when_filter_absent() {
-        let mut map: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
-        let uri = Url::parse("file:///a.ts").unwrap();
+        let mut map: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        let uri = "file:///a.ts".parse::<Uri>().unwrap();
         map.insert(uri.clone(), vec![make_diagnostic()]);
 
         attach_changed_since_data(&mut map, None);
@@ -2361,15 +2520,15 @@ export function choose(value: number): string {
 
     #[test]
     fn attach_changed_since_data_handles_empty_map() {
-        let mut map: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut map: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         attach_changed_since_data(&mut map, Some("origin/main"));
         assert!(map.is_empty());
     }
 
     #[test]
     fn attach_changed_since_data_merges_into_existing_object_data() {
-        let mut map: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
-        let uri = Url::parse("file:///a.ts").unwrap();
+        let mut map: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        let uri = "file:///a.ts".parse::<Uri>().unwrap();
         let mut d = make_diagnostic();
         d.data = Some(serde_json::json!({ "resolveToken": "abc-123" }));
         map.insert(uri.clone(), vec![d]);
@@ -2383,8 +2542,8 @@ export function choose(value: number): string {
 
     #[test]
     fn attach_changed_since_data_leaves_non_object_data_intact() {
-        let mut map: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
-        let uri = Url::parse("file:///a.ts").unwrap();
+        let mut map: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        let uri = "file:///a.ts".parse::<Uri>().unwrap();
         let mut d = make_diagnostic();
         d.data = Some(serde_json::Value::String("custom-token".to_string()));
         map.insert(uri.clone(), vec![d]);
@@ -2572,7 +2731,7 @@ export function choose(value: number): string {
         }
     }
 
-    async fn install_document(backend: &FallowLspServer, uri: &Url, version: i32, text: &str) {
+    async fn install_document(backend: &FallowLspServer, uri: &Uri, version: i32, text: &str) {
         backend.documents.write().await.insert(
             uri.clone(),
             DocumentState {
@@ -2587,13 +2746,13 @@ export function choose(value: number): string {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///stale.ts").unwrap();
+        let uri = "file:///stale.ts".parse::<Uri>().unwrap();
         install_document(backend, &uri, 1, "v1").await;
         let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
 
         install_document(backend, &uri, 2, "v2").await;
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
@@ -2610,11 +2769,11 @@ export function choose(value: number): string {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///fresh.ts").unwrap();
+        let uri = "file:///fresh.ts".parse::<Uri>().unwrap();
         install_document(backend, &uri, 1, "v1").await;
         let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
@@ -2638,10 +2797,10 @@ export function choose(value: number): string {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///never-opened/package.json").unwrap();
+        let uri = "file:///never-opened/package.json".parse::<Uri>().unwrap();
         let snapshot: VersionSnapshot = FxHashMap::default();
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
@@ -2658,12 +2817,12 @@ export function choose(value: number): string {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///opened-mid-run.ts").unwrap();
+        let uri = "file:///opened-mid-run.ts".parse::<Uri>().unwrap();
         let snapshot: VersionSnapshot = FxHashMap::default();
 
         install_document(backend, &uri, 1, "v1").await;
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
@@ -2682,17 +2841,43 @@ export function choose(value: number): string {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn publish_caches_diagnostics_for_uri_opened_mid_run_when_buffer_matches_disk() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file_path = temp.path().join("opened-mid-run.ts");
+        std::fs::write(&file_path, "export const value = 1;\n")
+            .expect("fixture file should be written");
+
+        let (service, _) = LspService::build(FallowLspServer::new).finish();
+        let backend = service.inner();
+        let uri = Uri::from_file_path(&file_path).expect("temp path should convert to file URI");
+        let snapshot: VersionSnapshot = FxHashMap::default();
+
+        install_document(backend, &uri, 1, "export const value = 1;\n").await;
+
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
+        backend
+            .publish_collected_diagnostics(diags_by_file, &snapshot)
+            .await;
+
+        assert!(
+            backend.cached_diagnostics.read().await.contains_key(&uri),
+            "opened-mid-run URI should update the pull cache when the live buffer matches disk",
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn publish_skips_uri_when_closed_mid_run() {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///closed.ts").unwrap();
+        let uri = "file:///closed.ts".parse::<Uri>().unwrap();
         install_document(backend, &uri, 1, "v1").await;
         let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
 
         backend.documents.write().await.remove(&uri);
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
@@ -2725,11 +2910,11 @@ export function choose(value: number): string {
 
         let backend = service.inner();
 
-        let uri = Url::parse("file:///versioned.ts").unwrap();
+        let uri = "file:///versioned.ts".parse::<Uri>().unwrap();
         install_document(backend, &uri, 7, "v7").await;
         let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 7)).collect();
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
@@ -2757,15 +2942,562 @@ export function choose(value: number): string {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn publish_requests_workspace_diagnostic_refresh_when_client_pulls() {
+        use futures::{SinkExt, StreamExt};
+        use tower_lsp_server::jsonrpc::Response;
+
+        let (mut service, socket) = LspService::build(FallowLspServer::new).finish();
+
+        let initialize = Request::build("initialize")
+            .params(json!({
+                "capabilities": {
+                    "workspace": {
+                        "diagnostics": {
+                            "refreshSupport": true
+                        }
+                    }
+                }
+            }))
+            .id(1)
+            .finish();
+        service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(initialize)
+            .await
+            .expect("initialize call")
+            .expect("initialize response");
+
+        let backend = service.inner();
+        // Simulate a client that genuinely pulls so push-suppression engages.
+        backend.client_pulls.store(true, Ordering::SeqCst);
+        let uri = "file:///refresh.ts".parse::<Uri>().unwrap();
+        install_document(backend, &uri, 1, "v1").await;
+        let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
+
+        let mut socket = socket;
+        let publish = backend.publish_collected_diagnostics(diags_by_file, &snapshot);
+        let client = async {
+            loop {
+                let request = tokio::time::timeout(Duration::from_millis(500), socket.next())
+                    .await
+                    .expect("server-to-client request must arrive within timeout")
+                    .expect("ClientSocket stream ended before workspace diagnostic refresh");
+                assert_ne!(
+                    request.method(),
+                    "textDocument/publishDiagnostics",
+                    "refresh-capable clients use pull diagnostics only to avoid duplicate namespaces"
+                );
+                if request.method() != "workspace/diagnostic/refresh" {
+                    continue;
+                }
+
+                let id = request
+                    .id()
+                    .expect("workspace diagnostic refresh is a request")
+                    .clone();
+                socket
+                    .send(Response::from_ok(id, json!(null)))
+                    .await
+                    .expect("refresh response should send");
+                break;
+            }
+        };
+
+        tokio::join!(publish, client);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn publish_pushes_unopened_file_diagnostics_when_client_pulls() {
+        use futures::{SinkExt, StreamExt};
+        use tower_lsp_server::jsonrpc::Response;
+
+        let (mut service, socket) = LspService::build(FallowLspServer::new).finish();
+
+        let initialize = Request::build("initialize")
+            .params(json!({
+                "capabilities": {
+                    "workspace": {
+                        "diagnostics": {
+                            "refreshSupport": true
+                        }
+                    }
+                }
+            }))
+            .id(1)
+            .finish();
+        service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(initialize)
+            .await
+            .expect("initialize call")
+            .expect("initialize response");
+
+        let backend = service.inner();
+        // Simulate a client that genuinely pulls so the refresh nudge fires.
+        backend.client_pulls.store(true, Ordering::SeqCst);
+        let uri = "file:///unopened.ts".parse::<Uri>().unwrap();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
+
+        let mut socket = socket;
+        let snapshot = FxHashMap::default();
+        let publish = backend.publish_collected_diagnostics(diags_by_file, &snapshot);
+        let client = async {
+            let mut saw_publish = false;
+            loop {
+                let request = tokio::time::timeout(Duration::from_millis(500), socket.next())
+                    .await
+                    .expect("server-to-client request must arrive within timeout")
+                    .expect("ClientSocket stream ended before workspace diagnostic refresh");
+                if request.method() == "textDocument/publishDiagnostics" {
+                    let params = request
+                        .params()
+                        .expect("publishDiagnostics carries params on every call");
+                    assert_eq!(params["uri"], json!(uri.to_string()));
+                    saw_publish = true;
+                    continue;
+                }
+                if request.method() != "workspace/diagnostic/refresh" {
+                    continue;
+                }
+
+                let id = request
+                    .id()
+                    .expect("workspace diagnostic refresh is a request")
+                    .clone();
+                socket
+                    .send(Response::from_ok(id, json!(null)))
+                    .await
+                    .expect("refresh response should send");
+                break;
+            }
+            assert!(saw_publish, "unopened files still need push diagnostics");
+        };
+
+        tokio::join!(publish, client);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_files_keep_push_when_client_never_pulls() {
+        use futures::StreamExt;
+
+        let (mut service, socket) = LspService::build(FallowLspServer::new).finish();
+
+        // The VS Code extension advertises `workspace.diagnostics.refreshSupport`
+        // (vscode-languageclient sets it unconditionally) but disables pull via
+        // `diagnosticPullOptions.match = () => false`, so it never issues a
+        // `textDocument/diagnostic`. Suppressing open-file pushes on the advertised
+        // capability blanked diagnostics for such clients; they must keep push.
+        let initialize = Request::build("initialize")
+            .params(json!({
+                "capabilities": {
+                    "workspace": {
+                        "diagnostics": {
+                            "refreshSupport": true
+                        }
+                    }
+                }
+            }))
+            .id(1)
+            .finish();
+        service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(initialize)
+            .await
+            .expect("initialize call")
+            .expect("initialize response");
+
+        let backend = service.inner();
+        // `client_pulls` is intentionally NOT set: this client never pulls.
+        let uri = "file:///never-pulled.ts".parse::<Uri>().unwrap();
+        install_document(backend, &uri, 1, "v1").await;
+        let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
+        diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
+
+        let mut socket = socket;
+        let publish = backend.publish_collected_diagnostics(diags_by_file, &snapshot);
+        let client = async {
+            let mut saw_open_file_push = false;
+            loop {
+                let Ok(Some(request)) =
+                    tokio::time::timeout(Duration::from_millis(500), socket.next()).await
+                else {
+                    break; // stream idle: no further messages
+                };
+                assert_ne!(
+                    request.method(),
+                    "workspace/diagnostic/refresh",
+                    "a client that never pulls must not be asked to re-pull",
+                );
+                if request.method() == "textDocument/publishDiagnostics" {
+                    let params = request
+                        .params()
+                        .expect("publishDiagnostics carries params on every call");
+                    if params["uri"] == json!(uri.to_string())
+                        && params["diagnostics"]
+                            .as_array()
+                            .is_some_and(|items| !items.is_empty())
+                    {
+                        saw_open_file_push = true;
+                    }
+                }
+            }
+            assert!(
+                saw_open_file_push,
+                "open-file diagnostics must still push when the client never pulls",
+            );
+        };
+
+        tokio::join!(publish, client);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn did_open_clears_push_diagnostics_when_client_pulls() {
+        use futures::{SinkExt, StreamExt};
+        use tower_lsp_server::jsonrpc::Response;
+
+        let (mut service, mut socket) = LspService::build(FallowLspServer::new).finish();
+
+        let initialize = Request::build("initialize")
+            .params(json!({
+                "capabilities": {
+                    "workspace": {
+                        "diagnostics": {
+                            "refreshSupport": true
+                        }
+                    }
+                }
+            }))
+            .id(1)
+            .finish();
+        service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(initialize)
+            .await
+            .expect("initialize call")
+            .expect("initialize response");
+
+        let uri = "file:///opened-after-push.ts".parse::<Uri>().unwrap();
+        let backend = service.inner();
+        // Simulate a client that already pulled so did_open clears + refreshes.
+        backend.client_pulls.store(true, Ordering::SeqCst);
+        let did_open = backend.did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem::new(
+                uri.clone(),
+                "typescript".to_string(),
+                3,
+                "export const value = 1;".to_string(),
+            ),
+        });
+        let client = async {
+            let request = tokio::time::timeout(Duration::from_millis(500), socket.next())
+                .await
+                .expect("publishDiagnostics clear must arrive within timeout")
+                .expect("ClientSocket stream ended before yielding the clear");
+            assert_eq!(request.method(), "textDocument/publishDiagnostics");
+            let params = request
+                .params()
+                .expect("publishDiagnostics carries params on every call");
+            assert_eq!(params["uri"], json!(uri.to_string()));
+            assert_eq!(params["version"], json!(3));
+            assert_eq!(params["diagnostics"], json!([]));
+
+            let request = tokio::time::timeout(Duration::from_millis(500), socket.next())
+                .await
+                .expect("workspace diagnostic refresh must arrive within timeout")
+                .expect("ClientSocket stream ended before yielding the refresh");
+            assert_eq!(request.method(), "workspace/diagnostic/refresh");
+            let id = request
+                .id()
+                .expect("workspace diagnostic refresh is a request")
+                .clone();
+            socket
+                .send(Response::from_ok(id, json!(null)))
+                .await
+                .expect("refresh response should send");
+        };
+
+        tokio::join!(did_open, client);
+
+        assert!(backend.documents.read().await.contains_key(&uri));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn text_document_diagnostic_returns_cached_diagnostics_after_open_refresh() {
+        let (mut service, _) = LspService::build(FallowLspServer::new).finish();
+
+        let initialize = Request::build("initialize")
+            .params(json!({
+                "capabilities": {
+                    "workspace": {
+                        "diagnostics": {
+                            "refreshSupport": true
+                        }
+                    }
+                }
+            }))
+            .id(1)
+            .finish();
+        service
+            .ready()
+            .await
+            .expect("service ready")
+            .call(initialize)
+            .await
+            .expect("initialize call")
+            .expect("initialize response");
+
+        let backend = service.inner();
+        let uri = "file:///cached-after-open.ts".parse::<Uri>().unwrap();
+        backend
+            .cached_diagnostics
+            .write()
+            .await
+            .insert(uri.clone(), vec![make_diagnostic()]);
+        backend.documents.write().await.insert(
+            uri.clone(),
+            DocumentState {
+                version: 1,
+                text: "export const value = 1;".to_string(),
+            },
+        );
+
+        let diagnostics = Request::build("textDocument/diagnostic")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri.to_string()
+                },
+                "identifier": "fallow"
+            }))
+            .id(2)
+            .finish();
+        let response = service.ready().await;
+        let response = response
+            .expect("service should be ready")
+            .call(diagnostics)
+            .await
+            .expect("diagnostic request should be handled")
+            .expect("diagnostic request should return a response");
+
+        let result = response.result().expect("diagnostic response should be ok");
+        assert_eq!(result["kind"], json!("full"));
+        assert_eq!(result["items"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// Write a JSON-RPC message with LSP `Content-Length` framing.
+    async fn write_lsp_message<W: tokio::io::AsyncWrite + Unpin>(
+        writer: &mut W,
+        value: &serde_json::Value,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let body = serde_json::to_string(value).expect("serialize message");
+        writer
+            .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
+            .await
+            .expect("write header");
+        writer.write_all(body.as_bytes()).await.expect("write body");
+        writer.flush().await.expect("flush");
+    }
+
+    /// Read one `Content-Length`-framed JSON-RPC message off the wire.
+    async fn read_lsp_message<R: tokio::io::AsyncBufRead + Unpin>(
+        reader: &mut R,
+    ) -> serde_json::Value {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line).await.expect("read header line");
+            assert_ne!(read, 0, "stream closed before a full message arrived");
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                break;
+            }
+            if let Some(rest) = trimmed.strip_prefix("Content-Length:") {
+                content_length = rest.trim().parse().expect("parse content-length");
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).await.expect("read body");
+        serde_json::from_slice(&body).expect("parse json-rpc body")
+    }
+
+    /// Reply to a server-to-client request with an empty `result`.
+    async fn respond_ok<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, id: i64) {
+        write_lsp_message(
+            writer,
+            &json!({ "jsonrpc": "2.0", "id": id, "result": null }),
+        )
+        .await;
+    }
+
+    /// Drain messages until the response to `id` arrives, auto-acking any
+    /// server-to-client request seen along the way (e.g. `workspace/codeLens/refresh`),
+    /// which `tower-lsp-server` awaits a reply to before the analysis can finish.
+    async fn pump_to_response<
+        R: tokio::io::AsyncBufRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    >(
+        reader: &mut R,
+        writer: &mut W,
+        id: i64,
+    ) -> serde_json::Value {
+        loop {
+            let message = read_lsp_message(reader).await;
+            let method = message.get("method").and_then(serde_json::Value::as_str);
+            let message_id = message.get("id").and_then(serde_json::Value::as_i64);
+            match (method, message_id) {
+                (Some(_), Some(request_id)) => respond_ok(writer, request_id).await,
+                (None, Some(response_id)) if response_id == id => return message,
+                _ => {}
+            }
+        }
+    }
+
+    /// Drain messages until the server sends a request with `method`, auto-acking
+    /// every other server-to-client request. Returns the target request's `id`.
+    async fn pump_to_request<
+        R: tokio::io::AsyncBufRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    >(
+        reader: &mut R,
+        writer: &mut W,
+        method: &str,
+    ) -> i64 {
+        loop {
+            let message = read_lsp_message(reader).await;
+            let msg_method = message.get("method").and_then(serde_json::Value::as_str);
+            let Some(message_id) = message.get("id").and_then(serde_json::Value::as_i64) else {
+                continue; // notification
+            };
+            if msg_method == Some(method) {
+                return message_id;
+            }
+            if msg_method.is_some() {
+                respond_ok(writer, message_id).await; // unrelated server-to-client request
+            }
+        }
+    }
+
+    // Exercises the REAL `Server::serve` loop + LSP codec over duplex byte
+    // streams (the stdin/stdout path), not the `ClientSocket` backend the other
+    // tests use. It responds to the server-to-client `workspace/diagnostic/refresh`
+    // request, proving the fire-and-forget refresh survives the wire round-trip
+    // once a client has actually pulled. Guards against the regression a codex
+    // smoke caught: a refresh that the backend-level tests see but that never
+    // reaches the real wire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_emits_workspace_diagnostic_refresh_over_stdio_after_pull() {
+        use tokio::io::BufReader;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().canonicalize().expect("canonical root");
+        write_inline_complexity_fixture(&root);
+        // Build file URIs the cross-platform way (Windows drive letters / encoding),
+        // matching how the server round-trips them via `to_file_path`.
+        let root_uri = Uri::from_file_path(&root)
+            .expect("root file uri")
+            .to_string();
+        let file_uri = Uri::from_file_path(root.join("src/index.ts"))
+            .expect("file uri")
+            .to_string();
+
+        let (mut client_tx, server_rx) = tokio::io::duplex(64 * 1024);
+        let (server_tx, client_rx) = tokio::io::duplex(64 * 1024);
+        let mut reader = BufReader::new(client_rx);
+
+        let (service, socket) = LspService::build(FallowLspServer::new).finish();
+        let server = tokio::spawn(async move {
+            Server::new(server_rx, server_tx, socket)
+                .serve(service)
+                .await;
+        });
+
+        let exchange = async {
+            write_lsp_message(
+                &mut client_tx,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "rootUri": root_uri,
+                        "capabilities": {
+                            "workspace": { "diagnostics": { "refreshSupport": true } }
+                        }
+                    }
+                }),
+            )
+            .await;
+            let init = pump_to_response(&mut reader, &mut client_tx, 1).await;
+            assert!(
+                init["result"]["capabilities"]["diagnosticProvider"].is_object(),
+                "pull provider must be advertised to refresh-capable clients",
+            );
+
+            // Pull BEFORE `initialized` so the server registers a real pull
+            // (state is already `Initialized` once the initialize response is sent).
+            // The first analysis then runs pull-aware and must emit the refresh,
+            // which keeps this to a single analysis and avoids racing the guard.
+            write_lsp_message(
+                &mut client_tx,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "textDocument/diagnostic",
+                    "params": {
+                        "textDocument": { "uri": file_uri },
+                        "identifier": "fallow"
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(
+                pump_to_response(&mut reader, &mut client_tx, 2).await["result"]["kind"],
+                json!("full"),
+            );
+
+            // `initialized` triggers analysis; with the client already pulling, the
+            // server must emit `workspace/diagnostic/refresh` over the real wire.
+            write_lsp_message(
+                &mut client_tx,
+                &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+            )
+            .await;
+            let refresh_id =
+                pump_to_request(&mut reader, &mut client_tx, "workspace/diagnostic/refresh").await;
+            respond_ok(&mut client_tx, refresh_id).await;
+        };
+
+        tokio::time::timeout(Duration::from_secs(30), exchange)
+            .await
+            .expect("server must emit workspace/diagnostic/refresh after a pull");
+
+        drop(client_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn stale_clearing_skips_uri_when_live_version_advanced() {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///clearing.ts").unwrap();
+        let uri = "file:///clearing.ts".parse::<Uri>().unwrap();
         install_document(backend, &uri, 1, "v1").await;
         let snapshot_v1: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
 
-        let mut first_run: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut first_run: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         first_run.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(first_run, &snapshot_v1)
@@ -2777,7 +3509,7 @@ export function choose(value: number): string {
 
         install_document(backend, &uri, 2, "v2").await;
 
-        let empty: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let empty: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         backend
             .publish_collected_diagnostics(empty, &snapshot_v1)
             .await;
@@ -2798,12 +3530,12 @@ export function choose(value: number): string {
         let (service, _) = LspService::build(FallowLspServer::new).finish();
         let backend = service.inner();
 
-        let uri = Url::parse("file:///tracked.ts").unwrap();
+        let uri = "file:///tracked.ts".parse::<Uri>().unwrap();
         install_document(backend, &uri, 1, "v1").await;
         let snapshot: VersionSnapshot = std::iter::once((uri.clone(), 1)).collect();
         install_document(backend, &uri, 2, "v2").await;
 
-        let mut diags_by_file: FxHashMap<Url, Vec<Diagnostic>> = FxHashMap::default();
+        let mut diags_by_file: FxHashMap<Uri, Vec<Diagnostic>> = FxHashMap::default();
         diags_by_file.insert(uri.clone(), vec![make_diagnostic()]);
         backend
             .publish_collected_diagnostics(diags_by_file, &snapshot)
