@@ -1842,8 +1842,8 @@ mod tests {
     fn builtin_plugin_count_is_expected() {
         let plugins = registry::builtin::create_builtin_plugins();
         assert!(
-            plugins.len() >= 80,
-            "expected at least 80 built-in plugins, got {}",
+            plugins.len() >= 110,
+            "expected at least 110 built-in plugins, got {}",
             plugins.len()
         );
     }
