@@ -791,7 +791,7 @@ Fallow is not an AI assistant. It is the deterministic codebase intelligence lay
 
 ## Performance
 
-Benchmarked on real open-source projects, cold runs (no cache) so both tools work from scratch, median of 5 runs with 2 warmups. fallow 2.90.0, knip 5.87.0 and 6.6.1, Apple M5, Node 22. Fastest tool per row in bold.
+Benchmarked on real open-source projects, cold runs (no cache) so both tools work from scratch, median of 5 runs with 2 warmups. fallow 2.91.0, knip 5.87.0 and 6.6.1, Apple M5, Node 22. Fastest tool per row in bold.
 
 ### Dead code: fallow vs knip
 
