@@ -565,27 +565,8 @@ fn execute_health_inner(
         .as_ref()
         .is_some_and(|output| !output.coverage.report.is_empty());
 
-    let baseline_active = opts.baseline.is_some() || opts.save_baseline.is_some();
-    let action_opts = if baseline_active {
-        crate::health_types::HealthActionOptions {
-            omit_suppress_line: true,
-            omit_reason: Some("baseline-active"),
-        }
-    } else if !config.health.suggest_inline_suppression {
-        crate::health_types::HealthActionOptions {
-            omit_suppress_line: true,
-            omit_reason: Some("config-disabled"),
-        }
-    } else {
-        crate::health_types::HealthActionOptions::default()
-    };
-    let action_ctx = crate::health_types::HealthActionContext {
-        opts: action_opts,
-        max_cyclomatic_threshold: max_cyclomatic,
-        max_cognitive_threshold: max_cognitive,
-        max_crap_threshold: max_crap,
-        crap_refactor_band: config.health.crap_refactor_band,
-    };
+    let action_ctx =
+        build_health_action_context(opts, &config, max_cyclomatic, max_cognitive, max_crap);
 
     let grouping = if let Some(ref resolver) = group_resolver {
         Some(grouping::build_health_grouping(
@@ -691,6 +672,36 @@ fn execute_health_inner(
         coverage_gaps_has_findings,
         should_fail_on_coverage_gaps: enforce_coverage_gaps,
     })
+}
+
+fn build_health_action_context(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    max_cyclomatic: u16,
+    max_cognitive: u16,
+    max_crap: f64,
+) -> crate::health_types::HealthActionContext {
+    let baseline_active = opts.baseline.is_some() || opts.save_baseline.is_some();
+    let action_opts = if baseline_active {
+        crate::health_types::HealthActionOptions {
+            omit_suppress_line: true,
+            omit_reason: Some("baseline-active"),
+        }
+    } else if !config.health.suggest_inline_suppression {
+        crate::health_types::HealthActionOptions {
+            omit_suppress_line: true,
+            omit_reason: Some("config-disabled"),
+        }
+    } else {
+        crate::health_types::HealthActionOptions::default()
+    };
+    crate::health_types::HealthActionContext {
+        opts: action_opts,
+        max_cyclomatic_threshold: max_cyclomatic,
+        max_cognitive_threshold: max_cognitive,
+        max_crap_threshold: max_crap,
+        crap_refactor_band: config.health.crap_refactor_band,
+    }
 }
 
 fn prepare_health_scope<'a>(
