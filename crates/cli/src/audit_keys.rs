@@ -774,135 +774,176 @@ pub(super) fn annotate_dead_code_json(
     root: &Path,
     base: &FxHashSet<String>,
 ) {
-    annotate_issue_array(
+    let mut annotator = DeadCodeJsonAnnotator {
         json,
-        "unused_files",
-        results.unused_files.iter().map(|item| {
-            issue_was_introduced(
-                &format!("unused-file:{}", relative_key_path(&item.file.path, root)),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "unused_exports",
-        results.unused_exports.iter().map(|item| {
-            issue_was_introduced(
-                &format!(
-                    "unused-export:{}:{}",
-                    relative_key_path(&item.export.path, root),
-                    item.export.export_name
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "unused_types",
-        results.unused_types.iter().map(|item| {
-            issue_was_introduced(
-                &format!(
-                    "unused-type:{}:{}",
-                    relative_key_path(&item.export.path, root),
-                    item.export.export_name
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "private_type_leaks",
-        results.private_type_leaks.iter().map(|item| {
-            issue_was_introduced(
-                &format!(
-                    "private-type-leak:{}:{}:{}",
-                    relative_key_path(&item.leak.path, root),
-                    item.leak.export_name,
-                    item.leak.type_name
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_dependency_json(json, results, root, base);
-    annotate_member_json(json, results, root, base);
-    annotate_issue_array(
-        json,
-        "unresolved_imports",
-        results.unresolved_imports.iter().map(|item| {
-            issue_was_introduced(
-                &format!(
-                    "unresolved-import:{}:{}",
-                    relative_key_path(&item.import.path, root),
-                    item.import.specifier
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "unlisted_dependencies",
-        results
-            .unlisted_dependencies
-            .iter()
-            .map(|item| issue_was_introduced(&unlisted_dependency_key(&item.dep, root), base)),
-    );
-    annotate_issue_array(
-        json,
-        "duplicate_exports",
-        results.duplicate_exports.iter().map(|item| {
-            let mut locations: Vec<String> = item
-                .export
-                .locations
-                .iter()
-                .map(|loc| relative_key_path(&loc.path, root))
-                .collect();
-            locations.sort();
-            locations.dedup();
-            issue_was_introduced(
-                &format!(
-                    "duplicate-export:{}:{}",
-                    item.export.export_name,
-                    locations.join("|")
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "type_only_dependencies",
-        results.type_only_dependencies.iter().map(|item| {
-            issue_was_introduced(
-                &format!(
-                    "type-only-dependency:{}:{}",
-                    relative_key_path(&item.dep.path, root),
-                    item.dep.package_name
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_issue_array(
-        json,
-        "test_only_dependencies",
-        results.test_only_dependencies.iter().map(|item| {
-            issue_was_introduced(
-                &format!(
-                    "test-only-dependency:{}:{}",
-                    relative_key_path(&item.dep.path, root),
-                    item.dep.package_name
-                ),
-                base,
-            )
-        }),
-    );
-    annotate_graph_json(json, results, root, base);
-    annotate_catalog_json(json, results, root, base);
+        results,
+        root,
+        base,
+    };
+    annotator.annotate_file_symbols();
+    annotator.annotate_dependencies();
+    annotator.annotate_members();
+    annotator.annotate_imports_and_exports();
+    annotator.annotate_graph();
+    annotator.annotate_catalog();
+}
+
+struct DeadCodeJsonAnnotator<'a> {
+    json: &'a mut serde_json::Value,
+    results: &'a fallow_core::results::AnalysisResults,
+    root: &'a Path,
+    base: &'a FxHashSet<String>,
+}
+
+impl DeadCodeJsonAnnotator<'_> {
+    fn annotate_file_symbols(&mut self) {
+        annotate_issue_array(
+            self.json,
+            "unused_files",
+            self.results.unused_files.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "unused-file:{}",
+                        relative_key_path(&item.file.path, self.root)
+                    ),
+                    self.base,
+                )
+            }),
+        );
+        annotate_issue_array(
+            self.json,
+            "unused_exports",
+            self.results.unused_exports.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "unused-export:{}:{}",
+                        relative_key_path(&item.export.path, self.root),
+                        item.export.export_name
+                    ),
+                    self.base,
+                )
+            }),
+        );
+        annotate_issue_array(
+            self.json,
+            "unused_types",
+            self.results.unused_types.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "unused-type:{}:{}",
+                        relative_key_path(&item.export.path, self.root),
+                        item.export.export_name
+                    ),
+                    self.base,
+                )
+            }),
+        );
+        annotate_issue_array(
+            self.json,
+            "private_type_leaks",
+            self.results.private_type_leaks.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "private-type-leak:{}:{}:{}",
+                        relative_key_path(&item.leak.path, self.root),
+                        item.leak.export_name,
+                        item.leak.type_name
+                    ),
+                    self.base,
+                )
+            }),
+        );
+    }
+
+    fn annotate_dependencies(&mut self) {
+        annotate_dependency_json(self.json, self.results, self.root, self.base);
+        annotate_issue_array(
+            self.json,
+            "type_only_dependencies",
+            self.results.type_only_dependencies.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "type-only-dependency:{}:{}",
+                        relative_key_path(&item.dep.path, self.root),
+                        item.dep.package_name
+                    ),
+                    self.base,
+                )
+            }),
+        );
+        annotate_issue_array(
+            self.json,
+            "test_only_dependencies",
+            self.results.test_only_dependencies.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "test-only-dependency:{}:{}",
+                        relative_key_path(&item.dep.path, self.root),
+                        item.dep.package_name
+                    ),
+                    self.base,
+                )
+            }),
+        );
+    }
+
+    fn annotate_members(&mut self) {
+        annotate_member_json(self.json, self.results, self.root, self.base);
+    }
+
+    fn annotate_imports_and_exports(&mut self) {
+        annotate_issue_array(
+            self.json,
+            "unresolved_imports",
+            self.results.unresolved_imports.iter().map(|item| {
+                issue_was_introduced(
+                    &format!(
+                        "unresolved-import:{}:{}",
+                        relative_key_path(&item.import.path, self.root),
+                        item.import.specifier
+                    ),
+                    self.base,
+                )
+            }),
+        );
+        annotate_issue_array(
+            self.json,
+            "unlisted_dependencies",
+            self.results.unlisted_dependencies.iter().map(|item| {
+                issue_was_introduced(&unlisted_dependency_key(&item.dep, self.root), self.base)
+            }),
+        );
+        annotate_issue_array(
+            self.json,
+            "duplicate_exports",
+            self.results.duplicate_exports.iter().map(|item| {
+                let mut locations: Vec<String> = item
+                    .export
+                    .locations
+                    .iter()
+                    .map(|loc| relative_key_path(&loc.path, self.root))
+                    .collect();
+                locations.sort();
+                locations.dedup();
+                issue_was_introduced(
+                    &format!(
+                        "duplicate-export:{}:{}",
+                        item.export.export_name,
+                        locations.join("|")
+                    ),
+                    self.base,
+                )
+            }),
+        );
+    }
+
+    fn annotate_graph(&mut self) {
+        annotate_graph_json(self.json, self.results, self.root, self.base);
+    }
+
+    fn annotate_catalog(&mut self) {
+        annotate_catalog_json(self.json, self.results, self.root, self.base);
+    }
 }
 
 fn annotate_dependency_json(
