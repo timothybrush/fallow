@@ -1181,6 +1181,54 @@ mod tests {
     }
 
     #[test]
+    fn analyze_args_debug_includes_non_secret_options() {
+        let args = AnalyzeArgs {
+            runtime_coverage: Some(PathBuf::from("coverage-final.json")),
+            cloud: true,
+            api_key: Some("fallow_live_secret_token_value".to_owned()),
+            api_endpoint: Some("https://api.example.test".to_owned()),
+            repo: Some("acme/web".to_owned()),
+            project_id: Some("apps/web".to_owned()),
+            coverage_period: 14,
+            environment: Some("production".to_owned()),
+            commit_sha: Some("abc123".to_owned()),
+            production: true,
+            min_invocations_hot: 250,
+            min_observation_volume: Some(50),
+            low_traffic_threshold: Some(0.25),
+            top: Some(5),
+            blast_radius: true,
+            importance: true,
+        };
+
+        let formatted = format!("{args:?}");
+
+        assert!(!formatted.contains("fallow_live_secret_token_value"));
+        for expected in [
+            "runtime_coverage: Some(\"coverage-final.json\")",
+            "cloud: true",
+            "api_endpoint: Some(\"https://api.example.test\")",
+            "repo: Some(\"acme/web\")",
+            "project_id: Some(\"apps/web\")",
+            "coverage_period: 14",
+            "environment: Some(\"production\")",
+            "commit_sha: Some(\"abc123\")",
+            "production: true",
+            "min_invocations_hot: 250",
+            "min_observation_volume: Some(50)",
+            "low_traffic_threshold: Some(0.25)",
+            "top: Some(5)",
+            "blast_radius: true",
+            "importance: true",
+        ] {
+            assert!(
+                formatted.contains(expected),
+                "missing {expected:?} in {formatted}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_output_format_accepts_only_json_and_human() {
         assert!(validate_output_format(OutputFormat::Json).is_ok());
         assert!(validate_output_format(OutputFormat::Human).is_ok());
