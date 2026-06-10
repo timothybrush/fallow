@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.92.0] - 2026-06-10
+## [2.92.1] - 2026-06-10
 
 ### Added
 
@@ -2931,8 +2931,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.92.0...HEAD
-[2.92.0]: https://github.com/fallow-rs/fallow/compare/v2.91.0...v2.92.0
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.92.1...HEAD
+[2.92.1]: https://github.com/fallow-rs/fallow/compare/v2.91.0...v2.92.1
 [2.91.0]: https://github.com/fallow-rs/fallow/compare/v2.90.0...v2.91.0
 [2.90.0]: https://github.com/fallow-rs/fallow/compare/v2.89.0...v2.90.0
 [2.89.0]: https://github.com/fallow-rs/fallow/compare/v2.88.3...v2.89.0

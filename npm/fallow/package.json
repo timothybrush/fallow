@@ -1,6 +1,6 @@
 {
   "name": "fallow",
-  "version": "2.92.0",
+  "version": "2.92.1",
   "description": "Deterministic codebase intelligence for TypeScript and JavaScript. Quality, risk, architecture, dependencies, duplication, and safe cleanup evidence for humans, CI, and agents. Optional runtime intelligence layer (Fallow Runtime) adds production execution evidence. Rust-native, sub-second, zero-config framework support.",
   "license": "MIT",
   "repository": {
@@ -83,13 +83,13 @@
     "@tanstack/intent": "0.0.41"
   },
   "optionalDependencies": {
-    "@fallow-cli/darwin-arm64": "2.92.0",
-    "@fallow-cli/darwin-x64": "2.92.0",
-    "@fallow-cli/linux-x64-gnu": "2.92.0",
-    "@fallow-cli/linux-arm64-gnu": "2.92.0",
-    "@fallow-cli/linux-x64-musl": "2.92.0",
-    "@fallow-cli/linux-arm64-musl": "2.92.0",
-    "@fallow-cli/win32-arm64-msvc": "2.92.0",
-    "@fallow-cli/win32-x64-msvc": "2.92.0"
+    "@fallow-cli/darwin-arm64": "2.92.1",
+    "@fallow-cli/darwin-x64": "2.92.1",
+    "@fallow-cli/linux-x64-gnu": "2.92.1",
+    "@fallow-cli/linux-arm64-gnu": "2.92.1",
+    "@fallow-cli/linux-x64-musl": "2.92.1",
+    "@fallow-cli/linux-arm64-musl": "2.92.1",
+    "@fallow-cli/win32-arm64-msvc": "2.92.1",
+    "@fallow-cli/win32-x64-msvc": "2.92.1"
   }
 }
