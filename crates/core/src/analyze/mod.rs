@@ -90,6 +90,16 @@ use unused_overrides::{
 #[doc(hidden)]
 pub type LineOffsetsMap<'a> = FxHashMap<FileId, &'a [u32]>;
 
+struct SecurityDetectionContext<'a, 'm> {
+    graph: &'a ModuleGraph,
+    modules: &'a [ModuleInfo],
+    config: &'a ResolvedConfig,
+    suppressions: &'a crate::suppress::SuppressionContext<'m>,
+    line_offsets_by_file: &'a LineOffsetsMap<'m>,
+    declared_deps: &'a FxHashSet<String>,
+    request_receivers: &'a FxHashSet<String>,
+}
+
 /// Convert a byte offset to (line, col) using pre-computed line offsets.
 /// Falls back to `(1, byte_offset)` when no line table is available.
 #[doc(hidden)]
@@ -834,103 +844,18 @@ pub fn find_dead_code_full(
         .cloned()
         .collect::<FxHashSet<_>>();
 
-    if config.rules.security_client_server_leak != Severity::Off {
-        let (security_findings, stats) =
-            security::find_security_findings(graph, modules, &suppressions, &line_offsets_by_file);
-        results.security_findings = security_findings;
-        results.security_unresolved_edge_files = stats.client_files_with_unresolved_edges;
-    }
-
-    if config.rules.security_sink != Severity::Off {
-        let categories = config.security.categories.as_ref();
-        let filter = security::CategoryFilter::new(
-            categories.and_then(|c| c.include.clone()),
-            categories.and_then(|c| c.exclude.clone()),
-        );
-        // Framework-scoped catalogue rows (#861) gate on the active framework via
-        // the project's declared dependency set: the same dependency universe the
-        // plugin system activates on (root package.json + every workspace
-        // package.json). Built once here and passed to the detector.
-        let (sink_findings, sink_stats) = security::find_tainted_sinks(
+    populate_security_findings(
+        &SecurityDetectionContext {
             graph,
             modules,
-            &suppressions,
-            &line_offsets_by_file,
-            &declared_deps,
-            &security::TaintedSinkContext {
-                category_filter: &filter,
-                request_receivers: &request_receivers,
-                root: &config.root,
-            },
-        );
-        results.security_findings.extend(sink_findings);
-        results.security_unresolved_callee_sites = sink_stats.sinks_skipped_dynamic_callee;
-        results.security_unresolved_callee_diagnostics = sink_stats.unresolved_callee_diagnostics;
-        results
-            .security_findings
-            .extend(security::find_hardcoded_secret_candidates(
-                graph,
-                modules,
-                &suppressions,
-                &line_offsets_by_file,
-                &filter,
-                &config.root,
-            ));
-    }
-
-    // Reachability-weighted ranking (issue #860): order security candidates so
-    // those reachable from a runtime/application entry point with a wider
-    // blast radius surface above isolated helpers/scripts. Reuses the existing
-    // graph reachability + reverse-dep fan-in; pairs optionally with boundary
-    // crossings already computed this run. Issue #884 adds a dead-code cross-link
-    // before ranking so removable sink candidates sort below active-code peers.
-    if !results.security_findings.is_empty() {
-        security::annotate_dead_code_cross_links(
-            graph,
-            modules,
-            &line_offsets_by_file,
-            &results.unused_files,
-            &results.unused_exports,
-            &mut results.security_findings,
-        );
-        // Map each boundary-violation file (importer or imported side) to the
-        // (from_zone, to_zone) it crosses, so security ranking can flag
-        // `crosses_boundary` AND fill the candidate's architecture-zone slot
-        // (issue #900). `boundary_violations` is not yet path-sorted here (the
-        // output sort runs later), so for a file participating in more than one
-        // zone crossing pick the lexicographically smallest pair, which is
-        // independent of insertion order and therefore stable across runs.
-        let mut boundary_crossings: rustc_hash::FxHashMap<std::path::PathBuf, (String, String)> =
-            rustc_hash::FxHashMap::default();
-        for violation in &results.boundary_violations {
-            let zones = (
-                violation.violation.from_zone.clone(),
-                violation.violation.to_zone.clone(),
-            );
-            for path in [
-                violation.violation.from_path.clone(),
-                violation.violation.to_path.clone(),
-            ] {
-                boundary_crossings
-                    .entry(path)
-                    .and_modify(|existing| {
-                        if zones < *existing {
-                            *existing = zones.clone();
-                        }
-                    })
-                    .or_insert_with(|| zones.clone());
-            }
-        }
-        security::rank_security_findings(
-            graph,
-            modules,
-            &line_offsets_by_file,
-            &declared_deps,
-            &request_receivers,
-            &boundary_crossings,
-            &mut results.security_findings,
-        );
-    }
+            config,
+            suppressions: &suppressions,
+            line_offsets_by_file: &line_offsets_by_file,
+            declared_deps: &declared_deps,
+            request_receivers: &request_receivers,
+        },
+        &mut results,
+    );
 
     if config.rules.stale_suppressions != Severity::Off {
         results
@@ -994,6 +919,117 @@ pub fn find_dead_code_full(
     results.sort();
 
     results
+}
+
+fn populate_security_findings(
+    ctx: &SecurityDetectionContext<'_, '_>,
+    results: &mut AnalysisResults,
+) {
+    if ctx.config.rules.security_client_server_leak != Severity::Off {
+        let (security_findings, stats) = security::find_security_findings(
+            ctx.graph,
+            ctx.modules,
+            ctx.suppressions,
+            ctx.line_offsets_by_file,
+        );
+        results.security_findings = security_findings;
+        results.security_unresolved_edge_files = stats.client_files_with_unresolved_edges;
+    }
+
+    if ctx.config.rules.security_sink != Severity::Off {
+        populate_tainted_sink_findings(ctx, results);
+    }
+
+    if !results.security_findings.is_empty() {
+        annotate_security_findings(ctx, results);
+    }
+}
+
+fn populate_tainted_sink_findings(
+    ctx: &SecurityDetectionContext<'_, '_>,
+    results: &mut AnalysisResults,
+) {
+    let categories = ctx.config.security.categories.as_ref();
+    let filter = security::CategoryFilter::new(
+        categories.and_then(|c| c.include.clone()),
+        categories.and_then(|c| c.exclude.clone()),
+    );
+    let (sink_findings, sink_stats) = security::find_tainted_sinks(
+        ctx.graph,
+        ctx.modules,
+        ctx.suppressions,
+        ctx.line_offsets_by_file,
+        ctx.declared_deps,
+        &security::TaintedSinkContext {
+            category_filter: &filter,
+            request_receivers: ctx.request_receivers,
+            root: &ctx.config.root,
+        },
+    );
+    results.security_findings.extend(sink_findings);
+    results.security_unresolved_callee_sites = sink_stats.sinks_skipped_dynamic_callee;
+    results.security_unresolved_callee_diagnostics = sink_stats.unresolved_callee_diagnostics;
+    results
+        .security_findings
+        .extend(security::find_hardcoded_secret_candidates(
+            ctx.graph,
+            ctx.modules,
+            ctx.suppressions,
+            ctx.line_offsets_by_file,
+            &filter,
+            &ctx.config.root,
+        ));
+}
+
+fn annotate_security_findings(
+    ctx: &SecurityDetectionContext<'_, '_>,
+    results: &mut AnalysisResults,
+) {
+    security::annotate_dead_code_cross_links(
+        ctx.graph,
+        ctx.modules,
+        ctx.line_offsets_by_file,
+        &results.unused_files,
+        &results.unused_exports,
+        &mut results.security_findings,
+    );
+    let boundary_crossings = boundary_crossings_by_file(&results.boundary_violations);
+    security::rank_security_findings(
+        ctx.graph,
+        ctx.modules,
+        ctx.line_offsets_by_file,
+        ctx.declared_deps,
+        ctx.request_receivers,
+        &boundary_crossings,
+        &mut results.security_findings,
+    );
+}
+
+fn boundary_crossings_by_file(
+    boundary_violations: &[BoundaryViolationFinding],
+) -> FxHashMap<std::path::PathBuf, (String, String)> {
+    let mut boundary_crossings: FxHashMap<std::path::PathBuf, (String, String)> =
+        FxHashMap::default();
+    for violation in boundary_violations {
+        let zones = (
+            violation.violation.from_zone.clone(),
+            violation.violation.to_zone.clone(),
+        );
+        for path in [
+            violation.violation.from_path.clone(),
+            violation.violation.to_path.clone(),
+        ] {
+            boundary_crossings
+                .entry(path)
+                .and_modify(|existing| {
+                    if zones < *existing {
+                        *existing = zones.clone();
+                    }
+                })
+                .or_insert_with(|| zones.clone());
+        }
+    }
+    boundary_crossings
 }
 
 #[expect(
