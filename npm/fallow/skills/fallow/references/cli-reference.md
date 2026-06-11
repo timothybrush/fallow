@@ -502,7 +502,7 @@ fallow health --format json --quiet --trend
 {
   "kind": "health",
   "schema_version": 7,
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 32,
   "summary": {
     "files_analyzed": 482,
@@ -893,7 +893,7 @@ fallow audit \
 {
   "kind": "audit",
   "schema_version": 7,
-  "version": "2.92.1",
+  "version": "2.93.0",
   "command": "audit",
   "verdict": "fail",
   "changed_files_count": 12,
@@ -967,7 +967,7 @@ fallow flags --format json --quiet --workspace my-package
 ```json
 {
   "schema_version": 7,
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 116,
   "feature_flags": [],
   "total_flags": 0
@@ -1073,7 +1073,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1102,7 +1102,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1201,13 +1201,23 @@ MCP equivalent: `fallow_explain` with required `issue_type`.
 
 ---
 
-## `schema`: CLI Introspection
+## `schema`: Capability Manifest
 
-Dumps the full CLI interface definition as machine-readable JSON.
+Dumps fallow's complete capability manifest as machine-readable JSON (always JSON, regardless of `--format`). The single source of truth for agent introspection.
 
 ```bash
 fallow schema
 ```
+
+Top-level blocks:
+
+- `manifest_version`: manifest shape discriminator (currently `"1"`).
+- `commands` + `global_flags`: every CLI command and flag, derived live from the CLI definition.
+- `issue_types`: one row per reportable issue type across ALL analyses (dead-code, health, dupes, flags, security). Each row carries `id` (the bare rule id; several rows share one suppression token, e.g. all complexity rules suppress via `complexity`), `rule_id` (SARIF id), `command`, `category`, `filter_flag` (null when none), `fixable`, `suppressible`, `suppress_comment` (copy-pasteable, null when not suppressible), `note`, `license` (`free` | `freemium`), and `docs_url`. Nullable fields are always present (null, never absent).
+- `mcp_tools`: all MCP server tools with `kind` grouping (analysis/trace/fix/introspection/runtime-coverage/composition), one-line description, `key_params` (curated subset; live MCP `list_tools` schemas are authoritative), `license` + `license_note` (the 5 runtime-coverage tools are `freemium`: a single local capture is free, continuous monitoring is paid), and `read_only`.
+- `plugins`: built-in framework plugin count + names, derived live from the registry.
+- `environment_variables`: every user-facing `FALLOW_*` variable (internal plumbing excluded).
+- `output_formats`, `exit_codes`, `severity_levels`, `suppression_comments`.
 
 ---
 
@@ -1551,6 +1561,7 @@ Available on all commands:
 | `FALLOW_AUDIT_BASE` | Pin the `fallow audit` comparison base when `--base` / `--changed-since` is unset (precedence: flag > env > auto-detect). Escape hatch for the agent gate and forks, e.g. `FALLOW_AUDIT_BASE=upstream/main`. When unset, audit auto-detects the `git merge-base` against the branch's upstream or the remote default. A malformed value exits 2. |
 | `FALLOW_AUDIT_CACHE_MAX_AGE_DAYS` | Max age (in days since last reuse or fresh create) of a persistent reusable `fallow audit` base-snapshot worktree cache. Older entries are reclaimed at the top of the next `fallow audit` invocation (default: `30`). Wins over `audit.cacheMaxAgeDays` config field. `0` disables the GC; invalid values silently fall back to config / default. |
 | `FALLOW_UPDATE_CHECK` | Set to `off`, `0`, `false`, `disabled`, or `no` to disable the human-TTY upgrade nudge and its background latest-version check. `DO_NOT_TRACK`, `FALLOW_TELEMETRY_DISABLED`, and CI also suppress it. |
+| `FALLOW_SUGGESTIONS` | Set to `off`, `0`, `false`, `no`, or `disabled` to suppress the top-level `next_steps[]` array of read-only follow-up commands in JSON output (and the human `Next:` line on bare `fallow`). Default on. Inherited by the MCP-spawned CLI, so it disables `next_steps` on MCP responses too. Useful for CI consumers that snapshot-diff raw `--format json`. |
 | `FALLOW_COMMAND` | GitLab CI: command to run (default: `dead-code`). |
 | `FALLOW_FAIL_ON_ISSUES` | GitLab CI: set to `true` to exit 1 if issues found. |
 | `FALLOW_CHANGED_SINCE` | GitLab CI: git ref for incremental analysis. Auto-detected in MR pipelines. |
@@ -1650,7 +1661,7 @@ The HTTP layer mirrors the bash `gh_api_retry` / `curl_retry` helpers: `FALLOW_A
 {
   "kind": "dead-code",
   "schema_version": 7,
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 45,
   "total_issues": 12,
   "entry_points": {
@@ -1810,7 +1821,7 @@ When `--baseline` is used in combined output, the JSON includes a `baseline_delt
 {
   "kind": "dupes",
   "schema_version": 7,
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 82,
   "total_clones": 15,
   "total_lines_duplicated": 230,
@@ -1854,11 +1865,11 @@ When running `fallow` with no subcommand (all analyses), the JSON output combine
 {
   "kind": "combined",
   "schema_version": 7,
-  "version": "2.92.1",
+  "version": "2.93.0",
   "elapsed_ms": 159,
   "check": {
     "schema_version": 7,
-    "version": "2.92.1",
+    "version": "2.93.0",
     "elapsed_ms": 45,
     "total_issues": 12,
     "unused_files": [],

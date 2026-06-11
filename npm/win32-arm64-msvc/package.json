@@ -1,6 +1,6 @@
 {
   "name": "@fallow-cli/win32-arm64-msvc",
-  "version": "2.92.1",
+  "version": "2.93.0",
   "description": "Fallow CLI binary for Windows ARM64 (MSVC)",
   "license": "MIT",
   "repository": {

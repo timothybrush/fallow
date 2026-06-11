@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.93.0] - 2026-06-11
+
 ### Added
 
 - **JSON output now carries a top-level `next_steps[]` array of read-only follow-up commands.** `fallow dead-code`, `health`, `dupes`, bare `fallow`, and `audit` add a `next_steps` array to their `--format json` output (and a one-line `Next:` hint to bare `fallow`'s human output on a TTY), computed from the run's actual findings. Each entry is `{ id, command, reason }`: a stable kebab-case `id` for machine dispatch, a runnable command string, and a short reason. The commands point at fallow's own verification surface that agents and humans rarely discover from the output alone, for example tracing an export before deleting it (`fallow dead-code --trace <file>:<name>`), drilling into a clone (`fallow dupes --trace dup:<fp>`), seeing per-decision-point complexity contributions (`fallow health --complexity-breakdown`), scoping a monorepo to the packages a branch touched, or gating only changed files (`fallow audit`). Two guarantees hold for every entry: the command is never a fix or any other mutating command (fallow surfaces evidence; deciding and applying the change is yours), and the command is runnable as-is with no placeholders. The array is deduplicated, priority-ordered, capped at three, and omitted when empty; it never contributes to `total_issues`. Set `FALLOW_SUGGESTIONS=off` to suppress it (useful for CI that snapshot-diffs raw JSON). Additive-optional field, no schema-version bump; the field rides through the MCP tools unchanged.
@@ -20,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Issue-type filter flags no longer leak `test-only-dependency` findings.** `IssueFilters::apply()` clears every category that was not selected by a single-type filter flag, but the `--unused-deps` clear arm was missing `test_only_dependencies`, so a focused run like `fallow dead-code --unused-files` on a project with a production dependency imported only from test files reported that test-only finding alongside the requested issue type. `--unused-deps` now groups `test-only-dependency` with the other dependency kinds (matching how `type-only-dependency` is handled and how the `--file` scope already cleared all five categories), and the `fallow schema` capability manifest reports `--unused-deps` as the filter flag for the `test-only-dependency` row. (Closes [#1192](https://github.com/fallow-rs/fallow/issues/1192).)
 
 - **The GitLab CI template now runs Bash-only setup blocks through Bash explicitly.** GitLab Runner jobs on Alpine can start `before_script` entries with `/bin/sh`, but the fallow template validated versions, prepared MR scripts, and wrote the analysis runner with Bash-specific syntax. Those blocks now invoke `bash -eo pipefail` explicitly after the dependency-install block installs Bash, so the template no longer depends on the runner's default shell. Thanks [@KudrinOleg](https://github.com/KudrinOleg) for the report. (Closes [#1182](https://github.com/fallow-rs/fallow/issues/1182).)
+
+- **`unused-class-members` no longer fires on Playwright page-object methods reached through an imported fixture-type alias.** When a class instance is exposed lazily behind a getter on a factory class, surfaced through a nested `base.extend(...)` fixture, and the fixture shape is declared via an imported object type alias, methods on the target page-object class were still reported as unused, because callback-side fixture uses were correlated only with locally collected fixture-map aliases. Extraction now emits fixture-type sentinel accesses for imported alias bindings and expands those aliases before correlating Playwright fixture definitions with uses, so a used chain is credited while an actually-unused decorated method on the same class still reports. Recursive expansion across multiple imported alias hops stays conservative. Thanks [@vethman](https://github.com/vethman) for the report. (Closes [#1190](https://github.com/fallow-rs/fallow/issues/1190).)
+
+- **`tsconfig` path aliases no longer surface as unlisted dependencies.** When a bare specifier matched `compilerOptions.paths` but its local alias target was missing, resolution fell through to a package lookup and reported the import (for example `@app/foo`) as an unlisted `package.json` dependency even though it was a project-local alias. Local tsconfig path aliases now resolve before the package fallback, and an alias is marked unresolved only after package imports and workspace-package fallbacks have had a chance to resolve it, so a genuine unlisted scoped package in the same tsconfig-path project still reports.
 
 ## [2.92.1] - 2026-06-10
 
@@ -2945,7 +2951,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.92.1...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.93.0...HEAD
+[2.93.0]: https://github.com/fallow-rs/fallow/compare/v2.92.1...v2.93.0
 [2.92.1]: https://github.com/fallow-rs/fallow/compare/v2.91.0...v2.92.1
 [2.91.0]: https://github.com/fallow-rs/fallow/compare/v2.90.0...v2.91.0
 [2.90.0]: https://github.com/fallow-rs/fallow/compare/v2.89.0...v2.90.0
