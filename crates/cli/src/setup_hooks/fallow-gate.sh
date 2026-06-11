@@ -7,9 +7,11 @@ set -euo pipefail
 # Blocks Claude Code git commit and git push when fallow audit returns verdict fail.
 # Runtime errors fail open with a single stderr notice so skips stay visible.
 #
-# Version floor (FALLOW_GATE_MIN_VERSION, default 2.46.0). Older binaries miss
-# the uncommitted-changes inclusion fix (aabb8e1b) and can silently pass
-# audits that should fail. Set the env var to the empty string to disable.
+# Version floor (FALLOW_GATE_MIN_VERSION, default 2.85.0). The gate passes
+# --gate-marker agent (added in v2.85.0) so Impact can record containment;
+# older binaries reject the flag entirely, which would make every audit fail
+# open. The floor also covers the older uncommitted-changes inclusion fix
+# (aabb8e1b, v2.46.0). Set the env var to the empty string to disable.
 # Floor comparison uses `sort -V`; GNU and BSD agree on plain semver but
 # diverge on prereleases (BSD sorts `2.48.0-alpha.1` ABOVE `2.48.0`, GNU below).
 # If you set a prerelease floor explicitly, verify the behavior on the target OS.
@@ -41,14 +43,14 @@ VERSION_RAW="$("${RUNNER[@]}" --version 2>/dev/null || true)"
 VERSION="${VERSION_RAW#fallow }"
 VERSION="${VERSION%% *}"
 
-MIN_VERSION="${FALLOW_GATE_MIN_VERSION-2.46.0}"
+MIN_VERSION="${FALLOW_GATE_MIN_VERSION-2.85.0}"
 if [ -n "$MIN_VERSION" ] && [ -n "$VERSION" ]; then
   LOWER="$(printf '%s\n%s\n' "$MIN_VERSION" "$VERSION" | sort -V | head -n1)"
   if [ "$LOWER" != "$MIN_VERSION" ]; then
     {
       echo "fallow-gate: blocked: $BIN_DESC is fallow $VERSION, below required $MIN_VERSION."
-      echo "fallow-gate: older binaries miss the uncommitted-changes fix (v2.46.0) and can"
-      echo "fallow-gate: silently pass audits that would otherwise fail."
+      echo "fallow-gate: older binaries reject the --gate-marker flag this gate passes"
+      echo "fallow-gate: (added in fallow v2.85.0), so the audit cannot run."
       echo "fallow-gate: upgrade the fallow on PATH (e.g. npm install -g fallow@latest or"
       echo "fallow-gate: cargo install fallow-cli), or set FALLOW_GATE_MIN_VERSION= to disable."
     } >&2

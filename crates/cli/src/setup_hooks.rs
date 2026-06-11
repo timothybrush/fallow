@@ -1499,7 +1499,7 @@ mod tests {
     fn rendered_script_preserves_correctness_floor() {
         let rendered = rendered_gate_script();
         assert!(
-            rendered.contains("FALLOW_GATE_MIN_VERSION-2.46.0"),
+            rendered.contains("FALLOW_GATE_MIN_VERSION-2.85.0"),
             "enforced floor must stay maintainer-bumped, not installer-pinned; \
              rendered script was:\n{rendered}"
         );
@@ -1543,7 +1543,7 @@ mod tests {
             status.claude.script_version.as_deref(),
             Some(env!("CARGO_PKG_VERSION"))
         );
-        assert_eq!(status.claude.min_version_floor.as_deref(), Some("2.46.0"));
+        assert_eq!(status.claude.min_version_floor.as_deref(), Some("2.85.0"));
     }
 
     #[test]
@@ -1639,7 +1639,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("below required 2.46.0"),
+            stderr.contains("below required 2.85.0"),
             "stderr must mention the required floor; got:\n{stderr}"
         );
         assert!(
