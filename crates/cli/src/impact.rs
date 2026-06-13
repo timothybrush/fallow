@@ -309,6 +309,15 @@ thread_local! {
     /// [`with_test_config_dir`]; unset = fall back to the real config dir.
     static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+
+    /// Per-test CI signal for the record gate. Defaults to `false` so the unit
+    /// tests record into their isolated store EVEN when the suite itself runs on
+    /// CI (GitHub Actions sets `CI` / `GITHUB_ACTIONS`, which `telemetry::is_ci`
+    /// reads); without this, every record-dependent test fails on CI because the
+    /// real `is_ci()` short-circuits `record_*` before any store write. A test
+    /// can flip it true to exercise the CI no-op gate. Thread-local, so it is
+    /// parallel-safe and needs no unsafe env mutation.
+    static TEST_FORCE_CI: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Fallow's per-user config dir. Under test it resolves ONLY the per-test
@@ -322,6 +331,23 @@ fn impact_config_dir() -> Option<PathBuf> {
     #[cfg(not(test))]
     {
         crate::telemetry::config_dir()
+    }
+}
+
+/// Whether this run should be treated as CI for the Impact record gate. In
+/// production it is `telemetry::is_ci()`; under test it reads the per-test
+/// [`TEST_FORCE_CI`] override (default `false`) so the suite records into its
+/// isolated store regardless of the ambient CI env. The store path is ALWAYS
+/// the per-test temp dir under `#[cfg(test)]` (see [`impact_config_dir`]), so
+/// bypassing the CI gate in tests can never touch a real user store.
+fn record_gate_is_ci() -> bool {
+    #[cfg(test)]
+    {
+        TEST_FORCE_CI.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        crate::telemetry::is_ci()
     }
 }
 
@@ -635,7 +661,7 @@ pub fn record_audit_run(root: &Path, summary: &AuditSummary, record: &AuditRunRe
     // baked into a devcontainer/dotfiles image would otherwise start writing
     // per-project files on every CI run (pre-relocation this was emergent from
     // a fresh CI checkout having no in-repo store file; now it is explicit).
-    if crate::telemetry::is_ci() {
+    if record_gate_is_ci() {
         return;
     }
     let mut store = load(root);
@@ -680,7 +706,7 @@ pub fn record_combined_run(
     timestamp: &str,
     attribution: Option<&AttributionInput<'_>>,
 ) {
-    if crate::telemetry::is_ci() {
+    if record_gate_is_ci() {
         return;
     }
     let mut store = load(root);
@@ -2073,6 +2099,31 @@ mod tests {
             store.first_recorded.as_deref(),
             Some("2026-05-29T10:00:00Z")
         );
+    }
+
+    #[test]
+    fn record_is_a_noop_in_ci() {
+        // Impact is local-dev-only: it must never record on CI. The suite itself
+        // runs on CI (where `CI` / `GITHUB_ACTIONS` are set), so the gate uses a
+        // per-test override instead of the ambient env; here we force it true to
+        // prove the production no-op. Without the gate, an enabled project would
+        // record on every CI run.
+        let (_config, dir) = test_env();
+        let root = dir.path();
+        assert!(enable(root));
+        TEST_FORCE_CI.with(|c| c.set(true));
+        record_v1(
+            root,
+            &summary(2, 1, 0),
+            AuditVerdict::Warn,
+            false,
+            None,
+            "2.0.0",
+            "2026-05-29T10:00:00Z",
+        );
+        TEST_FORCE_CI.with(|c| c.set(false));
+        let store = load(root);
+        assert_eq!(store.records.len(), 0, "impact must not record while in CI");
     }
 
     #[test]
