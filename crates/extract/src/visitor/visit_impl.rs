@@ -14,11 +14,11 @@ use crate::{
     MemberAccess, ReExportInfo, RequireCallInfo, VisibilityTag,
 };
 use fallow_types::extract::{
-    CalleeUse, ClassHeritageInfo, LocalTypeDeclaration, PublicSignatureTypeReference,
-    SanitizedSinkArg, SanitizerScope, SecurityControlKind, SecurityControlSite, SecurityUrlShape,
-    SinkArgKind, SinkLiteralValue, SinkObjectProperty, SinkShape, SinkSite,
-    SkippedSecurityCalleeExpressionKind, SkippedSecurityCalleeReason, SkippedSecurityCalleeSite,
-    TaintedBinding,
+    CalleeUse, ClassHeritageInfo, LocalTypeDeclaration, MisplacedDirectiveSite,
+    PublicSignatureTypeReference, SanitizedSinkArg, SanitizerScope, SecurityControlKind,
+    SecurityControlSite, SecurityUrlShape, SinkArgKind, SinkLiteralValue, SinkObjectProperty,
+    SinkShape, SinkSite, SkippedSecurityCalleeExpressionKind, SkippedSecurityCalleeReason,
+    SkippedSecurityCalleeSite, TaintedBinding,
 };
 
 use crate::asset_url::normalize_asset_url;
@@ -2880,6 +2880,29 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                     if let Some(Declaration::FunctionDeclaration(function)) = &export.declaration {
                         self.record_source_returning_function_declaration(function);
                         self.record_sanitizer_function_declaration(function);
+                    }
+                }
+                // Detect MISPLACED `"use client"` / `"use server"`
+                // directives. oxc places honored leading-prologue directives in
+                // `program.directives` (handled above), so any string-literal
+                // expression statement here is by definition NOT in the leading
+                // position: a non-directive statement (an import, a const)
+                // preceded it and the RSC bundler parses the string as an
+                // ordinary expression, silently ignoring it. Match ONLY the two
+                // RSC directive strings; a stray `"use strict"` is harmless.
+                Statement::ExpressionStatement(stmt) => {
+                    if let Expression::StringLiteral(lit) = &stmt.expression {
+                        let is_server = match lit.value.as_str() {
+                            "use server" => Some(true),
+                            "use client" => Some(false),
+                            _ => None,
+                        };
+                        if let Some(is_server) = is_server {
+                            self.misplaced_directives.push(MisplacedDirectiveSite {
+                                is_server,
+                                span_start: stmt.span.start,
+                            });
+                        }
                     }
                 }
                 _ => {}
