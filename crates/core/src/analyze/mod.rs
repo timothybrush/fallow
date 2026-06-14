@@ -16,6 +16,7 @@ mod route_tree;
 mod security;
 mod server_only;
 mod unprovided_inject;
+mod unrendered_component;
 mod unused_catalog;
 mod unused_deps;
 mod unused_exports;
@@ -47,10 +48,11 @@ use fallow_types::output_dead_code::{
     MisplacedDirectiveFinding, MixedClientServerBarrelFinding, PolicyViolationFinding,
     PrivateTypeLeakFinding, ReExportCycleFinding, RouteCollisionFinding, TestOnlyDependencyFinding,
     TypeOnlyDependencyFinding, UnlistedDependencyFinding, UnprovidedInjectFinding,
-    UnresolvedCatalogReferenceFinding, UnresolvedImportFinding, UnusedCatalogEntryFinding,
-    UnusedClassMemberFinding, UnusedDependencyFinding, UnusedDependencyOverrideFinding,
-    UnusedDevDependencyFinding, UnusedEnumMemberFinding, UnusedExportFinding, UnusedFileFinding,
-    UnusedOptionalDependencyFinding, UnusedStoreMemberFinding, UnusedTypeFinding,
+    UnrenderedComponentFinding, UnresolvedCatalogReferenceFinding, UnresolvedImportFinding,
+    UnusedCatalogEntryFinding, UnusedClassMemberFinding, UnusedDependencyFinding,
+    UnusedDependencyOverrideFinding, UnusedDevDependencyFinding, UnusedEnumMemberFinding,
+    UnusedExportFinding, UnusedFileFinding, UnusedOptionalDependencyFinding,
+    UnusedStoreMemberFinding, UnusedTypeFinding,
 };
 
 use crate::results::{AnalysisResults, CircularDependency, CircularDependencyEdge};
@@ -63,6 +65,7 @@ use mixed_barrel::find_mixed_client_server_barrels;
 use re_export_cycles::find_re_export_cycles;
 use route_collision::find_route_collisions;
 use unprovided_inject::find_unprovided_injects;
+use unrendered_component::find_unrendered_components;
 #[expect(
     deprecated,
     reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
@@ -719,57 +722,102 @@ pub fn find_dead_code_full(
 
     populate_pnpm_catalog_findings(config, workspaces, &mut results);
     populate_pnpm_override_findings(config, workspaces, &mut results);
-    populate_invalid_client_export_findings(
-        graph,
-        modules,
-        config,
-        &declared_deps,
-        &suppressions,
-        &line_offsets_by_file,
-        &mut results,
-    );
-    populate_mixed_client_server_barrel_findings(
+    populate_framework_specific_findings(
         graph,
         modules,
         resolved_modules,
         config,
-        &declared_deps,
-        &suppressions,
-        &line_offsets_by_file,
-        &mut results,
-    );
-    populate_misplaced_directive_findings(
-        graph,
-        modules,
-        config,
-        &declared_deps,
-        &suppressions,
-        &line_offsets_by_file,
-        &mut results,
-    );
-    populate_unprovided_inject_findings(
-        graph,
-        modules,
-        resolved_modules,
-        config,
+        workspaces,
         &declared_deps,
         &public_api_entry_points,
         &suppressions,
         &line_offsets_by_file,
         &mut results,
     );
-    populate_nextjs_route_tree_findings(
-        graph,
-        config,
-        workspaces,
-        &declared_deps,
-        &suppressions,
-        &mut results,
-    );
 
     results.sort();
 
     results
+}
+
+/// Run the framework-convention detectors that share the resolved-graph and
+/// dep-gate context: Next.js RSC directives, Vue/Svelte DI and components, and
+/// the App Router route tree. Extracted from `find_dead_code_full` to keep that
+/// orchestrator under the unit-size ceiling; each callee is individually
+/// rule-gated.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the shared resolved-graph + dep-gate context to a fixed set of framework detectors"
+)]
+fn populate_framework_specific_findings(
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    resolved_modules: &[ResolvedModule],
+    config: &ResolvedConfig,
+    workspaces: &[fallow_config::WorkspaceInfo],
+    declared_deps: &FxHashSet<String>,
+    public_api_entry_points: &FxHashSet<FileId>,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    results: &mut AnalysisResults,
+) {
+    populate_invalid_client_export_findings(
+        graph,
+        modules,
+        config,
+        declared_deps,
+        suppressions,
+        line_offsets_by_file,
+        results,
+    );
+    populate_mixed_client_server_barrel_findings(
+        graph,
+        modules,
+        resolved_modules,
+        config,
+        declared_deps,
+        suppressions,
+        line_offsets_by_file,
+        results,
+    );
+    populate_misplaced_directive_findings(
+        graph,
+        modules,
+        config,
+        declared_deps,
+        suppressions,
+        line_offsets_by_file,
+        results,
+    );
+    populate_unprovided_inject_findings(
+        graph,
+        modules,
+        resolved_modules,
+        config,
+        declared_deps,
+        public_api_entry_points,
+        suppressions,
+        line_offsets_by_file,
+        results,
+    );
+    populate_unrendered_component_findings(
+        graph,
+        modules,
+        resolved_modules,
+        config,
+        declared_deps,
+        public_api_entry_points,
+        suppressions,
+        results,
+    );
+    populate_nextjs_route_tree_findings(
+        graph,
+        config,
+        workspaces,
+        declared_deps,
+        suppressions,
+        results,
+    );
 }
 
 /// Populate `invalid_client_exports` when the rule is enabled. Gated on the
@@ -891,6 +939,39 @@ fn populate_unprovided_inject_findings(
     )
     .into_iter()
     .map(UnprovidedInjectFinding::with_actions)
+    .collect();
+}
+
+/// Populate `unrendered_components` when the rule is enabled. Gated on the
+/// project declaring `vue` / `svelte` inside the detector (see
+/// [`find_unrendered_components`]).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the unprovided-inject populate site; threading resolved modules + the public-API entry-point set + the suppression context is intrinsic"
+)]
+fn populate_unrendered_component_findings(
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    resolved_modules: &[ResolvedModule],
+    config: &ResolvedConfig,
+    declared_deps: &FxHashSet<String>,
+    public_api_entry_points: &FxHashSet<FileId>,
+    suppressions: &SuppressionContext<'_>,
+    results: &mut AnalysisResults,
+) {
+    if config.rules.unrendered_components == Severity::Off {
+        return;
+    }
+    results.unrendered_components = find_unrendered_components(
+        graph,
+        resolved_modules,
+        modules,
+        declared_deps,
+        public_api_entry_points,
+        suppressions,
+    )
+    .into_iter()
+    .map(UnrenderedComponentFinding::with_actions)
     .collect();
 }
 
@@ -1889,6 +1970,7 @@ mod tests {
                 unused_class_members: Severity::Off,
                 unused_store_members: Severity::Off,
                 unprovided_injects: Severity::Off,
+                unrendered_components: Severity::Off,
                 unresolved_imports: Severity::Off,
                 unlisted_dependencies: Severity::Off,
                 duplicate_exports: Severity::Off,
@@ -2143,6 +2225,7 @@ mod tests {
                 misplaced_directives: Vec::new(),
                 di_key_sites: Vec::new(),
                 has_dynamic_provide: false,
+                referenced_import_bindings: Vec::new(),
             }];
 
             let rules = RulesConfig {
