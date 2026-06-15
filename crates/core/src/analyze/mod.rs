@@ -798,16 +798,7 @@ fn populate_framework_specific_findings(input: &mut FrameworkSpecificFindingsInp
         input.results,
     );
     populate_unprovided_inject_findings(input);
-    populate_unrendered_component_findings(
-        input.graph,
-        input.modules,
-        input.resolved_modules,
-        input.config,
-        input.declared_deps,
-        input.public_api_entry_points,
-        input.suppressions,
-        input.results,
-    );
+    populate_unrendered_component_findings(input);
     populate_unused_component_prop_findings(
         input.graph,
         input.modules,
@@ -932,30 +923,17 @@ fn populate_unprovided_inject_findings(input: &mut FrameworkSpecificFindingsInpu
 /// Populate `unrendered_components` when the rule is enabled. Gated on the
 /// project declaring `vue` / `svelte` inside the detector (see
 /// [`find_unrendered_components`]).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors the unprovided-inject populate site; threading resolved modules + the public-API entry-point set + the suppression context is intrinsic"
-)]
-fn populate_unrendered_component_findings(
-    graph: &ModuleGraph,
-    modules: &[ModuleInfo],
-    resolved_modules: &[ResolvedModule],
-    config: &ResolvedConfig,
-    declared_deps: &FxHashSet<String>,
-    public_api_entry_points: &FxHashSet<FileId>,
-    suppressions: &SuppressionContext<'_>,
-    results: &mut AnalysisResults,
-) {
-    if config.rules.unrendered_components == Severity::Off {
+fn populate_unrendered_component_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
+    if input.config.rules.unrendered_components == Severity::Off {
         return;
     }
-    results.unrendered_components = find_unrendered_components(
-        graph,
-        resolved_modules,
-        modules,
-        declared_deps,
-        public_api_entry_points,
-        suppressions,
+    input.results.unrendered_components = find_unrendered_components(
+        input.graph,
+        input.resolved_modules,
+        input.modules,
+        input.declared_deps,
+        input.public_api_entry_points,
+        input.suppressions,
     )
     .into_iter()
     .map(UnrenderedComponentFinding::with_actions)
