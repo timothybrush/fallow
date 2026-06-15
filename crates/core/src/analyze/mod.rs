@@ -741,18 +741,18 @@ pub fn find_dead_code_full(
 
     populate_pnpm_catalog_findings(config, workspaces, &mut results);
     populate_pnpm_override_findings(config, workspaces, &mut results);
-    populate_framework_specific_findings(
+    populate_framework_specific_findings(&mut FrameworkSpecificFindingsInput {
         graph,
         modules,
         resolved_modules,
         config,
         workspaces,
-        &declared_deps,
-        &public_api_entry_points,
-        &suppressions,
-        &line_offsets_by_file,
-        &mut results,
-    );
+        declared_deps: &declared_deps,
+        public_api_entry_points: &public_api_entry_points,
+        suppressions: &suppressions,
+        line_offsets_by_file: &line_offsets_by_file,
+        results: &mut results,
+    });
 
     results.sort();
 
@@ -764,94 +764,92 @@ pub fn find_dead_code_full(
 /// the App Router route tree. Extracted from `find_dead_code_full` to keep that
 /// orchestrator under the unit-size ceiling; each callee is individually
 /// rule-gated.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "threads the shared resolved-graph + dep-gate context to a fixed set of framework detectors"
-)]
-fn populate_framework_specific_findings(
-    graph: &ModuleGraph,
-    modules: &[ModuleInfo],
-    resolved_modules: &[ResolvedModule],
-    config: &ResolvedConfig,
-    workspaces: &[fallow_config::WorkspaceInfo],
-    declared_deps: &FxHashSet<String>,
-    public_api_entry_points: &FxHashSet<FileId>,
-    suppressions: &SuppressionContext<'_>,
-    line_offsets_by_file: &LineOffsetsMap<'_>,
-    results: &mut AnalysisResults,
-) {
+struct FrameworkSpecificFindingsInput<'a> {
+    graph: &'a ModuleGraph,
+    modules: &'a [ModuleInfo],
+    resolved_modules: &'a [ResolvedModule],
+    config: &'a ResolvedConfig,
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    declared_deps: &'a FxHashSet<String>,
+    public_api_entry_points: &'a FxHashSet<FileId>,
+    suppressions: &'a SuppressionContext<'a>,
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    results: &'a mut AnalysisResults,
+}
+
+fn populate_framework_specific_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
     populate_invalid_client_export_findings(
-        graph,
-        modules,
-        config,
-        declared_deps,
-        suppressions,
-        line_offsets_by_file,
-        results,
+        input.graph,
+        input.modules,
+        input.config,
+        input.declared_deps,
+        input.suppressions,
+        input.line_offsets_by_file,
+        input.results,
     );
     populate_mixed_client_server_barrel_findings(
-        graph,
-        modules,
-        resolved_modules,
-        config,
-        declared_deps,
-        suppressions,
-        line_offsets_by_file,
-        results,
+        input.graph,
+        input.modules,
+        input.resolved_modules,
+        input.config,
+        input.declared_deps,
+        input.suppressions,
+        input.line_offsets_by_file,
+        input.results,
     );
     populate_misplaced_directive_findings(
-        graph,
-        modules,
-        config,
-        declared_deps,
-        suppressions,
-        line_offsets_by_file,
-        results,
+        input.graph,
+        input.modules,
+        input.config,
+        input.declared_deps,
+        input.suppressions,
+        input.line_offsets_by_file,
+        input.results,
     );
     populate_unprovided_inject_findings(
-        graph,
-        modules,
-        resolved_modules,
-        config,
-        declared_deps,
-        public_api_entry_points,
-        suppressions,
-        line_offsets_by_file,
-        results,
+        input.graph,
+        input.modules,
+        input.resolved_modules,
+        input.config,
+        input.declared_deps,
+        input.public_api_entry_points,
+        input.suppressions,
+        input.line_offsets_by_file,
+        input.results,
     );
     populate_unrendered_component_findings(
-        graph,
-        modules,
-        resolved_modules,
-        config,
-        declared_deps,
-        public_api_entry_points,
-        suppressions,
-        results,
+        input.graph,
+        input.modules,
+        input.resolved_modules,
+        input.config,
+        input.declared_deps,
+        input.public_api_entry_points,
+        input.suppressions,
+        input.results,
     );
     populate_unused_component_prop_findings(
-        graph,
-        modules,
-        config,
-        declared_deps,
-        line_offsets_by_file,
-        results,
+        input.graph,
+        input.modules,
+        input.config,
+        input.declared_deps,
+        input.line_offsets_by_file,
+        input.results,
     );
     populate_unused_component_emit_findings(
-        graph,
-        modules,
-        config,
-        declared_deps,
-        line_offsets_by_file,
-        results,
+        input.graph,
+        input.modules,
+        input.config,
+        input.declared_deps,
+        input.line_offsets_by_file,
+        input.results,
     );
     populate_nextjs_route_tree_findings(
-        graph,
-        config,
-        workspaces,
-        declared_deps,
-        suppressions,
-        results,
+        input.graph,
+        input.config,
+        input.workspaces,
+        input.declared_deps,
+        input.suppressions,
+        input.results,
     );
 }
 
