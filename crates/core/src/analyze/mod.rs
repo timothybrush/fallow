@@ -100,7 +100,7 @@ use unused_exports::{
     reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_files::find_unused_files;
-use unused_members::find_unused_members_with_public_api_entry_points;
+use unused_members::{UnusedMemberScanInput, find_unused_members_with_public_api_entry_points};
 #[expect(
     deprecated,
     reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
@@ -1706,16 +1706,16 @@ fn run_member_detectors(input: MemberDetectorInput<'_>) -> AnalysisResults {
         return results;
     }
 
-    let member_results = find_unused_members_with_public_api_entry_points(
-        input.graph,
-        input.resolved_modules,
-        input.modules,
-        input.suppressions,
-        input.line_offsets_by_file,
-        input.user_class_members,
-        &input.config.ignore_decorators,
-        input.public_api_entry_points,
-    );
+    let member_results = find_unused_members_with_public_api_entry_points(UnusedMemberScanInput {
+        graph: input.graph,
+        resolved_modules: input.resolved_modules,
+        modules: input.modules,
+        suppressions: input.suppressions,
+        line_offsets_by_file: input.line_offsets_by_file,
+        user_class_member_allowlist: input.user_class_members,
+        ignore_decorators: &input.config.ignore_decorators,
+        public_api_entry_points: input.public_api_entry_points,
+    });
     if input.config.rules.unused_enum_members != Severity::Off {
         results.unused_enum_members = member_results
             .enum_members
