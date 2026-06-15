@@ -2,6 +2,14 @@
 //!
 //! Handles `@import`, `@use`, `@forward`, `@plugin`, `@apply`, `@tailwind` directives,
 //! and extracts class names as named exports from `.module.css`/`.module.scss` files.
+//!
+//! Extraction is a deliberate hybrid, not a half-finished migration. lightningcss
+//! owns the membership decision for standard CSS (which `.token` occurrences are
+//! genuine class selectors, via `lightningcss_class_set`); the regex scanners own
+//! span location and the entire SCSS path. lightningcss parses standard CSS only,
+//! not SCSS syntax (`@use`, `@forward`, `//` line comments, `$variables`), so SCSS
+//! files are gated away from the parser and the regex chain stays as permanent
+//! infrastructure rather than a transitional step toward an all-parser tokenizer.
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -191,6 +199,10 @@ fn normalize_css_plugin_path(path: String) -> String {
 /// Returns both the raw source and the normalized source. URL imports
 /// (`http://`, `https://`, `data:`) are skipped. Use [`extract_css_imports`]
 /// when only the normalized form is needed.
+///
+/// Regex-based by design: this path also handles the SCSS `@use` / `@forward`
+/// forms, which lightningcss does not parse, so unlike class extraction there is
+/// no parser-backed set to defer the membership decision to.
 #[must_use]
 pub fn extract_css_import_sources(source: &str, is_scss: bool) -> Vec<CssImportSource> {
     let stripped = mask_css_comments(source, is_scss);
