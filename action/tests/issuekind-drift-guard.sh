@@ -190,8 +190,16 @@ assert_issuekind_summary_coverage() {
     if ! key="$(issuekind_json_key "$id")"; then
       # Non-dead-code kinds (security, dupes, health, flags) live on other
       # surfaces; only the suppress.rs fallback yields them. Skip, don't fail.
+      #
+      # prop-drilling / thin-wrapper / duplicate-prop-shape are command-tagged
+      # dead-code, but they are opt-in (default-off) React/Preact advisory
+      # health signals surfaced ONLY in the CLI human report + raw JSON. They
+      # are deliberately NOT emitted by the LSP (no DIAGNOSTIC_ISSUE_TYPES
+      # entry) and not carried by the PR-summary jq surfaces, so they are
+      # classified here like complexity / coverage-gaps rather than gated for
+      # surface presence.
       case "$id" in
-        security-*|code-duplication|complexity|coverage-gaps|feature-flag)
+        security-*|code-duplication|complexity|coverage-gaps|feature-flag|prop-drilling|thin-wrapper|duplicate-prop-shape)
           skipped+=("$id") ;;
         *)
           # A dead-code id with no mapping is a guard gap: the mapping table
@@ -266,8 +274,12 @@ assert_issuekind_vscode_category_coverage() {
     # successful mapping means a dead-code kind (must be in the catalog); a
     # failed one is a non-dead-code kind carried by other catalogs.
     if ! issuekind_json_key "$id" > /dev/null; then
+      # prop-drilling / thin-wrapper / duplicate-prop-shape are dead-code-tagged
+      # but CLI/JSON-only advisory health signals the LSP does not emit, so they
+      # carry no diagnostic CODE in DIAGNOSTIC_CATEGORIES (same treatment as the
+      # complexity / coverage-gaps non-catalog kinds).
       case "$id" in
-        security-* | code-duplication | complexity | coverage-gaps | feature-flag)
+        security-* | code-duplication | complexity | coverage-gaps | feature-flag | prop-drilling | thin-wrapper | duplicate-prop-shape)
           skipped+=("$id") ;;
         *) unmapped+=("$id") ;;
       esac
