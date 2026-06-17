@@ -9,7 +9,7 @@ import {
   ServerOptions,
   State,
   TransportKind,
-} from "vscode-languageclient/node.js";
+} from "vscode-languageclient/node";
 import { DocumentDiagnosticRequest, Trace } from "vscode-languageserver-protocol";
 import {
   getLspPath,
@@ -264,7 +264,7 @@ export const requestServerDiagnosticRefresh = async (lspClient: LanguageClient):
 
 export const startClient = async (
   context: vscode.ExtensionContext,
-  outputChannel: vscode.OutputChannel,
+  outputChannel: vscode.LogOutputChannel,
   diagnosticFilter?: DiagnosticFilter,
   onAnalysisComplete?: (params: AnalysisCompleteParams) => void,
 ): Promise<LanguageClient | null> => {
@@ -423,7 +423,7 @@ export const stopClient = async (outputChannel?: vscode.OutputChannel): Promise<
 
 export const restartClient = (
   context: vscode.ExtensionContext,
-  outputChannel: vscode.OutputChannel,
+  outputChannel: vscode.LogOutputChannel,
   diagnosticFilter?: DiagnosticFilter,
   onAnalysisComplete?: (params: AnalysisCompleteParams) => void,
 ): Promise<LanguageClient | null> => {

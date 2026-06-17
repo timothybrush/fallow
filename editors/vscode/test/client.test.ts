@@ -57,7 +57,7 @@ vi.mock("vscode", () => ({
   },
 }));
 
-vi.mock("vscode-languageclient/node.js", () => ({
+vi.mock("vscode-languageclient/node", () => ({
   LanguageClient: class {
     state = 2;
     private stateListeners: Array<(event: { newState: number }) => void> = [];
@@ -259,9 +259,7 @@ describe("loadDiagnosticCategories", () => {
     const client = await startClient({} as never, outputChannel() as never, filter as never);
 
     expect(client).not.toBeNull();
-    expect(filter.updateBaselineMutedCategories).toHaveBeenCalledWith(
-      new Set(["future-rule"]),
-    );
+    expect(filter.updateBaselineMutedCategories).toHaveBeenCalledWith(new Set(["future-rule"]));
     // attachClient receives an adapter (not the raw client): a lazy
     // `diagnostics` getter delegating to the push collection plus a
     // `refreshPullDiagnostics` hook that re-pulls open documents on a mute
@@ -449,9 +447,7 @@ describe("requestServerDiagnosticRefresh", () => {
     const sendRequest = vi.fn(async () => {
       throw new Error("Unhandled method fallow/refreshDiagnostics");
     });
-    await expect(
-      requestServerDiagnosticRefresh({ sendRequest } as never),
-    ).resolves.toBeUndefined();
+    await expect(requestServerDiagnosticRefresh({ sendRequest } as never)).resolves.toBeUndefined();
     expect(sendRequest).toHaveBeenCalledWith("fallow/refreshDiagnostics");
   });
 });

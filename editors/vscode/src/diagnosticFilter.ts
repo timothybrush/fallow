@@ -5,7 +5,7 @@ import type {
   HandleDiagnosticsSignature,
   ProvideDiagnosticSignature,
   vsdiag,
-} from "vscode-languageclient/node.js";
+} from "vscode-languageclient/node";
 import type { DiagnosticSeveritySetting } from "./types.js";
 
 const STATE_KEY = "fallow.diagnosticFilter.v1";

@@ -127,7 +127,7 @@ const AUDIT_SAVE_DEBOUNCE_MS = 600;
  */
 const MUTED_ALL_NUDGE_KEY = "fallow.mutedAllNudgeShown.v1";
 
-let outputChannel: vscode.OutputChannel;
+let outputChannel: vscode.LogOutputChannel;
 let lastCheckResult: FallowCheckResult | null = null;
 let lastDupesResult: FallowDupesResult | null = null;
 let lastHealthResult: HealthOutput | null = null;
@@ -158,7 +158,7 @@ export interface ExtensionApi {
 }
 
 export const activate = async (context: vscode.ExtensionContext): Promise<ExtensionApi> => {
-  outputChannel = vscode.window.createOutputChannel("Fallow");
+  outputChannel = vscode.window.createOutputChannel("Fallow", { log: true });
   context.subscriptions.push(outputChannel);
 
   const statusBar = createStatusBar();
