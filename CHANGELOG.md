@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.98.0] - 2026-06-17
+
 ### Added
 
 - **Framework dead-code findings now lead with manual fix actions.** `unused-server-action`, `unprovided-inject`, `unused-load-data-key`, `unrendered-component`, `unused-component-prop`, `unused-component-emit`, and `unused-svelte-event` now put a domain-specific manual fix action first in JSON `actions[]` instead of leading with suppression only. The actions stay non-auto-fixable and preserve the existing suppress action as the second option, so agents get clearer next steps while public API and dynamic-wiring caveats stay explicit. Human and markdown health output also labels synthetic `<template>` rows as template-complexity entries and switches the section wording to "complexity findings" when template or component rollup rows are present. Machine-readable complexity formats keep the canonical `<template>` name for compatibility.
@@ -3129,7 +3131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.97.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.98.0...HEAD
+[2.98.0]: https://github.com/fallow-rs/fallow/compare/v2.97.0...v2.98.0
 [2.97.0]: https://github.com/fallow-rs/fallow/compare/v2.96.0...v2.97.0
 [2.96.0]: https://github.com/fallow-rs/fallow/compare/v2.95.0...v2.96.0
 [2.95.0]: https://github.com/fallow-rs/fallow/compare/v2.94.0...v2.95.0

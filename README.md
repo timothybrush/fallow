@@ -190,7 +190,7 @@ Unused dependencies, unresolved imports, duplicate exports, unlisted imports, ty
 
 ### Cleanup opportunities
 
-Unused files, unused exports, unused types, unused enum members, unused class members, unused Pinia store members, unprovided Vue/Svelte injects, unused Angular component inputs and outputs, stale suppression comments, and code paths that appear safe to review for removal. Opt-in API hygiene checks such as private type leaks live here too.
+Unused files, unused exports, unused types, unused enum members, unused class members, unused Pinia store members, unprovided Vue/Svelte/Angular injects, unused Angular component inputs and outputs, Svelte component events dispatched but listened to nowhere, stale suppression comments, and code paths that appear safe to review for removal. Opt-in API hygiene checks such as private type leaks live here too.
 
 ### Runtime intelligence (optional)
 
@@ -314,7 +314,7 @@ fallow --production
 
 ## Cleanup opportunities
 
-Cleanup opportunities are code that no longer appears to carry product value: unused files, exports, dependencies, types, enum members, class members, Pinia store members, unprovided Vue/Svelte injects, unused Angular component inputs and outputs, unresolved imports, unlisted dependencies, duplicate exports, circular dependencies (including cross-package cycles in monorepos), boundary violations, type-only dependencies, test-only production dependencies, and stale suppression comments. Workspace package dependencies are checked like external packages, so unused or undeclared internal package edges are visible in monorepos. Entry points are auto-detected from package.json fields, package scripts, framework conventions, and plugin patterns. Public class members on classes exposed from non-private package entry points or exportless source subpath indexes are treated as library API surface, while reachable internal classes still get member-level checks. Arrow-wrapped dynamic imports (`React.lazy`, `loadable`, `defineAsyncComponent`) and proven local `child_process.fork()` runner targets are tracked as references. Script multiplexers (`concurrently`, `npm-run-all`) are analyzed to discover transitive script dependencies. JSDoc tags (`@public`, `@internal`, `@beta`, `@alpha`, `@expected-unused`) control export visibility. Private type leaks are currently opt-in API hygiene findings via `--private-type-leaks` or the `private-type-leaks` rule.
+Cleanup opportunities are code that no longer appears to carry product value: unused files, exports, dependencies, types, enum members, class members, Pinia store members, unprovided Vue/Svelte/Angular injects, unused Angular component inputs and outputs, Svelte component events listened to nowhere, unresolved imports, unlisted dependencies, duplicate exports, circular dependencies (including cross-package cycles in monorepos), boundary violations, type-only dependencies, test-only production dependencies, and stale suppression comments. Workspace package dependencies are checked like external packages, so unused or undeclared internal package edges are visible in monorepos. Entry points are auto-detected from package.json fields, package scripts, framework conventions, and plugin patterns. Public class members on classes exposed from non-private package entry points or exportless source subpath indexes are treated as library API surface, while reachable internal classes still get member-level checks. Arrow-wrapped dynamic imports (`React.lazy`, `loadable`, `defineAsyncComponent`) and proven local `child_process.fork()` runner targets are tracked as references. Script multiplexers (`concurrently`, `npm-run-all`) are analyzed to discover transitive script dependencies. JSDoc tags (`@public`, `@internal`, `@beta`, `@alpha`, `@expected-unused`) control export visibility. Private type leaks are currently opt-in API hygiene findings via `--private-type-leaks` or the `private-type-leaks` rule.
 
 ```bash
 fallow dead-code                          # All dead code issues
@@ -354,7 +354,7 @@ Four detection modes: **strict** (exact tokens), **mild** (default, AST-based), 
 
 ## Complexity
 
-Surfaces the most complex functions in your codebase and identifies where to spend refactoring effort. Angular templates are included as synthetic `<template>` entries when they use control flow or complex bindings, both for external `templateUrl` files and inline `@Component({ template: \`...\` })` decorators.
+Surfaces the most complex functions in your codebase and identifies where to spend refactoring effort. Angular, Vue, and Svelte templates are included as synthetic `<template>` entries when they use control flow or complex bindings, covering Angular external `templateUrl` files and inline `@Component({ template: \`...\` })` decorators as well as the `<template>` block of `.vue` and `.svelte` single-file components.
 
 ```bash
 fallow health                             # Functions/templates exceeding thresholds

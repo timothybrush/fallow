@@ -78,6 +78,18 @@ Don't use `--changed-since` when auditing the full project. Use it for PR checks
 
 ---
 
+## Svelte Event Findings Are Project-Wide Listener Checks
+
+`unused-svelte-event` reports a Svelte `createEventDispatcher` event that has no reachable listener in the project. This is different from `unused-component-emit`, which checks whether a Vue component ever emits its declared event.
+
+```bash
+fallow dead-code --format json --quiet --unused-svelte-events
+```
+
+Dynamic event names, dispatcher values that escape the component, and projects without a declared Svelte dependency are abstained to avoid false positives.
+
+---
+
 ## Filter Flags Are Additive
 
 Issue type filter flags (`--unused-exports`, `--unused-files`, etc.) are inclusive. They select which issue types to show. Using multiple flags shows the union.
@@ -322,6 +334,10 @@ If you use utility decorators that DO NOT imply reflective use (Playwright's `@s
 Conservative semantics: a method carrying any decorator NOT in the list still gets skipped. So `@step` + `@Inject` on the same method stays treated as framework-managed. Matching rule: entries containing `.` (`"decorators.log"`) match the full dotted path; bare entries (`"step"` or `"decorators"`) match the leftmost segment, so a single bare `"decorators"` entry collapses an entire `@decorators.*` namespace. Both `"@step"` and `"step"` round-trip equivalently. Unmatched entries (a decorator name in the config that never appears in your codebase) surface as a one-time warning at end of run.
 
 The default empty list preserves today's skip-all behavior, so existing NestJS / Angular / TypeORM projects see no change.
+
+### Angular `@Input()` / `@Output()` are still covered by the component rules
+
+The skip above applies only to generic `unused-class-member` detection. The dedicated Angular component rules (`unused-component-input` for `@Input()` / signal `input()` / `model()`, and `unused-component-output` for `@Output()` / signal `output()`, both default `warn`, gated on `@angular/core`) scope usage to the component itself: an input is dead when it is read by no code in its own class body or template (inline `template` or external `templateUrl`), and an output is dead when it is emitted (`.emit()`) nowhere in its own component. The scope is the component, not the project: an input that a parent binds via `[input]="..."` but the component itself never reads IS flagged, because the parent binding is satisfied while the value goes unused inside the component. These rules abstain on the whole component for any `extends` clause, a `{...this}` spread, JS-reserved-word names, accessor (`get` / `set`) inputs, and observable-stream `@Output`s (only `new EventEmitter()` initializers are harvested); `model()` is treated as input-only. Suppress an individual finding with `// fallow-ignore-next-line unused-component-input` or `-output`.
 
 ---
 

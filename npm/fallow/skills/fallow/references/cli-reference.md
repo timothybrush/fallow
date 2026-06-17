@@ -66,6 +66,9 @@ Common global flags for this command: [`--format`](#global-flags), [`--quiet`](#
 | `--unrendered-components` | A Vue / Svelte component is reachable through a barrel but rendered nowhere |
 | `--unused-component-props` | A Vue defineProps prop or React component prop is referenced nowhere in its own component |
 | `--unused-component-emits` | A Vue <script setup> defineEmits event is emitted nowhere in its own component |
+| `--unused-component-inputs` | An Angular @Input() / signal input() / model() is read nowhere in its own component (class body or template); needs `@angular/core` dep |
+| `--unused-component-outputs` | An Angular @Output() / signal output() is emitted (.emit()) nowhere in its own component; needs `@angular/core` dep |
+| `--unused-svelte-events` | A Svelte createEventDispatcher event is listened to nowhere in the project |
 | `--unused-server-actions` | A Next.js Server Action exported from a "use server" file is referenced by no code in the project |
 | `--unused-load-data-keys` | A SvelteKit load() return-object key is read by no consumer |
 | `--unresolved-imports` | Unresolved imports |
@@ -501,7 +504,7 @@ fallow health --format json --quiet --trend
 {
   "kind": "health",
   "schema_version": 7,
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 32,
   "summary": {
     "files_analyzed": 482,
@@ -888,7 +891,7 @@ fallow audit \
 {
   "kind": "audit",
   "schema_version": 7,
-  "version": "2.97.0",
+  "version": "2.98.0",
   "command": "audit",
   "verdict": "fail",
   "changed_files_count": 12,
@@ -963,7 +966,7 @@ fallow flags --format json --quiet --workspace my-package
 ```json
 {
   "schema_version": 7,
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 116,
   "feature_flags": [],
   "total_flags": 0
@@ -1063,7 +1066,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1092,7 +1095,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1709,7 +1712,7 @@ The HTTP layer mirrors the bash `gh_api_retry` / `curl_retry` helpers: `FALLOW_A
 {
   "kind": "dead-code",
   "schema_version": 7,
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 45,
   "total_issues": 12,
   "entry_points": {
@@ -1869,7 +1872,7 @@ When `--baseline` is used in combined output, the JSON includes a `baseline_delt
 {
   "kind": "dupes",
   "schema_version": 7,
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 82,
   "total_clones": 15,
   "total_lines_duplicated": 230,
@@ -1913,11 +1916,11 @@ When running `fallow` with no subcommand (all analyses), the JSON output combine
 {
   "kind": "combined",
   "schema_version": 7,
-  "version": "2.97.0",
+  "version": "2.98.0",
   "elapsed_ms": 159,
   "check": {
     "schema_version": 7,
-    "version": "2.97.0",
+    "version": "2.98.0",
     "elapsed_ms": 45,
     "total_issues": 12,
     "unused_files": [],
