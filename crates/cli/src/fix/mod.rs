@@ -80,25 +80,25 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
     let mut fixes: Vec<serde_json::Value> = Vec::new();
     let mut plan = FixPlan::new();
 
-    apply_unused_export_fixes(
-        opts.root,
-        &results,
-        &file_hashes,
-        &mut plan,
-        opts.output,
-        opts.dry_run,
-        &mut fixes,
-    );
+    apply_unused_export_fixes(&mut FixApplicationInput {
+        root: opts.root,
+        results: &results,
+        file_hashes: &file_hashes,
+        plan: &mut plan,
+        output: opts.output,
+        dry_run: opts.dry_run,
+        fixes: &mut fixes,
+    });
 
-    deps::apply_dependency_fixes(
-        opts.root,
-        &results,
-        &file_hashes,
-        &mut plan,
-        opts.output,
-        opts.dry_run,
-        &mut fixes,
-    );
+    deps::apply_dependency_fixes(&mut deps::DependencyFixInput {
+        root: opts.root,
+        results: &results,
+        hashes: &file_hashes,
+        plan: &mut plan,
+        output: opts.output,
+        dry_run: opts.dry_run,
+        fixes: &mut fixes,
+    });
 
     let mut had_write_error = config::apply_config_fixes(
         opts.root,
@@ -110,15 +110,15 @@ pub fn run_fix(opts: &FixOptions<'_>) -> ExitCode {
         &mut fixes,
     );
 
-    apply_unused_enum_member_fixes(
-        opts.root,
-        &results,
-        &file_hashes,
-        &mut plan,
-        opts.output,
-        opts.dry_run,
-        &mut fixes,
-    );
+    apply_unused_enum_member_fixes(&mut FixApplicationInput {
+        root: opts.root,
+        results: &results,
+        file_hashes: &file_hashes,
+        plan: &mut plan,
+        output: opts.output,
+        dry_run: opts.dry_run,
+        fixes: &mut fixes,
+    });
 
     let mut catalog_request = CatalogFixRequest {
         root: opts.root,
@@ -198,68 +198,63 @@ fn emit_empty_fix_output(opts: &FixOptions<'_>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn apply_unused_export_fixes(
-    root: &Path,
-    results: &fallow_core::results::AnalysisResults,
-    file_hashes: &CapturedHashes,
-    plan: &mut FixPlan,
+struct FixApplicationInput<'a> {
+    root: &'a Path,
+    results: &'a fallow_core::results::AnalysisResults,
+    file_hashes: &'a CapturedHashes,
+    plan: &'a mut FixPlan,
     output: OutputFormat,
     dry_run: bool,
-    fixes: &mut Vec<serde_json::Value>,
-) {
+    fixes: &'a mut Vec<serde_json::Value>,
+}
+
+fn apply_unused_export_fixes(input: &mut FixApplicationInput<'_>) {
     let mut exports_by_file: FxHashMap<PathBuf, Vec<&fallow_core::results::UnusedExport>> =
         FxHashMap::default();
-    for finding in &results.unused_exports {
+    for finding in &input.results.unused_exports {
         exports_by_file
             .entry(finding.export.path.clone())
             .or_default()
             .push(&finding.export);
     }
-    let unresolved_import_files: FxHashSet<PathBuf> = results
+    let unresolved_import_files: FxHashSet<PathBuf> = input
+        .results
         .unresolved_imports
         .iter()
         .map(|finding| finding.import.path.clone())
         .collect();
     exports::apply_export_fixes(
-        root,
+        input.root,
         &exports_by_file,
-        file_hashes,
+        input.file_hashes,
         &unresolved_import_files,
-        plan,
-        output,
-        dry_run,
-        fixes,
+        input.plan,
+        input.output,
+        input.dry_run,
+        input.fixes,
     );
 }
 
-fn apply_unused_enum_member_fixes(
-    root: &Path,
-    results: &fallow_core::results::AnalysisResults,
-    file_hashes: &CapturedHashes,
-    plan: &mut FixPlan,
-    output: OutputFormat,
-    dry_run: bool,
-    fixes: &mut Vec<serde_json::Value>,
-) {
-    if results.unused_enum_members.is_empty() {
+fn apply_unused_enum_member_fixes(input: &mut FixApplicationInput<'_>) {
+    if input.results.unused_enum_members.is_empty() {
         return;
     }
     let mut enum_members_by_file: FxHashMap<PathBuf, Vec<&fallow_core::results::UnusedMember>> =
         FxHashMap::default();
-    for finding in &results.unused_enum_members {
+    for finding in &input.results.unused_enum_members {
         enum_members_by_file
             .entry(finding.member.path.clone())
             .or_default()
             .push(&finding.member);
     }
     enum_members::apply_enum_member_fixes(
-        root,
+        input.root,
         &enum_members_by_file,
-        file_hashes,
-        plan,
-        output,
-        dry_run,
-        fixes,
+        input.file_hashes,
+        input.plan,
+        input.output,
+        input.dry_run,
+        input.fixes,
     );
 }
 

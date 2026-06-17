@@ -498,9 +498,15 @@ fn apply_github_reconcile(
     }
 
     for (index, operation) in operations.iter().enumerate() {
-        if let Err(failure) =
-            apply_github_operation(operation, &agent, &repo, pr, &token, api, &mut result)
-        {
+        if let Err(failure) = apply_github_operation(&mut GithubOperationInput {
+            operation,
+            agent: &agent,
+            repo: &repo,
+            pr,
+            token: &token,
+            api,
+            result: &mut result,
+        }) {
             result.record_failure(
                 failure,
                 operations[index..]
@@ -645,30 +651,35 @@ fn preflight_github_operations(
     Ok(())
 }
 
-fn apply_github_operation(
-    operation: &GithubApplyOperation,
-    agent: &ureq::Agent,
-    repo: &str,
-    pr: &str,
-    token: &str,
-    api: &str,
-    result: &mut ApplyResult,
-) -> Result<(), ApplyFailure> {
-    match operation {
+struct GithubOperationInput<'a> {
+    operation: &'a GithubApplyOperation,
+    agent: &'a ureq::Agent,
+    repo: &'a str,
+    pr: &'a str,
+    token: &'a str,
+    api: &'a str,
+    result: &'a mut ApplyResult,
+}
+
+fn apply_github_operation(input: &mut GithubOperationInput<'_>) -> Result<(), ApplyFailure> {
+    match input.operation {
         GithubApplyOperation::Reply {
             fingerprint,
             comment_id,
             body,
         } => {
             let payload = serde_json::json!({ "body": body });
-            let url = format!("{api}/repos/{repo}/pulls/{pr}/comments/{comment_id}/replies");
-            github_post_json(agent, &url, token, &payload).map_err(|err| {
+            let url = format!(
+                "{}/repos/{}/pulls/{}/comments/{comment_id}/replies",
+                input.api, input.repo, input.pr
+            );
+            github_post_json(input.agent, &url, input.token, &payload).map_err(|err| {
                 ApplyFailure::new(
                     fingerprint.clone(),
                     format!("GitHub failed to post resolution reply for {fingerprint}: {err}"),
                 )
             })?;
-            result.resolution_comments_posted += 1;
+            input.result.resolution_comments_posted += 1;
         }
         GithubApplyOperation::ResolveThread {
             fingerprint,
@@ -678,20 +689,25 @@ fn apply_github_operation(
                 "query": "mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}",
                 "variables": { "threadId": thread_id },
             });
-            let value = github_post_json(agent, &format!("{api}/graphql"), token, &payload)
-                .map_err(|err| {
-                    ApplyFailure::new(
-                        fingerprint.clone(),
-                        format!("GitHub failed to resolve review thread {thread_id}: {err}"),
-                    )
-                })?;
+            let value = github_post_json(
+                input.agent,
+                &format!("{}/graphql", input.api),
+                input.token,
+                &payload,
+            )
+            .map_err(|err| {
+                ApplyFailure::new(
+                    fingerprint.clone(),
+                    format!("GitHub failed to resolve review thread {thread_id}: {err}"),
+                )
+            })?;
             if value.get("errors").is_some() {
                 return Err(ApplyFailure::new(
                     fingerprint.clone(),
                     format!("GitHub resolveReviewThread failed for {fingerprint}: {value}"),
                 ));
             }
-            result.threads_resolved += 1;
+            input.result.threads_resolved += 1;
         }
     }
     Ok(())
@@ -811,15 +827,15 @@ fn apply_gitlab_reconcile(
     }
 
     for (index, operation) in operations.iter().enumerate() {
-        if let Err(failure) = apply_gitlab_operation(
+        if let Err(failure) = apply_gitlab_operation(&mut GitlabOperationInput {
             operation,
-            &agent,
-            &encoded_project,
+            agent: &agent,
+            encoded_project: &encoded_project,
             mr,
-            &token,
-            &api,
-            &mut result,
-        ) {
+            token: &token,
+            api: &api,
+            result: &mut result,
+        }) {
             result.record_failure(
                 failure,
                 operations[index..]
@@ -932,16 +948,18 @@ fn preflight_gitlab_operations(
     Ok(())
 }
 
-fn apply_gitlab_operation(
-    operation: &GitlabApplyOperation,
-    agent: &ureq::Agent,
-    encoded_project: &str,
-    mr: &str,
-    token: &str,
-    api: &str,
-    result: &mut ApplyResult,
-) -> Result<(), ApplyFailure> {
-    match operation {
+struct GitlabOperationInput<'a> {
+    operation: &'a GitlabApplyOperation,
+    agent: &'a ureq::Agent,
+    encoded_project: &'a str,
+    mr: &'a str,
+    token: &'a str,
+    api: &'a str,
+    result: &'a mut ApplyResult,
+}
+
+fn apply_gitlab_operation(input: &mut GitlabOperationInput<'_>) -> Result<(), ApplyFailure> {
+    match input.operation {
         GitlabApplyOperation::Note {
             fingerprint,
             discussion_id,
@@ -949,15 +967,16 @@ fn apply_gitlab_operation(
         } => {
             let payload = serde_json::json!({ "body": body });
             let url = format!(
-                "{api}/projects/{encoded_project}/merge_requests/{mr}/discussions/{discussion_id}/notes"
+                "{}/projects/{}/merge_requests/{}/discussions/{discussion_id}/notes",
+                input.api, input.encoded_project, input.mr
             );
-            gitlab_post_json(agent, &url, token, &payload).map_err(|err| {
+            gitlab_post_json(input.agent, &url, input.token, &payload).map_err(|err| {
                 ApplyFailure::new(
                     fingerprint.clone(),
                     format!("GitLab failed to post resolution note for {fingerprint}: {err}"),
                 )
             })?;
-            result.resolution_comments_posted += 1;
+            input.result.resolution_comments_posted += 1;
         }
         GitlabApplyOperation::ResolveDiscussion {
             fingerprint,
@@ -965,15 +984,16 @@ fn apply_gitlab_operation(
         } => {
             let payload = serde_json::json!({ "resolved": true });
             let url = format!(
-                "{api}/projects/{encoded_project}/merge_requests/{mr}/discussions/{discussion_id}"
+                "{}/projects/{}/merge_requests/{}/discussions/{discussion_id}",
+                input.api, input.encoded_project, input.mr
             );
-            gitlab_put_json(agent, &url, token, &payload).map_err(|err| {
+            gitlab_put_json(input.agent, &url, input.token, &payload).map_err(|err| {
                 ApplyFailure::new(
                     fingerprint.clone(),
                     format!("GitLab failed to resolve discussion {discussion_id}: {err}"),
                 )
             })?;
-            result.threads_resolved += 1;
+            input.result.threads_resolved += 1;
         }
     }
     Ok(())

@@ -344,34 +344,34 @@ fn execute_health_inner(
         enforce_coverage_gaps,
         scope.enforce_crap,
     );
-    let analysis_data = prepare_health_analysis_data(
+    let analysis_data = prepare_health_analysis_data(HealthAnalysisDataInput {
         opts,
-        &config,
-        &modules,
-        &scope.file_paths,
-        &scope.ignore_set,
-        scope.changed_files.as_ref(),
-        scope.ws_roots.as_deref(),
-        istanbul_coverage.as_ref(),
+        config: &config,
+        modules: &modules,
+        file_paths: &scope.file_paths,
+        ignore_set: &scope.ignore_set,
+        changed_files: scope.changed_files.as_ref(),
+        ws_roots: scope.ws_roots.as_deref(),
+        istanbul_coverage: istanbul_coverage.as_ref(),
         pre_computed_analysis,
         needs_file_scores,
-    )?;
+    })?;
 
-    let findings_data = prepare_health_findings(
+    let findings_data = prepare_health_findings(HealthFindingsInput {
         opts,
-        &config,
-        &modules,
-        &scope.file_paths,
-        &scope.ignore_set,
-        scope.changed_files.as_ref(),
-        scope.ws_roots.as_deref(),
-        scope.diff_index,
-        scope.max_cyclomatic,
-        scope.max_cognitive,
-        scope.max_crap,
-        scope.enforce_crap,
-        analysis_data.score_output.as_ref(),
-    )?;
+        config: &config,
+        modules: &modules,
+        file_paths: &scope.file_paths,
+        ignore_set: &scope.ignore_set,
+        changed_files: scope.changed_files.as_ref(),
+        ws_roots: scope.ws_roots.as_deref(),
+        diff_index: scope.diff_index,
+        max_cyclomatic: scope.max_cyclomatic,
+        max_cognitive: scope.max_cognitive,
+        max_crap: scope.max_crap,
+        enforce_crap: scope.enforce_crap,
+        score_output: analysis_data.score_output.as_ref(),
+    })?;
 
     let HealthRuntimeSections {
         analysis_data,
@@ -2070,33 +2070,37 @@ fn project_uses_tailwind_plugin(any_plugin_directive: bool, root: &std::path::Pa
 ///
 /// The usage test is false-negative-leaning by design: every check CREDITS usage,
 /// so a genuinely-dead token is missed before a live one is flagged.
+struct UnusedThemeTokenScanInput<'a> {
+    tokens: &'a CssTokenSets,
+    files: &'a [fallow_types::discover::DiscoveredFile],
+    config: &'a ResolvedConfig,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    summary: &'a mut crate::health_types::CssAnalyticsSummary,
+}
+
 fn scan_unused_theme_tokens(
-    tokens: &CssTokenSets,
-    files: &[fallow_types::discover::DiscoveredFile],
-    config: &ResolvedConfig,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    summary: &mut crate::health_types::CssAnalyticsSummary,
+    input: &mut UnusedThemeTokenScanInput<'_>,
 ) -> Vec<crate::health_types::UnusedThemeToken> {
     use crate::health_types::{CssCandidateAction, UnusedThemeToken};
 
     // Partial scope cannot prove a token dead.
-    if changed_files.is_some() || ws_roots.is_some() {
+    if input.changed_files.is_some() || input.ws_roots.is_some() {
         return Vec::new();
     }
     // v4 gate: a Tailwind dependency AND at least one @theme token present.
-    if tokens.theme_token_definers.is_empty() || !project_uses_tailwind(&config.root) {
+    if input.tokens.theme_token_definers.is_empty() || !project_uses_tailwind(&input.config.root) {
         return Vec::new();
     }
     // Tailwind-plugin abstain (DI blind spot).
-    if project_uses_tailwind_plugin(tokens.any_plugin_directive, &config.root) {
+    if project_uses_tailwind_plugin(input.tokens.any_plugin_directive, &input.config.root) {
         return Vec::new();
     }
 
     // Classify candidate tokens; drop variant namespaces, published-library
     // stylesheets, and anything that does not match a known namespace.
-    let published = published_css_paths(config);
+    let published = published_css_paths(input.config);
     struct Candidate {
         token: String,
         namespace: String,
@@ -2105,7 +2109,7 @@ fn scan_unused_theme_tokens(
         line: u32,
     }
     let mut candidates: Vec<Candidate> = Vec::new();
-    for (raw, (path, line)) in &tokens.theme_token_definers {
+    for (raw, (path, line)) in &input.tokens.theme_token_definers {
         if published.contains(path) {
             continue;
         }
@@ -2124,7 +2128,7 @@ fn scan_unused_theme_tokens(
         });
     }
     if candidates.is_empty() {
-        summary.unused_theme_tokens = 0;
+        input.summary.unused_theme_tokens = 0;
         return Vec::new();
     }
 
@@ -2132,17 +2136,17 @@ fn scan_unused_theme_tokens(
     // and from non-CSS source (markup class attributes, `clsx` args, CSS-in-JS),
     // plus the `var()` reads (CSS-side, including `@theme` interiors).
     let mut utility_tokens: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
-    for apply in &tokens.apply_tokens {
+    for apply in &input.tokens.apply_tokens {
         collect_class_shaped_tokens(apply, &mut utility_tokens);
     }
-    for file in files {
+    for file in input.files {
         let path = &file.path;
         let extension = path.extension().and_then(|ext| ext.to_str());
         if !extension.is_some_and(|ext| THEME_USAGE_SOURCE_EXTS.contains(&ext)) {
             continue;
         }
-        let relative = path.strip_prefix(&config.root).unwrap_or(path);
-        if ignore_set.is_match(relative) {
+        let relative = path.strip_prefix(&input.config.root).unwrap_or(path);
+        if input.ignore_set.is_match(relative) {
             continue;
         }
         if let Ok(source) = std::fs::read_to_string(path) {
@@ -2150,8 +2154,8 @@ fn scan_unused_theme_tokens(
         }
     }
 
-    let mut var_reads: rustc_hash::FxHashSet<String> = tokens.theme_var_reads.clone();
-    for referenced in &tokens.referenced_custom_props {
+    let mut var_reads: rustc_hash::FxHashSet<String> = input.tokens.theme_var_reads.clone();
+    for referenced in &input.tokens.referenced_custom_props {
         var_reads.insert(referenced.trim_start_matches('-').to_owned());
     }
 
@@ -2185,7 +2189,7 @@ fn scan_unused_theme_tokens(
             .then_with(|| a.line.cmp(&b.line))
             .then_with(|| a.token.cmp(&b.token))
     });
-    summary.unused_theme_tokens = saturate_len(out.len());
+    input.summary.unused_theme_tokens = saturate_len(out.len());
     out
 }
 
@@ -2202,54 +2206,56 @@ struct MarkupCssCandidates {
 /// likely class typos, unreferenced global classes, unused `@theme` tokens),
 /// each honoring the same ignore / changed / workspace filters and setting its
 /// own summary counts.
-fn scan_markup_css_candidates(
-    tokens: &CssTokenSets,
-    files: &[fallow_types::discover::DiscoveredFile],
-    config: &ResolvedConfig,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    summary: &mut crate::health_types::CssAnalyticsSummary,
-) -> MarkupCssCandidates {
+struct MarkupCssCandidateInput<'a> {
+    tokens: &'a CssTokenSets,
+    files: &'a [fallow_types::discover::DiscoveredFile],
+    config: &'a ResolvedConfig,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    summary: &'a mut crate::health_types::CssAnalyticsSummary,
+}
+
+fn scan_markup_css_candidates(input: &mut MarkupCssCandidateInput<'_>) -> MarkupCssCandidates {
     MarkupCssCandidates {
         // Markup arbitrary-value scan (gated on the project using Tailwind).
         tailwind_arbitrary_values: scan_markup_tailwind_arbitrary_values(
-            files,
-            config,
-            ignore_set,
-            changed_files,
-            ws_roots,
-            summary,
+            input.files,
+            input.config,
+            input.ignore_set,
+            input.changed_files,
+            input.ws_roots,
+            input.summary,
         ),
         // Static markup class tokens one edit from a defined class (likely typos).
         unresolved_class_references: scan_unresolved_class_references(
-            files,
-            config,
-            ignore_set,
-            changed_files,
-            ws_roots,
-            summary,
+            input.files,
+            input.config,
+            input.ignore_set,
+            input.changed_files,
+            input.ws_roots,
+            input.summary,
         ),
         // Global classes referenced by no in-project markup (heavily gated).
         unreferenced_css_classes: scan_unreferenced_css_classes(
-            files,
-            config,
-            ignore_set,
-            changed_files,
-            ws_roots,
-            summary,
+            input.files,
+            input.config,
+            input.ignore_set,
+            input.changed_files,
+            input.ws_roots,
+            input.summary,
         ),
         // Tailwind v4 @theme design tokens used by no utility / var() / @apply
         // anywhere (heavily gated: v4 + non-plugin + non-published + whole-scope).
-        unused_theme_tokens: scan_unused_theme_tokens(
-            tokens,
-            files,
-            config,
-            ignore_set,
-            changed_files,
-            ws_roots,
-            summary,
-        ),
+        unused_theme_tokens: scan_unused_theme_tokens(&mut UnusedThemeTokenScanInput {
+            tokens: input.tokens,
+            files: input.files,
+            config: input.config,
+            ignore_set: input.ignore_set,
+            changed_files: input.changed_files,
+            ws_roots: input.ws_roots,
+            summary: input.summary,
+        }),
     }
 }
 
@@ -2422,15 +2428,15 @@ fn compute_css_analytics_report(
         unresolved_class_references,
         unreferenced_css_classes,
         unused_theme_tokens,
-    } = scan_markup_css_candidates(
-        &tokens,
+    } = scan_markup_css_candidates(&mut MarkupCssCandidateInput {
+        tokens: &tokens,
         files,
         config,
         ignore_set,
         changed_files,
         ws_roots,
-        &mut summary,
-    );
+        summary: &mut summary,
+    });
 
     if summary.files_analyzed == 0
         && scoped_unused.is_empty()
@@ -2542,15 +2548,16 @@ fn build_health_output_parts(
         build.max_crap,
     );
 
-    let HealthOutputSupportingParts { grouping, timings } = build_health_supporting_parts(
-        opts,
-        build,
-        &analysis_data,
-        &derived_sections,
-        &vital_data,
-        &findings,
-        &action_ctx,
-    );
+    let HealthOutputSupportingParts { grouping, timings } =
+        build_health_supporting_parts(HealthSupportingPartsInput {
+            opts,
+            build,
+            analysis_data: &analysis_data,
+            derived_sections: &derived_sections,
+            vital_data: &vital_data,
+            findings: &findings,
+            action_ctx: &action_ctx,
+        });
 
     let report = build_health_report_from_pipeline(
         opts,
@@ -2586,62 +2593,53 @@ fn build_health_output_parts(
     }
 }
 
+#[derive(Clone, Copy)]
+struct HealthSupportingPartsInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    build: &'a HealthOutputBuildInput<'a>,
+    analysis_data: &'a HealthAnalysisData,
+    derived_sections: &'a HealthDerivedSections,
+    vital_data: &'a HealthVitalData,
+    findings: &'a [ComplexityViolation],
+    action_ctx: &'a crate::health_types::HealthActionContext,
+}
+
 fn build_health_supporting_parts(
-    opts: &HealthOptions<'_>,
-    build: &HealthOutputBuildInput<'_>,
-    analysis_data: &HealthAnalysisData,
-    derived_sections: &HealthDerivedSections,
-    vital_data: &HealthVitalData,
-    findings: &[ComplexityViolation],
-    action_ctx: &crate::health_types::HealthActionContext,
+    input: HealthSupportingPartsInput<'_>,
 ) -> HealthOutputSupportingParts {
-    let grouping = build_health_output_grouping(
-        opts,
-        build,
-        analysis_data,
-        derived_sections,
-        vital_data,
-        findings,
-        action_ctx,
-    );
+    let grouping = build_health_output_grouping(&input);
     let timings = build_health_timings_from_pipeline(
-        opts,
-        build.start,
-        analysis_data,
-        derived_sections,
-        &build.timing_base,
+        input.opts,
+        input.build.start,
+        input.analysis_data,
+        input.derived_sections,
+        &input.build.timing_base,
     );
 
     HealthOutputSupportingParts { grouping, timings }
 }
 
 fn build_health_output_grouping(
-    opts: &HealthOptions<'_>,
-    build: &HealthOutputBuildInput<'_>,
-    analysis_data: &HealthAnalysisData,
-    derived_sections: &HealthDerivedSections,
-    vital_data: &HealthVitalData,
-    findings: &[ComplexityViolation],
-    action_ctx: &crate::health_types::HealthActionContext,
+    input: &HealthSupportingPartsInput<'_>,
 ) -> Option<crate::health_types::HealthGrouping> {
-    let file_scores = health_file_scores_slice(analysis_data.score_output.as_ref());
-    build_health_grouping_from_context(
-        opts,
-        build.config,
-        build.group_resolver,
-        &derived_sections.candidate_paths,
-        build.files,
-        build.modules,
-        build.file_paths,
-        analysis_data.score_output.as_ref(),
+    let file_scores = health_file_scores_slice(input.analysis_data.score_output.as_ref());
+    build_health_grouping_from_context(HealthGroupingContextInput {
+        opts: input.opts,
+        config: input.build.config,
+        group_resolver: input.build.group_resolver,
+        candidate_paths: &input.derived_sections.candidate_paths,
+        files: input.build.files,
+        modules: input.build.modules,
+        file_paths: input.build.file_paths,
+        score_output: input.analysis_data.score_output.as_ref(),
         file_scores,
-        findings,
-        &derived_sections.hotspots,
-        vital_data,
-        &derived_sections.targets,
-        build.needs_file_scores,
-        action_ctx,
-    )
+        findings: input.findings,
+        hotspots: &input.derived_sections.hotspots,
+        vital_data: input.vital_data,
+        targets: &input.derived_sections.targets,
+        needs_file_scores: input.build.needs_file_scores,
+        action_ctx: input.action_ctx,
+    })
 }
 
 struct HealthDerivedSectionInput<'a> {
@@ -3050,47 +3048,48 @@ struct ThresholdOverrideStateInput {
     dimension: ThresholdOverrideDimension,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "grouping bridges the assembled health pipeline context into the grouping module"
-)]
-fn build_health_grouping_from_context(
-    opts: &HealthOptions<'_>,
-    config: &ResolvedConfig,
-    group_resolver: Option<&crate::report::OwnershipResolver>,
-    candidate_paths: &rustc_hash::FxHashSet<std::path::PathBuf>,
-    files: &[fallow_types::discover::DiscoveredFile],
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    score_output: Option<&scoring::FileScoreOutput>,
-    file_scores: &[FileHealthScore],
-    findings: &[ComplexityViolation],
-    hotspots: &[HotspotEntry],
-    vital_data: &HealthVitalData,
-    targets: &[RefactoringTarget],
+#[derive(Clone, Copy)]
+struct HealthGroupingContextInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    group_resolver: Option<&'a crate::report::OwnershipResolver>,
+    candidate_paths: &'a rustc_hash::FxHashSet<std::path::PathBuf>,
+    files: &'a [fallow_types::discover::DiscoveredFile],
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    score_output: Option<&'a scoring::FileScoreOutput>,
+    file_scores: &'a [FileHealthScore],
+    findings: &'a [ComplexityViolation],
+    hotspots: &'a [HotspotEntry],
+    vital_data: &'a HealthVitalData,
+    targets: &'a [RefactoringTarget],
     needs_file_scores: bool,
-    action_ctx: &crate::health_types::HealthActionContext,
+    action_ctx: &'a crate::health_types::HealthActionContext,
+}
+
+fn build_health_grouping_from_context(
+    input: HealthGroupingContextInput<'_>,
 ) -> Option<crate::health_types::HealthGrouping> {
     build_optional_health_grouping_opt(
-        group_resolver,
-        &config.root,
-        candidate_paths,
+        input.group_resolver,
+        &input.config.root,
+        input.candidate_paths,
         &grouping::HealthGroupingInput {
-            files,
-            modules,
-            file_paths,
-            score_output,
-            file_scores,
-            findings,
-            hotspots,
-            large_functions: &vital_data.large_functions,
-            targets,
-            score_requested: opts.score,
-            duplicates_config: opts.score.then_some(&config.duplicates),
-            needs_file_scores,
-            needs_hotspots: opts.hotspots || opts.targets,
-            show_vital_signs: !opts.score_only_output,
-            action_ctx,
+            files: input.files,
+            modules: input.modules,
+            file_paths: input.file_paths,
+            score_output: input.score_output,
+            file_scores: input.file_scores,
+            findings: input.findings,
+            hotspots: input.hotspots,
+            large_functions: &input.vital_data.large_functions,
+            targets: input.targets,
+            score_requested: input.opts.score,
+            duplicates_config: input.opts.score.then_some(&input.config.duplicates),
+            needs_file_scores: input.needs_file_scores,
+            needs_hotspots: input.opts.hotspots || input.opts.targets,
+            show_vital_signs: !input.opts.score_only_output,
+            action_ctx: input.action_ctx,
         },
     )
 }
@@ -3192,15 +3191,15 @@ fn prepare_health_section_hotspots(
     opts: &HealthOptions<'_>,
     input: HealthHotspotSectionInput<'_>,
 ) -> (Vec<HotspotEntry>, Option<HotspotSummary>, f64) {
-    compute_filtered_hotspots(
+    compute_filtered_hotspots(FilteredHotspotInput {
         opts,
-        input.config,
-        input.file_scores,
-        input.ignore_set,
-        input.ws_roots,
-        input.churn_fetch,
-        input.diff_index,
-    )
+        config: input.config,
+        file_scores_slice: input.file_scores,
+        ignore_set: input.ignore_set,
+        ws_roots: input.ws_roots,
+        churn_fetch: input.churn_fetch,
+        diff_index: input.diff_index,
+    })
 }
 
 struct HealthTargetSectionInput<'a> {
@@ -3217,16 +3216,16 @@ fn prepare_health_section_targets(
     opts: &HealthOptions<'_>,
     input: &HealthTargetSectionInput<'_>,
 ) -> (Vec<RefactoringTarget>, Option<TargetThresholds>, f64) {
-    compute_filtered_targets(
+    compute_filtered_targets(FilteredTargetInput {
         opts,
-        input.score_output,
-        input.file_scores,
-        input.hotspots,
-        input.loaded_baseline,
-        input.config,
-        input.diff_index,
-        input.dupes_report,
-    )
+        score_output: input.score_output,
+        file_scores_slice: input.file_scores,
+        hotspots: input.hotspots,
+        loaded_baseline: input.loaded_baseline,
+        config: input.config,
+        diff_index: input.diff_index,
+        dupes_report: input.dupes_report,
+    })
 }
 
 struct HealthTimingInput {
@@ -3288,69 +3287,73 @@ fn build_health_result(input: HealthResultInput) -> HealthResult {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "finding preparation applies the active health scope and optional scoring data"
-)]
-fn prepare_health_findings(
-    opts: &HealthOptions<'_>,
-    config: &ResolvedConfig,
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
+#[derive(Clone, Copy)]
+struct HealthFindingsInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
     max_cyclomatic: u16,
     max_cognitive: u16,
     max_crap: f64,
     enforce_crap: bool,
-    score_output: Option<&scoring::FileScoreOutput>,
-) -> Result<HealthFindingsData, ExitCode> {
+    score_output: Option<&'a scoring::FileScoreOutput>,
+}
+
+fn prepare_health_findings(input: HealthFindingsInput<'_>) -> Result<HealthFindingsData, ExitCode> {
     let t = Instant::now();
     let global_thresholds = GlobalHealthThresholds {
-        cyclomatic: max_cyclomatic,
-        cognitive: max_cognitive,
-        crap: max_crap,
+        cyclomatic: input.max_cyclomatic,
+        cognitive: input.max_cognitive,
+        crap: input.max_crap,
     };
     let threshold_resolver =
-        ThresholdOverrideResolver::new(&config.health.threshold_overrides, global_thresholds);
+        ThresholdOverrideResolver::new(&input.config.health.threshold_overrides, global_thresholds);
     let mut threshold_state_tracker = ThresholdOverrideStateTracker::default();
     let mut collect_input = CollectFindingsInput {
-        modules,
-        file_paths,
-        config_root: &config.root,
-        ignore_set,
-        changed_files,
-        ws_roots,
+        modules: input.modules,
+        file_paths: input.file_paths,
+        config_root: &input.config.root,
+        ignore_set: input.ignore_set,
+        changed_files: input.changed_files,
+        ws_roots: input.ws_roots,
         threshold_resolver: &threshold_resolver,
         threshold_state_tracker: &mut threshold_state_tracker,
-        complexity_breakdown: opts.complexity_breakdown,
+        complexity_breakdown: input.opts.complexity_breakdown,
     };
     let (mut findings, files_analyzed, total_functions) =
         collect_findings_with_resolver(&mut collect_input);
     let complexity_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     let mut crap_ctx = HealthCrapMergeContext {
-        modules,
-        file_paths,
-        ignore_set,
-        changed_files,
-        ws_roots,
-        max_cyclomatic,
-        max_cognitive,
-        enforce_crap,
-        score_output,
-        config_root: &config.root,
+        modules: input.modules,
+        file_paths: input.file_paths,
+        ignore_set: input.ignore_set,
+        changed_files: input.changed_files,
+        ws_roots: input.ws_roots,
+        max_cyclomatic: input.max_cyclomatic,
+        max_cognitive: input.max_cognitive,
+        enforce_crap: input.enforce_crap,
+        score_output: input.score_output,
+        config_root: &input.config.root,
         threshold_resolver: &threshold_resolver,
         threshold_state_tracker: &mut threshold_state_tracker,
     };
-    apply_optional_crap_findings(opts, &mut findings, &mut crap_ctx);
+    apply_optional_crap_findings(input.opts, &mut findings, &mut crap_ctx);
     let (total_above_threshold, sev_critical, sev_high, sev_moderate, loaded_baseline) =
-        finalize_health_findings(opts, config, &mut findings, diff_index)?;
+        finalize_health_findings(input.opts, input.config, &mut findings, input.diff_index)?;
     threshold_state_tracker.record_no_match_entries(
         &threshold_resolver,
-        should_emit_no_match_threshold_overrides(opts, changed_files, ws_roots, diff_index),
+        should_emit_no_match_threshold_overrides(
+            input.opts,
+            input.changed_files,
+            input.ws_roots,
+            input.diff_index,
+        ),
     );
 
     Ok(HealthFindingsData {
@@ -3701,46 +3704,47 @@ fn prepare_shared_analysis_output(
         .map_err(|e| emit_error(&format!("analysis failed: {e}"), 2, opts.output))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "runtime coverage analysis needs the same filtered health context as scoring"
-)]
+#[derive(Clone, Copy)]
+struct RuntimeCoverageAnalysisScope<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    shared_analysis_output: Option<&'a fallow_core::AnalysisOutput>,
+    istanbul_coverage: Option<&'a scoring::IstanbulCoverage>,
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+}
+
 fn analyze_runtime_coverage(
-    opts: &HealthOptions<'_>,
-    config: &ResolvedConfig,
-    modules: &[fallow_core::extract::ModuleInfo],
-    shared_analysis_output: Option<&fallow_core::AnalysisOutput>,
-    istanbul_coverage: Option<&scoring::IstanbulCoverage>,
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
+    input: RuntimeCoverageAnalysisScope<'_>,
 ) -> Result<Option<crate::health_types::RuntimeCoverageReport>, ExitCode> {
-    let Some(ref production_options) = opts.runtime_coverage else {
+    let Some(ref production_options) = input.opts.runtime_coverage else {
         return Ok(None);
     };
-    let Some(analysis_output) = shared_analysis_output else {
+    let Some(analysis_output) = input.shared_analysis_output else {
         return Err(emit_error(
             "runtime coverage requires analysis output",
             2,
-            opts.output,
+            input.opts.output,
         ));
     };
     coverage::analyze(
         production_options,
         &coverage::RuntimeCoverageAnalysisInput {
-            root: &config.root,
-            modules,
+            root: &input.config.root,
+            modules: input.modules,
             analysis_output,
-            istanbul_coverage,
-            file_paths,
-            ignore_set,
-            changed_files,
-            ws_roots,
-            top: opts.top,
-            codeowners_path: config.codeowners.as_deref(),
-            quiet: opts.quiet,
-            output: opts.output,
+            istanbul_coverage: input.istanbul_coverage,
+            file_paths: input.file_paths,
+            ignore_set: input.ignore_set,
+            changed_files: input.changed_files,
+            ws_roots: input.ws_roots,
+            top: input.opts.top,
+            codeowners_path: input.config.codeowners.as_deref(),
+            quiet: input.opts.quiet,
+            output: input.opts.output,
         },
     )
     .map(Some)
@@ -3854,28 +3858,28 @@ fn prepare_health_vital_data_from_sections(
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "health analysis preparation shares the active scope across runtime coverage and file scores"
-)]
-fn prepare_health_analysis_data(
-    opts: &HealthOptions<'_>,
-    config: &ResolvedConfig,
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    istanbul_coverage: Option<&scoring::IstanbulCoverage>,
+struct HealthAnalysisDataInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    istanbul_coverage: Option<&'a scoring::IstanbulCoverage>,
     pre_computed_analysis: Option<fallow_core::AnalysisOutput>,
     needs_file_scores: bool,
+}
+
+fn prepare_health_analysis_data(
+    input: HealthAnalysisDataInput<'_>,
 ) -> Result<HealthAnalysisData, ExitCode> {
-    let needs_analysis_output = needs_file_scores || opts.runtime_coverage.is_some();
+    let needs_analysis_output = input.needs_file_scores || input.opts.runtime_coverage.is_some();
     let mut shared_analysis_output = prepare_shared_analysis_output(
-        opts,
-        config,
-        modules,
-        pre_computed_analysis,
+        input.opts,
+        input.config,
+        input.modules,
+        input.pre_computed_analysis,
         needs_analysis_output,
     )?;
     if let Some(graph) = shared_analysis_output
@@ -3885,34 +3889,36 @@ fn prepare_health_analysis_data(
         crate::telemetry::note_graph_structure(graph);
     }
 
-    let runtime_coverage = analyze_runtime_coverage(
-        opts,
-        config,
-        modules,
-        shared_analysis_output.as_ref(),
-        istanbul_coverage,
-        file_paths,
-        ignore_set,
-        changed_files,
-        ws_roots,
-    )?;
+    let runtime_coverage = analyze_runtime_coverage(RuntimeCoverageAnalysisScope {
+        opts: input.opts,
+        config: input.config,
+        modules: input.modules,
+        shared_analysis_output: shared_analysis_output.as_ref(),
+        istanbul_coverage: input.istanbul_coverage,
+        file_paths: input.file_paths,
+        ignore_set: input.ignore_set,
+        changed_files: input.changed_files,
+        ws_roots: input.ws_roots,
+    })?;
 
-    let precomputed_for_scores = if needs_file_scores {
+    let precomputed_for_scores = if input.needs_file_scores {
         shared_analysis_output.take()
     } else {
         None
     };
 
     let (file_score_result, file_scores_ms, churn_fetch) = compute_file_scores_and_churn(
-        opts,
-        config,
-        modules,
-        file_paths,
-        changed_files,
-        ws_roots,
-        ignore_set,
-        istanbul_coverage,
-        needs_file_scores,
+        FileScoresAndChurnInput {
+            opts: input.opts,
+            config: input.config,
+            modules: input.modules,
+            file_paths: input.file_paths,
+            changed_files: input.changed_files,
+            ws_roots: input.ws_roots,
+            ignore_set: input.ignore_set,
+            istanbul_coverage: input.istanbul_coverage,
+            needs_file_scores: input.needs_file_scores,
+        },
         precomputed_for_scores,
     )?;
     let (git_churn_ms, git_churn_cache_hit) = churn_fetch
@@ -3920,7 +3926,7 @@ fn prepare_health_analysis_data(
         .map_or((0.0, false), |cf| (cf.git_log_ms, cf.cache_hit));
     let (score_output, files_scored, average_maintainability) = file_score_result;
 
-    print_slow_churn_note(opts, churn_fetch.as_ref());
+    print_slow_churn_note(input.opts, churn_fetch.as_ref());
 
     Ok(HealthAnalysisData {
         runtime_coverage,
@@ -3936,57 +3942,59 @@ fn prepare_health_analysis_data(
 
 type FileScoresAndChurn = (FileScoreResult, f64, Option<hotspots::ChurnFetchResult>);
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "file-score filtering needs the active health scope and optional precomputed analysis"
-)]
-fn compute_file_scores_and_churn(
-    opts: &HealthOptions<'_>,
-    config: &ResolvedConfig,
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    ignore_set: &globset::GlobSet,
-    istanbul_coverage: Option<&scoring::IstanbulCoverage>,
+#[derive(Clone, Copy)]
+struct FileScoresAndChurnInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    ignore_set: &'a globset::GlobSet,
+    istanbul_coverage: Option<&'a scoring::IstanbulCoverage>,
     needs_file_scores: bool,
+}
+
+fn compute_file_scores_and_churn(
+    input: FileScoresAndChurnInput<'_>,
     precomputed_for_scores: Option<fallow_core::AnalysisOutput>,
 ) -> Result<FileScoresAndChurn, ExitCode> {
-    let needs_churn = opts.hotspots || opts.targets;
-    if needs_file_scores && needs_churn {
+    let needs_churn = input.opts.hotspots || input.opts.targets;
+    if input.needs_file_scores && needs_churn {
         return std::thread::scope(|s| {
-            let churn_handle = s.spawn(|| hotspots::fetch_churn_data(opts, &config.cache_dir));
+            let churn_handle =
+                s.spawn(|| hotspots::fetch_churn_data(input.opts, &input.config.cache_dir));
             let t = Instant::now();
             let score_result = compute_filtered_file_scores(FileScoreInput {
-                config,
-                modules,
-                file_paths,
-                changed_files,
-                ws_roots,
-                ignore_set,
-                output: opts.output,
-                istanbul_coverage,
+                config: input.config,
+                modules: input.modules,
+                file_paths: input.file_paths,
+                changed_files: input.changed_files,
+                ws_roots: input.ws_roots,
+                ignore_set: input.ignore_set,
+                output: input.opts.output,
+                istanbul_coverage: input.istanbul_coverage,
                 pre_computed: precomputed_for_scores,
             })?;
             let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
             let churn = churn_handle
                 .join()
-                .map_err(|_| emit_error("churn thread panicked", 2, opts.output))?;
+                .map_err(|_| emit_error("churn thread panicked", 2, input.opts.output))?;
             Ok((score_result, fs_ms, churn))
         });
     }
 
     let t = Instant::now();
-    let score_result = if needs_file_scores {
+    let score_result = if input.needs_file_scores {
         compute_filtered_file_scores(FileScoreInput {
-            config,
-            modules,
-            file_paths,
-            changed_files,
-            ws_roots,
-            ignore_set,
-            output: opts.output,
-            istanbul_coverage,
+            config: input.config,
+            modules: input.modules,
+            file_paths: input.file_paths,
+            changed_files: input.changed_files,
+            ws_roots: input.ws_roots,
+            ignore_set: input.ignore_set,
+            output: input.opts.output,
+            istanbul_coverage: input.istanbul_coverage,
             pre_computed: precomputed_for_scores,
         })?
     } else {
@@ -3994,7 +4002,7 @@ fn compute_file_scores_and_churn(
     };
     let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
     let churn = if needs_churn {
-        hotspots::fetch_churn_data(opts, &config.cache_dir)
+        hotspots::fetch_churn_data(input.opts, &input.config.cache_dir)
     } else {
         None
     };
@@ -4056,30 +4064,34 @@ fn apply_health_baseline_and_top(
     Ok(loaded_baseline)
 }
 
-fn compute_filtered_hotspots(
-    opts: &HealthOptions<'_>,
-    config: &ResolvedConfig,
-    file_scores_slice: &[FileHealthScore],
-    ignore_set: &globset::GlobSet,
-    ws_roots: Option<&[std::path::PathBuf]>,
+struct FilteredHotspotInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    config: &'a ResolvedConfig,
+    file_scores_slice: &'a [FileHealthScore],
+    ignore_set: &'a globset::GlobSet,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
     churn_fetch: Option<hotspots::ChurnFetchResult>,
-    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
+    diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
+}
+
+fn compute_filtered_hotspots(
+    input: FilteredHotspotInput<'_>,
 ) -> (Vec<HotspotEntry>, Option<HotspotSummary>, f64) {
     let t = Instant::now();
-    let (mut hotspots, hotspot_summary) = if let Some(churn_data) = churn_fetch {
+    let (mut hotspots, hotspot_summary) = if let Some(churn_data) = input.churn_fetch {
         compute_hotspots(
-            opts,
-            config,
-            file_scores_slice,
-            ignore_set,
-            ws_roots,
+            input.opts,
+            input.config,
+            input.file_scores_slice,
+            input.ignore_set,
+            input.ws_roots,
             churn_data,
         )
     } else {
         (Vec::new(), None)
     };
-    if let Some(diff_index) = diff_index {
-        filter_hotspots_by_diff(&mut hotspots, diff_index, &config.root);
+    if let Some(diff_index) = input.diff_index {
+        filter_hotspots_by_diff(&mut hotspots, diff_index, &input.config.root);
     }
     (
         hotspots,
@@ -4088,32 +4100,25 @@ fn compute_filtered_hotspots(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "target filtering coordinates independent health scope inputs"
-)]
+#[derive(Clone, Copy)]
+struct FilteredTargetInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    score_output: Option<&'a scoring::FileScoreOutput>,
+    file_scores_slice: &'a [FileHealthScore],
+    hotspots: &'a [HotspotEntry],
+    loaded_baseline: Option<&'a HealthBaselineData>,
+    config: &'a ResolvedConfig,
+    diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
+    dupes_report: Option<&'a fallow_core::duplicates::DuplicationReport>,
+}
+
 fn compute_filtered_targets(
-    opts: &HealthOptions<'_>,
-    score_output: Option<&scoring::FileScoreOutput>,
-    file_scores_slice: &[FileHealthScore],
-    hotspots: &[HotspotEntry],
-    loaded_baseline: Option<&HealthBaselineData>,
-    config: &ResolvedConfig,
-    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
-    dupes_report: Option<&fallow_core::duplicates::DuplicationReport>,
+    input: FilteredTargetInput<'_>,
 ) -> (Vec<RefactoringTarget>, Option<TargetThresholds>, f64) {
     let t = Instant::now();
-    let (mut targets, target_thresholds) = compute_targets(
-        opts,
-        score_output,
-        file_scores_slice,
-        hotspots,
-        loaded_baseline,
-        &config.root,
-        dupes_report,
-    );
-    if let Some(diff_index) = diff_index {
-        filter_refactoring_targets_by_diff(&mut targets, diff_index, &config.root);
+    let (mut targets, target_thresholds) = compute_targets(&input);
+    if let Some(diff_index) = input.diff_index {
+        filter_refactoring_targets_by_diff(&mut targets, diff_index, &input.config.root);
     }
     (
         targets,
@@ -4370,16 +4375,16 @@ fn prepare_health_vital_data(
         &mut counts,
         total_files_scoped,
     );
-    let large_functions = collect_filtered_large_functions(
-        &vital_signs,
-        input.modules,
-        input.file_paths,
-        input.config,
-        input.ignore_set,
-        input.changed_files,
-        input.ws_roots,
-        input.diff_index,
-    );
+    let large_functions = collect_filtered_large_functions(FilteredLargeFunctionInput {
+        vital_signs: &vital_signs,
+        modules: input.modules,
+        file_paths: input.file_paths,
+        config: input.config,
+        ignore_set: input.ignore_set,
+        changed_files: input.changed_files,
+        ws_roots: input.ws_roots,
+        diff_index: input.diff_index,
+    });
     if let Some(ref snapshot_path) = input.opts.save_snapshot {
         save_snapshot(SnapshotInput {
             opts: input.opts,
@@ -4418,32 +4423,33 @@ fn compute_health_score_metrics(
         .then(|| vital_signs::compute_health_score(vital_signs, total_files_scoped))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "large-function filtering needs vital signs plus the active health scope"
-)]
+#[derive(Clone, Copy)]
+struct FilteredLargeFunctionInput<'a> {
+    vital_signs: &'a crate::health_types::VitalSigns,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    config: &'a ResolvedConfig,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+    diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
+}
+
 fn collect_filtered_large_functions(
-    vital_signs: &crate::health_types::VitalSigns,
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    config: &ResolvedConfig,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-    diff_index: Option<&crate::report::ci::diff_filter::DiffIndex>,
+    input: FilteredLargeFunctionInput<'_>,
 ) -> Vec<crate::health_types::LargeFunctionEntry> {
-    let input = LargeFunctionInput {
-        vital_signs,
-        modules,
-        file_paths,
-        config_root: &config.root,
-        ignore_set,
-        changed_files,
-        ws_roots,
+    let large_input = LargeFunctionInput {
+        vital_signs: input.vital_signs,
+        modules: input.modules,
+        file_paths: input.file_paths,
+        config_root: &input.config.root,
+        ignore_set: input.ignore_set,
+        changed_files: input.changed_files,
+        ws_roots: input.ws_roots,
     };
-    let mut large_functions = collect_large_functions(&input);
-    if let Some(diff_index) = diff_index {
-        filter_large_functions_by_diff(&mut large_functions, diff_index, &config.root);
+    let mut large_functions = collect_large_functions(&large_input);
+    if let Some(diff_index) = input.diff_index {
+        filter_large_functions_by_diff(&mut large_functions, diff_index, &input.config.root);
     }
     large_functions
 }
@@ -4682,33 +4688,29 @@ fn compute_filtered_file_scores(input: FileScoreInput<'_>) -> Result<FileScoreRe
 
 /// Compute refactoring targets when requested, applying baseline and top filters.
 fn compute_targets(
-    opts: &HealthOptions<'_>,
-    score_output: Option<&scoring::FileScoreOutput>,
-    file_scores_slice: &[FileHealthScore],
-    hotspots: &[HotspotEntry],
-    loaded_baseline: Option<&HealthBaselineData>,
-    config_root: &std::path::Path,
-    dupes_report: Option<&fallow_core::duplicates::DuplicationReport>,
+    input: &FilteredTargetInput<'_>,
 ) -> (Vec<RefactoringTarget>, Option<TargetThresholds>) {
-    if !opts.targets {
+    if !input.opts.targets {
         return (Vec::new(), None);
     }
-    let Some(output) = score_output else {
+    let Some(output) = input.score_output else {
         return (Vec::new(), None);
     };
-    let clone_siblings = dupes_report.map_or_else(rustc_hash::FxHashMap::default, |report| {
-        targets::build_clone_sibling_evidence(report)
-    });
+    let clone_siblings = input
+        .dupes_report
+        .map_or_else(rustc_hash::FxHashMap::default, |report| {
+            targets::build_clone_sibling_evidence(report)
+        });
     let target_aux = TargetAuxData::from_output(output, &clone_siblings);
     let (mut tgts, thresholds) =
-        compute_refactoring_targets(file_scores_slice, &target_aux, hotspots);
-    if let Some(baseline) = loaded_baseline {
-        tgts = filter_new_health_targets(tgts, baseline, config_root);
+        compute_refactoring_targets(input.file_scores_slice, &target_aux, input.hotspots);
+    if let Some(baseline) = input.loaded_baseline {
+        tgts = filter_new_health_targets(tgts, baseline, &input.config.root);
     }
-    if let Some(ref effort) = opts.effort {
+    if let Some(ref effort) = input.opts.effort {
         tgts.retain(|t| t.effort == *effort);
     }
-    if let Some(top) = opts.top {
+    if let Some(top) = input.opts.top {
         tgts.truncate(top);
     }
     (tgts, Some(thresholds))

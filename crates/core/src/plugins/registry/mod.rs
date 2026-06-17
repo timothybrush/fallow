@@ -81,25 +81,28 @@ pub struct PluginRegexValidationError {
 }
 
 impl PluginRegexValidationError {
-    pub(crate) fn new(
-        plugin_name: &str,
-        config_path: Option<&Path>,
-        rule_kind: &'static str,
-        field: &'static str,
-        rule_pattern: &str,
-        regex_pattern: &str,
-        source: &regex::Error,
-    ) -> Self {
+    pub(crate) fn new(input: PluginRegexValidationErrorInput<'_>) -> Self {
         Self {
-            plugin_name: plugin_name.to_owned(),
-            config_path: config_path.map(Path::to_path_buf),
-            rule_kind,
-            field,
-            rule_pattern: rule_pattern.to_owned(),
-            regex_pattern: regex_pattern.to_owned(),
-            source: source.to_string(),
+            plugin_name: input.plugin_name.to_owned(),
+            config_path: input.config_path.map(Path::to_path_buf),
+            rule_kind: input.rule_kind,
+            field: input.field,
+            rule_pattern: input.rule_pattern.to_owned(),
+            regex_pattern: input.regex_pattern.to_owned(),
+            source: input.source.to_string(),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PluginRegexValidationErrorInput<'a> {
+    pub(crate) plugin_name: &'a str,
+    pub(crate) config_path: Option<&'a Path>,
+    pub(crate) rule_kind: &'static str,
+    pub(crate) field: &'static str,
+    pub(crate) rule_pattern: &'a str,
+    pub(crate) regex_pattern: &'a str,
+    pub(crate) source: &'a regex::Error,
 }
 
 impl fmt::Display for PluginRegexValidationError {
@@ -467,15 +470,15 @@ impl PluginRegistry {
             Vec::new()
         };
 
-        resolve_plugin_config_files(
-            &config_matchers,
-            &relative_files,
+        resolve_plugin_config_files(&mut PluginConfigResolutionInput {
+            config_matchers: &config_matchers,
+            relative_files: &relative_files,
             config_search_roots,
             production_mode,
             root,
-            &mut result,
-            &mut regex_errors,
-        );
+            result: &mut result,
+            regex_errors: &mut regex_errors,
+        });
 
         process_package_json_inline_configs(
             &active,
@@ -609,15 +612,15 @@ impl PluginRegistry {
 
         let mut resolved_ws_plugins: FxHashSet<&str> = FxHashSet::default();
         for (plugin, matchers) in &workspace_matchers {
-            resolve_plugin_matching_files(
-                *plugin,
+            resolve_plugin_matching_files(&mut PluginMatchingFilesInput {
+                plugin: *plugin,
                 matchers,
                 relative_files,
                 root,
-                &mut result,
-                &mut regex_errors,
-                &mut resolved_ws_plugins,
-            );
+                result: &mut result,
+                regex_errors: &mut regex_errors,
+                resolved_plugins: &mut resolved_ws_plugins,
+            });
         }
 
         let ws_json_configs = if root == project_root {
@@ -738,58 +741,70 @@ fn plugin_warn_dedupe() -> &'static std::sync::Mutex<FxHashSet<String>> {
     WARNED.get_or_init(|| std::sync::Mutex::new(FxHashSet::default()))
 }
 
-fn resolve_plugin_config_files(
-    config_matchers: &[(&dyn Plugin, Vec<globset::GlobMatcher>)],
-    relative_files: &[(PathBuf, String)],
-    config_search_roots: &[&Path],
+struct PluginConfigResolutionInput<'a> {
+    config_matchers: &'a [(&'a dyn Plugin, Vec<globset::GlobMatcher>)],
+    relative_files: &'a [(PathBuf, String)],
+    config_search_roots: &'a [&'a Path],
     production_mode: bool,
-    root: &Path,
-    result: &mut AggregatedPluginResult,
-    regex_errors: &mut Vec<PluginRegexValidationError>,
-) {
-    if config_matchers.is_empty() {
+    root: &'a Path,
+    result: &'a mut AggregatedPluginResult,
+    regex_errors: &'a mut Vec<PluginRegexValidationError>,
+}
+
+fn resolve_plugin_config_files(input: &mut PluginConfigResolutionInput<'_>) {
+    if input.config_matchers.is_empty() {
         return;
     }
 
     let mut resolved_plugins: FxHashSet<&str> = FxHashSet::default();
-    for (plugin, matchers) in config_matchers {
-        resolve_plugin_matching_files(
-            *plugin,
+    for (plugin, matchers) in input.config_matchers {
+        resolve_plugin_matching_files(&mut PluginMatchingFilesInput {
+            plugin: *plugin,
             matchers,
-            relative_files,
-            root,
-            result,
-            regex_errors,
-            &mut resolved_plugins,
-        );
+            relative_files: input.relative_files,
+            root: input.root,
+            result: input.result,
+            regex_errors: input.regex_errors,
+            resolved_plugins: &mut resolved_plugins,
+        });
     }
 
     let json_configs = discover_config_files(
-        config_matchers,
+        input.config_matchers,
         &resolved_plugins,
-        config_search_roots,
-        production_mode,
+        input.config_search_roots,
+        input.production_mode,
     );
     for (abs_path, plugin) in &json_configs {
-        resolve_plugin_filesystem_config(*plugin, abs_path, root, result, regex_errors);
+        resolve_plugin_filesystem_config(
+            *plugin,
+            abs_path,
+            input.root,
+            input.result,
+            input.regex_errors,
+        );
     }
 }
 
-fn resolve_plugin_matching_files<'a>(
-    plugin: &'a dyn Plugin,
-    matchers: &[globset::GlobMatcher],
-    relative_files: &'a [(PathBuf, String)],
-    root: &Path,
-    result: &mut AggregatedPluginResult,
-    regex_errors: &mut Vec<PluginRegexValidationError>,
-    resolved_plugins: &mut FxHashSet<&'a str>,
-) {
+struct PluginMatchingFilesInput<'plugins, 'data, 'state> {
+    plugin: &'plugins dyn Plugin,
+    matchers: &'data [globset::GlobMatcher],
+    relative_files: &'data [(PathBuf, String)],
+    root: &'data Path,
+    result: &'state mut AggregatedPluginResult,
+    regex_errors: &'state mut Vec<PluginRegexValidationError>,
+    resolved_plugins: &'state mut FxHashSet<&'plugins str>,
+}
+
+fn resolve_plugin_matching_files(input: &mut PluginMatchingFilesInput<'_, '_, '_>) {
     use rayon::prelude::*;
 
-    let plugin_hits: Vec<&PathBuf> = relative_files
+    let plugin_hits: Vec<&PathBuf> = input
+        .relative_files
         .par_iter()
         .filter_map(|(abs_path, rel_path)| {
-            matchers
+            input
+                .matchers
                 .iter()
                 .any(|m| m.is_match(rel_path.as_str()))
                 .then_some(abs_path)
@@ -799,20 +814,20 @@ fn resolve_plugin_matching_files<'a>(
         let Ok(source) = std::fs::read_to_string(abs_path) else {
             continue;
         };
-        let plugin_result = plugin.resolve_config(abs_path, &source, root);
+        let plugin_result = input.plugin.resolve_config(abs_path, &source, input.root);
         if plugin_result.is_empty() {
             continue;
         }
-        resolved_plugins.insert(plugin.name());
-        process_resolved_plugin_config(
-            plugin,
+        input.resolved_plugins.insert(input.plugin.name());
+        process_resolved_plugin_config(ResolvedPluginConfigInput {
+            plugin: input.plugin,
             abs_path,
             plugin_result,
-            result,
-            regex_errors,
-            "resolved config",
-            abs_path.display(),
-        );
+            result: input.result,
+            regex_errors: input.regex_errors,
+            message: "resolved config",
+            config_display: abs_path.display(),
+        });
     }
 }
 
@@ -834,37 +849,42 @@ fn resolve_plugin_filesystem_config(
         .strip_prefix(root)
         .map(|p| p.to_string_lossy())
         .unwrap_or_default();
-    process_resolved_plugin_config(
+    process_resolved_plugin_config(ResolvedPluginConfigInput {
         plugin,
         abs_path,
         plugin_result,
         result,
         regex_errors,
-        "resolved config (filesystem fallback)",
-        rel,
-    );
+        message: "resolved config (filesystem fallback)",
+        config_display: rel,
+    });
 }
 
-fn process_resolved_plugin_config(
-    plugin: &dyn Plugin,
-    abs_path: &Path,
+struct ResolvedPluginConfigInput<'a, D> {
+    plugin: &'a dyn Plugin,
+    abs_path: &'a Path,
     plugin_result: PluginResult,
-    result: &mut AggregatedPluginResult,
-    regex_errors: &mut Vec<PluginRegexValidationError>,
+    result: &'a mut AggregatedPluginResult,
+    regex_errors: &'a mut Vec<PluginRegexValidationError>,
     message: &'static str,
-    config_display: impl std::fmt::Display,
-) {
+    config_display: D,
+}
+
+fn process_resolved_plugin_config(input: ResolvedPluginConfigInput<'_, impl std::fmt::Display>) {
     tracing::debug!(
-        plugin = plugin.name(),
-        config = %config_display,
-        entries = plugin_result.entry_patterns.len(),
-        deps = plugin_result.referenced_dependencies.len(),
-        message
+        plugin = input.plugin.name(),
+        config = %input.config_display,
+        entries = input.plugin_result.entry_patterns.len(),
+        deps = input.plugin_result.referenced_dependencies.len(),
+        input.message
     );
-    if let Err(mut errors) =
-        process_config_result(plugin.name(), plugin_result, result, Some(abs_path))
-    {
-        regex_errors.append(&mut errors);
+    if let Err(mut errors) = process_config_result(
+        input.plugin.name(),
+        input.plugin_result,
+        input.result,
+        Some(input.abs_path),
+    ) {
+        input.regex_errors.append(&mut errors);
     }
 }
 
