@@ -1,0 +1,9 @@
+# Build output. The bundle is built fresh by CI (.github/workflows/ci.yml) and
+# the release pipeline (.github/workflows/release.yml `vscode-prep`: pnpm build
+# then pnpm package), so it is never committed. Committing it only created
+# recurring stale-dist CI failures.
+dist/
+
+# Local packaging output and copied license.
+*.vsix
+LICENSE

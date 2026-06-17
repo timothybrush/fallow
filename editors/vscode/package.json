@@ -841,7 +841,6 @@
   "scripts": {
     "codegen:types": "node ./scripts/codegen-types.mjs",
     "check:codegen": "node ./scripts/codegen-types.mjs --check",
-    "check:dist": "node ./scripts/check-dist-drift.mjs",
     "prebuild": "pnpm run codegen:types",
     "build": "rolldown -c",
     "watch": "rolldown -c --watch",
