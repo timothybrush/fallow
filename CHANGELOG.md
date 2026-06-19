@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster plugin and config detection on large repositories.** Plugin config files
+  (`tsconfig.json`, `.eslintrc.json`, `bunfig.toml`, and the like) are now collected
+  during the existing project file scan instead of a second filesystem walk of every
+  directory. On a 21k-file, 41-workspace project this roughly halves the plugin
+  detection stage (about 340ms). Analysis output is unchanged: byte-identical results
+  across the benchmark suite.
+
+  One deliberate behavior refinement comes with it: outside production mode, config
+  files are now discovered with the same traversal rules as source files, so a config
+  that is gitignored, excluded by an `ignorePatterns` entry, or inside a hidden
+  directory fallow does not traverse is no longer parsed. Committed configs in normal
+  locations are unaffected. Production mode keeps the previous filesystem discovery.
+
 ## [2.100.0] - 2026-06-19
 
 ### Added
