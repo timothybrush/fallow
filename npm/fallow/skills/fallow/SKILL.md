@@ -42,7 +42,15 @@ Codebase intelligence for JavaScript and TypeScript. The free static layer repor
 
 ## Prerequisites
 
-Fallow must be installed. Use `npm install -g fallow`, `npx fallow dead-code`, or `cargo install fallow-cli`.
+Fallow must be installed. If not available, install it:
+
+```bash
+npm install -g fallow          # prebuilt binaries (fastest)
+# or
+npx fallow dead-code               # run without installing
+# or
+cargo install fallow-cli        # build from source
+```
 
 ## Agent Rules
 
@@ -87,7 +95,7 @@ Route by intent before reaching for the big analysis commands. Same matrix as `f
 | `fallow` | Run full codebase analysis: cleanup + duplication + health (default) | `--only`, `--skip`, `--production`, `--production-dead-code`, `--production-health`, `--production-dupes`, `--ci`, `--fail-on-issues`, `--group-by`, `--summary`, `--fail-on-regression`, `--tolerance`, `--regression-baseline`, `--save-regression-baseline`, `--score`, `--trend`, `--save-snapshot`, `--include-entry-exports` |
 | `dead-code` | Dead code analysis (`check` is an alias) | `--unused-exports`, `--changed-since`, `--changed-workspaces`, `--production`, `--file`, `--include-entry-exports`, `--stale-suppressions`, `--ci`, `--group-by`, `--summary`, `--fail-on-regression`, `--tolerance`, `--regression-baseline`, `--save-regression-baseline` |
 | `watch` | Watch for changes and re-run analysis | `--no-clear` |
-| `inspect` | Inspect one file or exported symbol as a bundled evidence query | `--file`, `--symbol` |
+| `inspect` | Compose one evidence bundle for a file or exported symbol | `--file <path>`, `--symbol <file>:<export>` |
 | `fix` | Auto-remove unused exports/deps | `--dry-run`, `--yes` (required in non-TTY) |
 | `init` | Generate config file, AGENTS.md agent guide, or pre-commit hook | `--toml`, `--agents`, `--hooks`, `--branch` |
 | `hooks` | Inspect, install, or remove fallow-managed Git and agent hooks | `status`, `install --target git`, `install --target agent`, `uninstall --target git`, `uninstall --target agent` |
@@ -105,7 +113,7 @@ Route by intent before reaching for the big analysis commands. Same matrix as `f
 | `explain` | Explain one issue type without running analysis | `<issue-type>`, `--format json` |
 | `audit` | Combined dead-code + complexity + duplication for changed files | `--base`, `--gate`, `--production`, `--production-dead-code`, `--production-health`, `--production-dupes`, `--workspace`, `--changed-workspaces`, `--ci`, `--fail-on-issues`, `--explain`, `--explain-skipped`, `--dead-code-baseline`, `--health-baseline`, `--dupes-baseline`, `--max-crap`, `--coverage`, `--coverage-root`, `--include-entry-exports` |
 | `impact` | Show what fallow has done for you: how many issues it is surfacing, the trend since the last recorded run, and how many commits it contained at the pre-commit gate | `--all`, `--sort`, `--limit` |
-| `security` | Surface opt-in local security candidates for agent verification (not confirmed vulnerabilities). Rule families include the graph rule `client-server-leak`, a data-driven `tainted-sink` catalogue, and the include-required `hardcoded-secret` category for provider-prefix credentials and high-entropy literals assigned to secret-shaped identifiers. Most catalogue rows require non-literal input; narrowly literal-aware rows flag deterministic unsafe literals. Rules default off; suppress a file with `// fallow-ignore-file security-sink`; scope categories with `security.categories`. Add project-local request object names with `security.requestReceivers`; it extends the built-in `req` / `request` / `ctx` / `context` / `event` allowlist for HTTP `query`, `params`, and `body` reads. `hardcoded-secret` runs only when listed in `security.categories.include`. `security survivors` renders verifier-retained candidates from fallow JSON plus verdict JSON, and `security blind-spots` groups unresolved callee diagnostics. | `--format human\|json\|sarif`, `--changed-since`, `--file`, `--diff-file`, `--workspace`, `--changed-workspaces`, `--surface`, `--ci`, `--fail-on-issues`, `--sarif-file`, `--summary`, `survivors --candidates --verdicts --require-verdict-for-each-candidate`, `blind-spots --file` |
+| `security` | Surface opt-in local security candidates for agent verification (not confirmed vulnerabilities). Rule families include the graph rule `client-server-leak`, a data-driven `tainted-sink` catalogue, and the include-required `hardcoded-secret` category for provider-prefix credentials and high-entropy literals assigned to secret-shaped identifiers. Most catalogue rows require non-literal input; narrowly literal-aware rows flag deterministic unsafe literals. Rules default off; suppress a file with `// fallow-ignore-file security-sink`; scope categories with `security.categories`. Add project-local request object names with `security.requestReceivers`; it extends the built-in `req` / `request` / `ctx` / `context` / `event` allowlist for HTTP `query`, `params`, and `body` reads. `hardcoded-secret` runs only when listed in `security.categories.include`. | `--format human\|json\|sarif`, `--changed-since`, `--file`, `--diff-file`, `--workspace`, `--changed-workspaces`, `--surface`, `--ci`, `--fail-on-issues`, `--sarif-file`, `--summary` |
 | `schema` | Dump CLI definition as JSON |  |
 | `ci-template` | Print or vendor CI integration templates |  |
 | `migrate` | Convert knip/jscpd config | `--dry-run`, `--from PATH` |
@@ -117,8 +125,6 @@ Route by intent before reaching for the big analysis commands. Same matrix as `f
 
 Run `fallow <command> --help` for the full flag list per command (see also references/cli-reference.md).
 <!-- generated:commands:end -->
-
-Security survivor verdict files may be either a bare array or a wrapper object with `verdicts`. Supported verdicts are `survivor`, `needs-human-review`, and `dismissed`. Example wrapper: `{"schema_version":"fallow-security-verdicts/v1","verdicts":[{"schema_version":"fallow-security-verdict/v1","finding_id":"sec-a","verdict":"survivor","rationale":"validated reachable user input"}]}`.
 
 ## Issue Types
 
@@ -157,7 +163,7 @@ Security survivor verdict files may be either a bare array or a wrapper object w
 | `misplaced-directive` | - | - | `// fallow-ignore-next-line misplaced-directive` | "use client" / "use server" directive is not in the leading position and is ignored; Requires the project to declare next |
 | `unprovided-inject` | `--unprovided-injects` | - | `// fallow-ignore-next-line unprovided-inject` | inject() / getContext() reads a key that no provide() / setContext() supplies |
 | `unrendered-component` | `--unrendered-components` | - | `// fallow-ignore-next-line unrendered-component` | A Vue / Svelte component is reachable through a barrel but rendered nowhere |
-| `unused-component-prop` | `--unused-component-props` | - | `// fallow-ignore-next-line unused-component-prop` | A Vue, Svelte, or React component prop is referenced nowhere in its own component |
+| `unused-component-prop` | `--unused-component-props` | - | `// fallow-ignore-next-line unused-component-prop` | A Vue defineProps prop or React component prop is referenced nowhere in its own component |
 | `unused-component-emit` | `--unused-component-emits` | - | `// fallow-ignore-next-line unused-component-emit` | A Vue <script setup> defineEmits event is emitted nowhere in its own component |
 | `unused-component-input` | `--unused-component-inputs` | - | `// fallow-ignore-next-line unused-component-input` | An Angular @Input() / signal input() / model() is read nowhere in its own component (class body or template); needs `@angular/core` dep |
 | `unused-component-output` | `--unused-component-outputs` | - | `// fallow-ignore-next-line unused-component-output` | An Angular @Output() / signal output() is emitted (.emit()) nowhere in its own component; needs `@angular/core` dep |
@@ -333,14 +339,11 @@ Reports environment-variable gates (`process.env.FEATURE_*`), SDK calls from com
 ```bash
 fallow security --format json --quiet
 fallow security --format json --quiet --surface
-fallow security survivors --candidates fallow-security.json --verdicts verdicts.json --format json
-fallow security survivors --candidates fallow-security.json --verdicts verdicts.json --require-verdict-for-each-candidate --format json
-fallow security blind-spots --file src/routes/login.ts --format json --quiet
 # Pre-commit gate: review-required (exit 8) only on NEW candidates in changed lines
 git diff --cached --unified=0 | fallow security --gate new --diff-stdin --format json --quiet
 ```
 
-These are unverified candidates, not confirmed vulnerabilities; an agent must verify trace, reachability, and evidence before editing. `--surface` adds a top-level `attack_surface[]` inventory for a verifier. `security survivors` joins raw candidate JSON with verifier verdict JSON, reports `summary.unverdicted`, and can fail incomplete verdict files with `--require-verdict-for-each-candidate`. `security blind-spots` groups bounded unresolved-callee diagnostics and accepts `--file` after the subcommand. The gate modes are `new` (candidates introduced on changed lines) and `newly-reachable` (candidates that became reachable from entry points, which needs `--changed-since <ref>`); there is no `all` mode by design. The gate fails with exit 8, distinct from the standard exit ladder.
+These are unverified candidates, not confirmed vulnerabilities; an agent must verify trace, reachability, and evidence before editing. `--surface` adds a top-level `attack_surface[]` inventory for a verifier. The gate modes are `new` (candidates introduced on changed lines) and `newly-reachable` (candidates that became reachable from entry points, which needs `--changed-since <ref>`); there is no `all` mode by design. The gate fails with exit 8, distinct from the standard exit ladder.
 
 ### Find untested runtime-reachable code (coverage gaps)
 ```bash

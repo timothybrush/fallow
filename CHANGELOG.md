@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.100.0] - 2026-06-19
+
 ### Added
 
 - **Rule packs can now ban catalogue-derived effect classes.** `banned-effect` rules let teams forbid calls whose callee matches an internal security-catalogue effect such as `network`, `storage`, `shell`, `crypto`, `randomness`, `dom`, or `database`. The effect is stored on each `security_matchers.toml` row and resolved through the same written plus import-resolved callee matching used by `banned-call`, including framework dependency gates. Findings continue to report as `policy-violation` with scoped suppression via `<pack>/<rule-id>`. (Closes [#1143](https://github.com/fallow-rs/fallow/issues/1143).)
@@ -14,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`fallow dupes` now scans authored web-format code outside JS and TS.** Duplicate detection now tokenizes `.css`, `.scss`, `.sass`, and `.less` files, plus Vue and Svelte template and style regions and Astro template and style regions. SFC and Astro regions keep section boundaries, so a clone candidate cannot be formed by stitching script, markup, and style tokens together. Warm duplicate-token caches refresh on upgrade because older caches stored these files as empty or script-only streams.
 
 - **`unused-component-prop` now covers Svelte 5 `$props()` destructures.** Svelte components that declare a prop through `$props()` and never read it in their script or markup now report through the existing `unused-component-prop` rule. The finding keeps the same output shape, severity, manual action, and suppression token as Vue and React component-prop findings. It stays conservative by requiring a declared `svelte` or `@sveltejs/kit` dependency and abstaining when a `$props()` destructure contains rest, computed, nested, or whole-object shapes that could hide a use.
+
+- **`fallow inspect` bundles every evidence query for one file or exported symbol.** The new read-only `inspect` command exposes on the CLI (and in the editor) the same evidence bundle the MCP `inspect_target` tool returns: it composes existing trace, dead-code, duplication, complexity, and security evidence into one typed JSON result without adding a new analyzer pass. Target a file with `fallow inspect --file src/foo.ts` or a symbol with `fallow inspect --symbol src/foo.ts:Foo`; symbol targets add precise `trace_export` identity plus file-scoped evidence for the analyses that do not yet map to an enclosing symbol. The VS Code inspect command saves dirty files before running and consumes the typed output.
+
+- **`fallow health --format json` can now report framework detector coverage.** When a health run already has the dead-code analysis output it needs, health JSON gains an optional `framework_health` block listing the detected framework ids and the scoped status of each framework detector (active, disabled, abstained, or not-checked). This makes it visible why a framework-specific finding did or did not surface in a given run. The block is omitted when the run did not need analysis data, so default health output stays lean.
+
+- **`fallow security` gains verifier-workflow outputs for CI and agents.** Two read-only subcommands close the loop between fallow's security candidates and an external verifier. `fallow security survivors` joins raw `fallow security --format json` candidates with a verdict file so confirmed survivors are reported without rewriting the candidate output; it surfaces `summary.unverdicted`, separates verifier dispositions from unreviewed candidates in human output, and offers `--require-verdict-for-each-candidate` as a strict complete-verdict CI gate (structured exit 2 on an incomplete verdict file). `fallow security blind-spots` groups unresolved security callees and accepts `--file` before or after the subcommand. The new output contracts are wired through schema generation and the generated TypeScript types, and the unverified-candidate framing is preserved throughout.
+
+### Changed
+
+- **SARIF file output now streams to disk.** Writing SARIF with `--output-file` / `-o` (or `--sarif-file`) streams the report to the file instead of building the whole document in memory first, lowering peak memory on large result sets. Output content is unchanged.
 
 ### Fixed
 
@@ -23,9 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`fallow dupes --format compact` now emits traceable clone lines.** Duplication compact output uses the `code-duplication` issue tag and includes the stable `dup:<id>` fingerprint plus group, token, line, and instance metadata on each clone instance line, so agents can jump straight to `fallow dupes --trace dup:<id>` without scraping human output.
 
+- **`audit --gate new-only` no longer reports pre-existing clones as introduced when edits only shift line numbers.** Editing a large file in a way that moved an unchanged duplicate block to different line numbers could make the audit gate attribute that inherited clone as newly introduced and fail the gate. Clone attribution now matches inherited clones by their content fingerprint independent of line position, so a line-shift alone keeps the clone inherited. A regression test covers the shifted-duplicate case across platforms. Thanks [@dotmaster](https://github.com/dotmaster) for the report. (Closes [#1340](https://github.com/fallow-rs/fallow/issues/1340).)
+
 ### Documentation
 
-- **MCP server setup now covers project devDependency installs.** The MCP config snippets previously assumed `fallow-mcp` was on your `PATH` (a global install). When fallow is installed as a project devDependency, the binary lives in `node_modules/.bin/` and the server fails to start with `ENOENT`. The MCP integration guide, quickstart, and npm README now show the package-manager runner variants (`npx` / `pnpm exec` / `yarn` / `bunx`) alongside the global form. Thanks to the reporter for flagging it. (Closes [#1343](https://github.com/fallow-rs/fallow/issues/1343).)
+- **MCP server setup now covers project devDependency installs.** The MCP config snippets previously assumed `fallow-mcp` was on your `PATH` (a global install). When fallow is installed as a project devDependency, the binary lives in `node_modules/.bin/` and the server fails to start with `ENOENT`. The MCP integration guide, quickstart, and npm README now show the package-manager runner variants (`npx` / `pnpm exec` / `yarn` / `bunx`) alongside the global form. Thanks [@wouterkroes](https://github.com/wouterkroes) for flagging it. (Closes [#1343](https://github.com/fallow-rs/fallow/issues/1343).)
+
+- **Refreshed the duplicate-detection benchmark comparison numbers.** The README and comparison docs benchmark figures were re-measured against current upstream releases so the published comparison reflects today's numbers. Thanks [@kucherenko](https://github.com/kucherenko) for flagging the staleness. (Closes [#1316](https://github.com/fallow-rs/fallow/issues/1316).)
 
 ## [2.99.0] - 2026-06-18
 
@@ -3166,7 +3182,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.99.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.100.0...HEAD
+[2.100.0]: https://github.com/fallow-rs/fallow/compare/v2.99.0...v2.100.0
 [2.99.0]: https://github.com/fallow-rs/fallow/compare/v2.98.0...v2.99.0
 [2.98.0]: https://github.com/fallow-rs/fallow/compare/v2.97.0...v2.98.0
 [2.97.0]: https://github.com/fallow-rs/fallow/compare/v2.96.0...v2.97.0
