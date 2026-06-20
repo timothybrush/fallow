@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
@@ -360,36 +360,78 @@ fn reload_config_or_keep_previous(
 }
 
 pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
-    use std::sync::mpsc;
-
     let _ = crate::signal::install_handlers();
     let _graceful = crate::signal::GracefulModeGuard::new();
 
-    let mut config = match load_watch_config(opts) {
+    let config = match load_watch_config(opts) {
         Ok(config) => config,
         Err(code) => return code,
     };
+    if let Err(code) = run_initial_watch_analysis(&config, opts) {
+        return code;
+    }
 
-    let initial_status = analyze_and_report(&config, opts);
+    let mut state = match WatchLoopState::new(opts, config) {
+        Ok(state) => state,
+        Err(code) => return code,
+    };
+    run_watch_loop(opts, &mut state)
+}
+
+fn run_initial_watch_analysis(
+    config: &fallow_config::ResolvedConfig,
+    opts: &WatchOptions<'_>,
+) -> Result<(), ExitCode> {
+    let initial_status = analyze_and_report(config, opts);
     if initial_status != ExitCode::SUCCESS {
-        return initial_status;
+        return Err(initial_status);
     }
     print_waiting(opts);
+    Ok(())
+}
 
-    let (tx, rx) = mpsc::channel();
-    let filter = Arc::new(Mutex::new(WatchFilter::new(&config)));
-    let mut watcher = match create_watcher(opts.root, Arc::clone(&filter), tx.clone()) {
-        Ok(w) => Some(w),
-        Err(e) => {
-            eprintln!("Failed to create file watcher: {e}");
-            return ExitCode::from(2);
-        }
-    };
+struct WatchLoopState {
+    config: fallow_config::ResolvedConfig,
+    filter: Arc<Mutex<WatchFilter>>,
+    watcher: Option<RecommendedWatcher>,
+    tx: mpsc::Sender<WatchEvent>,
+    rx: mpsc::Receiver<WatchEvent>,
+    debouncer: PathDebouncer,
+    detached: bool,
+    next_root_check: Instant,
+    last_reattach_error: Option<Instant>,
+}
 
-    let mut debouncer = PathDebouncer::default();
-    let mut detached = false;
-    let mut next_root_check = Instant::now() + ROOT_POLL_INTERVAL;
-    let mut last_reattach_error = None;
+impl WatchLoopState {
+    fn new(
+        opts: &WatchOptions<'_>,
+        config: fallow_config::ResolvedConfig,
+    ) -> Result<Self, ExitCode> {
+        let (tx, rx) = mpsc::channel();
+        let filter = Arc::new(Mutex::new(WatchFilter::new(&config)));
+        let watcher = match create_watcher(opts.root, Arc::clone(&filter), tx.clone()) {
+            Ok(watcher) => Some(watcher),
+            Err(e) => {
+                eprintln!("Failed to create file watcher: {e}");
+                return Err(ExitCode::from(2));
+            }
+        };
+
+        Ok(Self {
+            config,
+            filter,
+            watcher,
+            tx,
+            rx,
+            debouncer: PathDebouncer::default(),
+            detached: false,
+            next_root_check: Instant::now() + ROOT_POLL_INTERVAL,
+            last_reattach_error: None,
+        })
+    }
+}
+
+fn run_watch_loop(opts: &WatchOptions<'_>, state: &mut WatchLoopState) -> ExitCode {
     loop {
         if crate::signal::is_shutting_down() {
             eprintln!("Watch stopped.");
@@ -397,23 +439,23 @@ pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
         }
 
         let now = Instant::now();
-        if now >= next_root_check {
-            next_root_check = now + ROOT_POLL_INTERVAL;
+        if now >= state.next_root_check {
+            state.next_root_check = now + ROOT_POLL_INTERVAL;
             handle_root_lifecycle(
                 opts,
                 RootLifecycleState {
-                    config: &mut config,
-                    filter: &filter,
-                    watcher: &mut watcher,
-                    tx: &tx,
-                    debouncer: &mut debouncer,
-                    detached: &mut detached,
-                    last_reattach_error: &mut last_reattach_error,
+                    config: &mut state.config,
+                    filter: &state.filter,
+                    watcher: &mut state.watcher,
+                    tx: &state.tx,
+                    debouncer: &mut state.debouncer,
+                    detached: &mut state.detached,
+                    last_reattach_error: &mut state.last_reattach_error,
                 },
             );
         }
 
-        match receive_watch_event(&rx, &mut debouncer, detached) {
+        match receive_watch_event(&state.rx, &mut state.debouncer, state.detached) {
             WatchPoll::Continue => continue,
             WatchPoll::Disconnected => {
                 eprintln!("Channel error: notify sender disconnected");
@@ -422,8 +464,8 @@ pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
             WatchPoll::Idle => {}
         }
 
-        if !detached {
-            run_ready_reanalysis(&mut config, opts, &mut debouncer);
+        if !state.detached {
+            run_ready_reanalysis(&mut state.config, opts, &mut state.debouncer);
         }
     }
 }
