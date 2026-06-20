@@ -860,25 +860,7 @@ struct ExportEntry {
 /// the caller can drop them as unrelated leaf modules.
 fn partition_by_common_importer(entries: &[ExportEntry], graph: &ModuleGraph) -> Vec<Vec<usize>> {
     let n = entries.len();
-
-    // Union-Find with path compression.
-    let mut parent: Vec<usize> = (0..n).collect();
-
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
-
-    fn union(parent: &mut [usize], a: usize, b: usize) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent[ra] = rb;
-        }
-    }
+    let mut union_find = UnionFind::new(n);
 
     // Build importer -> [entry index] map so we can union all entries that share
     // a common importer.
@@ -897,7 +879,7 @@ fn partition_by_common_importer(entries: &[ExportEntry], graph: &ModuleGraph) ->
     for members in importer_to_entries.values() {
         if let Some((&first, rest)) = members.split_first() {
             for &other in rest {
-                union(&mut parent, first, other);
+                union_find.union(first, other);
             }
         }
     }
@@ -914,19 +896,52 @@ fn partition_by_common_importer(entries: &[ExportEntry], graph: &ModuleGraph) ->
             if entry_file_ids.contains(&importer)
                 && let Some(j) = entries.iter().position(|e| e.file_id == importer)
             {
-                union(&mut parent, i, j);
+                union_find.union(i, j);
             }
         }
     }
 
-    // Group entry indices by their union-find root.
-    let mut components: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
-    for i in 0..n {
-        let root = find(&mut parent, i);
-        components.entry(root).or_default().push(i);
+    union_find.components()
+}
+
+/// Union-Find with path compression for duplicate-export component grouping.
+struct UnionFind {
+    parent: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+        }
     }
 
-    components.into_values().collect()
+    fn find(&mut self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]];
+            x = self.parent[x];
+        }
+        x
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let root_a = self.find(a);
+        let root_b = self.find(b);
+        if root_a != root_b {
+            self.parent[root_a] = root_b;
+        }
+    }
+
+    fn components(mut self) -> Vec<Vec<usize>> {
+        // Group entry indices by their union-find root.
+        let mut components: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+        for i in 0..self.parent.len() {
+            let root = self.find(i);
+            components.entry(root).or_default().push(i);
+        }
+
+        components.into_values().collect()
+    }
 }
 
 /// Find exports that appear with the same name in multiple files (potential duplicates).
