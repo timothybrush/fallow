@@ -247,21 +247,31 @@ fn collect_route_used_keys<'a>(
     // sibling's `data.<key>` accesses, and abstain wholesale if the universal
     // load forwards `data` opaquely.
     if is_server_load_producer(producer_path) {
-        for universal_name in UNIVERSAL_LOAD_NAMES {
-            let Some(universal) = module_by_path
-                .get(route_dir.join(universal_name).as_path())
-                .copied()
-            else {
-                continue;
-            };
-            if sibling_passes_whole_data(universal) {
-                return None;
-            }
-            collect_data_member_accesses(universal, &mut route_used);
-        }
+        collect_universal_load_used_keys(route_dir, module_by_path, &mut route_used)?;
     }
 
     Some(route_used)
+}
+
+fn collect_universal_load_used_keys<'a>(
+    route_dir: &Path,
+    module_by_path: &FxHashMap<&Path, &'a ModuleInfo>,
+    route_used: &mut FxHashSet<&'a str>,
+) -> Option<()> {
+    for universal_name in UNIVERSAL_LOAD_NAMES {
+        let Some(universal) = module_by_path
+            .get(route_dir.join(universal_name).as_path())
+            .copied()
+        else {
+            continue;
+        };
+        if sibling_passes_whole_data(universal) {
+            return None;
+        }
+        collect_data_member_accesses(universal, route_used);
+    }
+
+    Some(())
 }
 
 struct ProducerFindingInput<'a> {
