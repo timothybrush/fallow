@@ -562,68 +562,40 @@ pub(super) fn parse_tag_attrs(tag: &str, braced_values: bool) -> ParsedTag {
     let self_closing = inner.ends_with('/');
     let inner = inner.trim_end_matches('/').trim_end();
 
-    let name_end = inner
-        .char_indices()
-        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
-        .unwrap_or(inner.len());
+    let name_end = scan_tag_name_end(inner);
     let name = inner[..name_end].trim().to_string();
 
+    ParsedTag {
+        name,
+        attrs: parse_attrs(inner, name_end, braced_values),
+        self_closing,
+    }
+}
+
+fn scan_tag_name_end(inner: &str) -> usize {
+    inner
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+        .unwrap_or(inner.len())
+}
+
+fn parse_attrs(inner: &str, start: usize, braced_values: bool) -> Vec<ParsedAttr> {
     let mut attrs = Vec::new();
-    let mut index = name_end;
+    let mut index = start;
 
     while index < inner.len() {
-        let remaining = &inner[index..];
-        let trimmed = remaining.trim_start();
-        index += remaining.len() - trimmed.len();
+        index = skip_whitespace(inner, index);
         if index >= inner.len() {
             break;
         }
 
-        let name_end = inner[index..]
-            .char_indices()
-            .find_map(|(offset, ch)| (ch.is_whitespace() || ch == '=').then_some(index + offset))
-            .unwrap_or(inner.len());
-        let attr_name = inner[index..name_end].trim();
-        index = name_end;
+        let (attr_name, next_index) = scan_attr_name(inner, index);
+        index = skip_whitespace(inner, next_index);
 
-        let remaining = &inner[index..];
-        let trimmed = remaining.trim_start();
-        index += remaining.len() - trimmed.len();
-
-        let mut value = None;
-        if inner.as_bytes().get(index) == Some(&b'=') {
-            index += 1;
-            let remaining = &inner[index..];
-            let trimmed = remaining.trim_start();
-            index += remaining.len() - trimmed.len();
-            if let Some(quote) = inner.as_bytes().get(index).copied() {
-                if quote == b'\'' || quote == b'"' {
-                    let quote = quote as char;
-                    index += 1;
-                    let value_start = index;
-                    while index < inner.len() && inner.as_bytes()[index] as char != quote {
-                        index += 1;
-                    }
-                    value = Some(inner[value_start..index].to_string());
-                    if index < inner.len() {
-                        index += 1;
-                    }
-                } else if braced_values && quote == b'{' {
-                    let Some((expr, next_index)) = scan_curly_section(inner, index, 1, 1) else {
-                        break;
-                    };
-                    value = Some(format!("{{{expr}}}"));
-                    index = next_index;
-                } else {
-                    let value_end = inner[index..]
-                        .char_indices()
-                        .find_map(|(offset, ch)| ch.is_whitespace().then_some(index + offset))
-                        .unwrap_or(inner.len());
-                    value = Some(inner[index..value_end].to_string());
-                    index = value_end;
-                }
-            }
-        }
+        let Some((value, next_index)) = parse_attr_value(inner, index, braced_values) else {
+            break;
+        };
+        index = next_index;
 
         if !attr_name.is_empty() {
             attrs.push(ParsedAttr {
@@ -633,11 +605,74 @@ pub(super) fn parse_tag_attrs(tag: &str, braced_values: bool) -> ParsedTag {
         }
     }
 
-    ParsedTag {
-        name,
-        attrs,
-        self_closing,
+    attrs
+}
+
+fn skip_whitespace(source: &str, index: usize) -> usize {
+    let remaining = &source[index..];
+    let trimmed = remaining.trim_start();
+    index + remaining.len() - trimmed.len()
+}
+
+fn scan_attr_name(inner: &str, index: usize) -> (&str, usize) {
+    let name_end = inner[index..]
+        .char_indices()
+        .find_map(|(offset, ch)| (ch.is_whitespace() || ch == '=').then_some(index + offset))
+        .unwrap_or(inner.len());
+
+    (inner[index..name_end].trim(), name_end)
+}
+
+fn parse_attr_value(
+    inner: &str,
+    index: usize,
+    braced_values: bool,
+) -> Option<(Option<String>, usize)> {
+    if inner.as_bytes().get(index) != Some(&b'=') {
+        return Some((None, index));
     }
+
+    let index = skip_whitespace(inner, index + 1);
+    let Some(marker) = inner.as_bytes().get(index).copied() else {
+        return Some((None, index));
+    };
+
+    match marker {
+        b'\'' | b'"' => Some(parse_quoted_attr_value(inner, index, marker)),
+        b'{' if braced_values => parse_braced_attr_value(inner, index),
+        _ => Some(parse_unquoted_attr_value(inner, index)),
+    }
+}
+
+fn parse_quoted_attr_value(inner: &str, quote_index: usize, quote: u8) -> (Option<String>, usize) {
+    let mut index = quote_index + 1;
+    let value_start = index;
+
+    while index < inner.len() && inner.as_bytes()[index] != quote {
+        index += 1;
+    }
+
+    let value = Some(inner[value_start..index].to_string());
+    let next_index = if index < inner.len() {
+        index + 1
+    } else {
+        index
+    };
+    (value, next_index)
+}
+
+fn parse_braced_attr_value(inner: &str, index: usize) -> Option<(Option<String>, usize)> {
+    let (expr, next_index) = scan_curly_section(inner, index, 1, 1)?;
+    Some((Some(format!("{{{expr}}}")), next_index))
+}
+
+fn parse_unquoted_attr_value(inner: &str, index: usize) -> (Option<String>, usize) {
+    let value_end = inner[index..]
+        .char_indices()
+        .find_map(|(offset, ch)| ch.is_whitespace().then_some(index + offset))
+        .unwrap_or(inner.len());
+
+    (Some(inner[index..value_end].to_string()), value_end)
 }
 
 #[cfg(test)]
@@ -648,11 +683,50 @@ mod tests {
         extract_pattern_binding_names, kebab_to_camel_case, merge_component_tag_usage,
         merge_expression_usage, merge_expression_usage_allow_dollar_refs,
         merge_pattern_binding_usage, merge_statement_usage,
-        merge_statement_usage_allow_dollar_refs, split_top_level, split_top_level_once,
-        strip_trailing_type_annotation, strip_wrapping, trim_outer_parens, uppercase_first,
-        valid_identifier,
+        merge_statement_usage_allow_dollar_refs, parse_tag_attrs, split_top_level,
+        split_top_level_once, strip_trailing_type_annotation, strip_wrapping, trim_outer_parens,
+        uppercase_first, valid_identifier,
     };
     use crate::template_usage::TemplateUsage;
+
+    #[test]
+    fn parse_tag_attrs_handles_vue_values_and_flags() {
+        let parsed = parse_tag_attrs(
+            r#"<Widget :items="items" disabled @click='save(item)' data-id=card />"#,
+            false,
+        );
+
+        assert_eq!(parsed.name, "Widget");
+        assert!(parsed.self_closing);
+        assert_eq!(parsed.attrs[0].name, ":items");
+        assert_eq!(parsed.attrs[0].value.as_deref(), Some("items"));
+        assert_eq!(parsed.attrs[1].name, "disabled");
+        assert_eq!(parsed.attrs[1].value, None);
+        assert_eq!(parsed.attrs[2].name, "@click");
+        assert_eq!(parsed.attrs[2].value.as_deref(), Some("save(item)"));
+        assert_eq!(parsed.attrs[3].name, "data-id");
+        assert_eq!(parsed.attrs[3].value.as_deref(), Some("card"));
+    }
+
+    #[test]
+    fn parse_tag_attrs_handles_svelte_braced_values() {
+        let parsed = parse_tag_attrs(
+            r#"<button class:active={ready && count > 0} aria-label="Save" {...props}>"#,
+            true,
+        );
+
+        assert_eq!(parsed.name, "button");
+        assert!(!parsed.self_closing);
+        assert_eq!(parsed.attrs[0].name, "class:active");
+        assert_eq!(
+            parsed.attrs[0].value.as_deref(),
+            Some("{ready && count > 0}")
+        );
+        assert_eq!(parsed.attrs[1].name, "aria-label");
+        assert_eq!(parsed.attrs[1].value.as_deref(), Some("Save"));
+        assert_eq!(parsed.attrs[2].name, "{...props}");
+        assert_eq!(parsed.attrs[2].value, None);
+    }
 
     #[test]
     fn extracts_nested_object_pattern_bindings() {
