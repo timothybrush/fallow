@@ -2359,6 +2359,36 @@ mod tests {
     }
 
     #[test]
+    fn coverage_directory_ignores_non_json_files_and_sorts_sources() {
+        let root = make_temp_dir("coverage-source-sort");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create temp dir: {err}"));
+        std::fs::write(root.join("notes.txt"), "not coverage")
+            .unwrap_or_else(|err| panic!("failed to write notes.txt: {err}"));
+        std::fs::write(root.join("z-v8.json"), "{\"result\":[]}")
+            .unwrap_or_else(|err| panic!("failed to write z-v8.json: {err}"));
+        std::fs::write(root.join("a-istanbul.json"), "{}")
+            .unwrap_or_else(|err| panic!("failed to write a-istanbul.json: {err}"));
+
+        let prepared = prepare_coverage_sources(&root)
+            .unwrap_or_else(|err| panic!("failed to collect coverage sources: {err}"));
+        let sources = prepared.sources;
+
+        assert_eq!(sources.len(), 2);
+        assert!(matches!(
+            &sources[0],
+            CoverageSource::Istanbul { path } if path.ends_with("a-istanbul.json")
+        ));
+        assert!(matches!(
+            &sources[1],
+            CoverageSource::V8 { path } if path.ends_with("z-v8.json")
+        ));
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
     fn empty_coverage_directory_is_treated_as_v8_directory() {
         let root = make_temp_dir("coverage-empty-dir");
         std::fs::create_dir_all(&root)
@@ -2567,6 +2597,24 @@ mod tests {
     }
 
     #[test]
+    fn scoped_platform_sidecar_ignores_unusable_package_dirs() {
+        let root = make_temp_dir("sidecar-scoped-ignore");
+        let scoped = root.join("node_modules").join("@fallow-cli");
+        std::fs::create_dir_all(scoped.join("fallow-cov-darwin-arm64"))
+            .unwrap_or_else(|err| panic!("failed to create scoped package: {err}"));
+        std::fs::create_dir_all(scoped.join("not-fallow-cov"))
+            .unwrap_or_else(|err| panic!("failed to create unrelated package: {err}"));
+
+        assert_eq!(
+            super::find_scoped_platform_sidecar(&scoped, sidecar_binary_name()),
+            None
+        );
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
     fn detects_package_manager_from_field_before_lockfiles() {
         let root = make_temp_dir("sidecar-package-manager-field");
         std::fs::create_dir_all(&root)
@@ -2761,6 +2809,25 @@ mod tests {
         .unwrap_or_else(|| panic!("failed to resolve npm-local sidecar"));
 
         assert_eq!(resolved, sidecar);
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn package_manager_sidecar_resolution_ignores_missing_commands() {
+        let root = make_temp_dir("sidecar-missing-command");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
+
+        let resolved = resolve_sidecar_via_command(
+            &root,
+            std::ffi::OsStr::new("definitely-not-fallow-cov-manager"),
+            &["bin"],
+            PackageManagerOutput::BinDir,
+        );
+
+        assert_eq!(resolved, None);
 
         std::fs::remove_dir_all(&root)
             .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
@@ -3892,6 +3959,61 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_missing_message_uses_detected_package_manager_guidance() {
+        for (name, package_json, lockfile, hint, install) in [
+            (
+                "npm",
+                r#"{"name":"p","packageManager":"npm@10.0.0"}"#,
+                "package-lock.json",
+                "`npm root` + `.bin/fallow-cov`",
+                "npm install --save-dev @fallow-cli/fallow-cov",
+            ),
+            (
+                "pnpm",
+                r#"{"name":"p","packageManager":"pnpm@9.0.0"}"#,
+                "pnpm-lock.yaml",
+                "`pnpm bin`",
+                "pnpm add -D @fallow-cli/fallow-cov",
+            ),
+            (
+                "yarn",
+                r#"{"name":"p","packageManager":"yarn@4.0.0"}"#,
+                "yarn.lock",
+                "`yarn bin fallow-cov`",
+                "yarn add -D @fallow-cli/fallow-cov",
+            ),
+            (
+                "bun",
+                r#"{"name":"p","packageManager":"bun@1.2.0"}"#,
+                "bun.lock",
+                "`bun pm bin`",
+                "bun add -d @fallow-cli/fallow-cov",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::fs::write(dir.path().join("package.json"), package_json)
+                .unwrap_or_else(|err| panic!("failed to write package.json for {name}: {err}"));
+            std::fs::write(dir.path().join(lockfile), "")
+                .unwrap_or_else(|err| panic!("failed to write {lockfile}: {err}"));
+
+            let message = super::sidecar_missing_message(Some(dir.path()));
+
+            assert!(
+                message.contains("node_modules/.bin/fallow-cov"),
+                "{name} message should list project-local bin path: {message}"
+            );
+            assert!(
+                message.contains(hint),
+                "{name} message should include lookup hint {hint}: {message}"
+            );
+            assert!(
+                message.contains(install),
+                "{name} message should include install command {install}: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn detect_package_manager_prefers_package_json_field() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -3928,22 +4050,31 @@ mod tests {
 
     #[test]
     fn package_manager_install_commands_match_detected_tool() {
-        assert_eq!(
-            super::LocalPackageManager::Npm.install_command(),
-            "npm install --save-dev @fallow-cli/fallow-cov"
-        );
-        assert_eq!(
-            super::LocalPackageManager::Pnpm.install_command(),
-            "pnpm add -D @fallow-cli/fallow-cov"
-        );
-        assert_eq!(
-            super::LocalPackageManager::Yarn.install_command(),
-            "yarn add -D @fallow-cli/fallow-cov"
-        );
-        assert_eq!(
-            super::LocalPackageManager::Bun.install_command(),
-            "bun add -d @fallow-cli/fallow-cov"
-        );
+        for (manager, install, hint) in [
+            (
+                super::LocalPackageManager::Npm,
+                "npm install --save-dev @fallow-cli/fallow-cov",
+                "`npm root` + `.bin/fallow-cov`",
+            ),
+            (
+                super::LocalPackageManager::Pnpm,
+                "pnpm add -D @fallow-cli/fallow-cov",
+                "`pnpm bin`",
+            ),
+            (
+                super::LocalPackageManager::Yarn,
+                "yarn add -D @fallow-cli/fallow-cov",
+                "`yarn bin fallow-cov`",
+            ),
+            (
+                super::LocalPackageManager::Bun,
+                "bun add -d @fallow-cli/fallow-cov",
+                "`bun pm bin`",
+            ),
+        ] {
+            assert_eq!(manager.install_command(), install);
+            assert_eq!(manager.lookup_hint(), hint);
+        }
     }
 
     #[test]
