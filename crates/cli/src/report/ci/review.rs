@@ -333,7 +333,7 @@ fn render_merged_comment(
     let marker_line = format!("\n\n{MARKER_PREFIX_V2}{fingerprint}{MARKER_SUFFIX_V2}");
     let (body, truncated) = cap_body_with_marker(&content, &marker_line);
 
-    build_review_comment(
+    build_review_comment(ReviewCommentInput {
         provider,
         representative,
         gitlab_diff_refs,
@@ -341,7 +341,7 @@ fn render_merged_comment(
         body,
         fingerprint,
         truncated,
-    )
+    })
 }
 
 /// Concatenate each grouped finding into one merged comment body string.
@@ -377,15 +377,26 @@ fn build_merged_comment_content(
 }
 
 /// Build the provider-specific `ReviewComment` from a rendered body and metadata.
-fn build_review_comment(
+struct ReviewCommentInput<'a> {
     provider: Provider,
-    representative: &CiIssue,
-    gitlab_diff_refs: Option<&GitlabDiffRefs>,
-    diff_index: Option<&DiffIndex>,
+    representative: &'a CiIssue,
+    gitlab_diff_refs: Option<&'a GitlabDiffRefs>,
+    diff_index: Option<&'a DiffIndex>,
     body: String,
     fingerprint: String,
     truncated: bool,
-) -> ReviewComment {
+}
+
+fn build_review_comment(input: ReviewCommentInput<'_>) -> ReviewComment {
+    let ReviewCommentInput {
+        provider,
+        representative,
+        gitlab_diff_refs,
+        diff_index,
+        body,
+        fingerprint,
+        truncated,
+    } = input;
     match provider {
         Provider::Github => ReviewComment::GitHub(GitHubReviewComment {
             path: representative.path.clone(),
