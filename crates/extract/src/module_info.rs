@@ -6,7 +6,7 @@ use fallow_types::discover::FileId;
 /// Callers provide the fields that can be present for their surface. Everything
 /// else stays empty because CSS, SFC shells, and other non-JS wrappers do not
 /// directly contribute JS AST-level facts.
-pub(crate) fn non_js_module_info(
+pub fn non_js_module_info(
     file_id: FileId,
     content_hash: u64,
     source: &str,
