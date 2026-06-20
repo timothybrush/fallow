@@ -21,7 +21,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use fallow_types::extract::ModuleInfo;
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::results::UnusedComponentProp;
 
 use super::{LineOffsetsMap, byte_offset_to_line_col};
@@ -172,11 +172,7 @@ pub fn find_unused_react_props(
     declared_deps: &FxHashSet<String>,
     line_offsets_by_file: &LineOffsetsMap<'_>,
 ) -> ReactPropScan {
-    let gated = declared_deps.contains("react")
-        || declared_deps.contains("react-dom")
-        || declared_deps.contains("next")
-        || declared_deps.contains("preact");
-    if !gated {
+    if !has_react_runtime_dep(declared_deps) {
         return ReactPropScan::default();
     }
 
@@ -194,41 +190,7 @@ pub fn find_unused_react_props(
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.component_functions.is_empty() {
-            continue;
-        }
-        scan.components_scanned += module.component_functions.len();
-        if module.react_props.is_empty() {
-            continue;
-        }
-
-        // Per-component abstain set: a component whose props are unharvestable
-        // (rest/spread, bare props param, computed/nested key) or that is
-        // exported (public contract) flags NO props. Built once per file.
-        let abstained: FxHashSet<&str> = module
-            .component_functions
-            .iter()
-            .filter(|c| c.has_unharvestable_props || c.is_exported)
-            .map(|c| c.name.as_str())
-            .collect();
-
-        for prop in &module.react_props {
-            if prop.used_in_script {
-                continue;
-            }
-            if abstained.contains(prop.component.as_str()) {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
-            scan.findings.push(UnusedComponentProp {
-                path: node.path.clone(),
-                component_name: prop.component.clone(),
-                prop_name: prop.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_react_props(node, module, line_offsets_by_file, &mut scan);
     }
 
     scan.findings.sort_by(|a, b| {
@@ -239,4 +201,57 @@ pub fn find_unused_react_props(
             .then(a.prop_name.cmp(&b.prop_name))
     });
     scan
+}
+
+fn has_react_runtime_dep(declared_deps: &FxHashSet<String>) -> bool {
+    declared_deps.contains("react")
+        || declared_deps.contains("react-dom")
+        || declared_deps.contains("next")
+        || declared_deps.contains("preact")
+}
+
+fn collect_module_unused_react_props(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    scan: &mut ReactPropScan,
+) {
+    if module.component_functions.is_empty() {
+        return;
+    }
+    scan.components_scanned += module.component_functions.len();
+    if module.react_props.is_empty() {
+        return;
+    }
+
+    let abstained = react_prop_abstained_components(module);
+    for prop in &module.react_props {
+        if prop.used_in_script {
+            continue;
+        }
+        if abstained.contains(prop.component.as_str()) {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
+        scan.findings.push(UnusedComponentProp {
+            path: node.path.clone(),
+            component_name: prop.component.clone(),
+            prop_name: prop.name.clone(),
+            line,
+            col,
+        });
+    }
+}
+
+fn react_prop_abstained_components(module: &ModuleInfo) -> FxHashSet<&str> {
+    // Per-component abstain set: a component whose props are unharvestable
+    // (rest/spread, bare props param, computed/nested key) or that is exported
+    // (public contract) flags no props. Built once per file.
+    module
+        .component_functions
+        .iter()
+        .filter(|c| c.has_unharvestable_props || c.is_exported)
+        .map(|c| c.name.as_str())
+        .collect()
 }
