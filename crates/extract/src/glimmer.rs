@@ -3,6 +3,24 @@
 use std::ops::Range;
 use std::path::Path;
 
+const OPEN_TEMPLATE: &str = "<template";
+const CLOSE_TEMPLATE: &str = "</template>";
+
+#[derive(Clone, Copy, Debug)]
+struct TemplateSpan {
+    start: usize,
+    opening_end: usize,
+    close_start: usize,
+    close_end: usize,
+    has_closing_tag: bool,
+}
+
+impl TemplateSpan {
+    fn range(self) -> Range<usize> {
+        self.start..self.close_end
+    }
+}
+
 /// Return `true` for Glimmer source files.
 #[must_use]
 pub fn is_glimmer_file(path: &Path) -> bool {
@@ -26,21 +44,12 @@ pub fn find_template_ranges(source: &str) -> Vec<Range<usize>> {
     let n = source.len();
     let mut cursor = 0;
 
-    while let Some(relative_start) = source[cursor..].find("<template") {
-        let start = cursor + relative_start;
-        let after_template_word = start + "<template".len();
-        let opening_end = source[after_template_word..]
-            .find('>')
-            .map_or(n, |r| after_template_word + r + 1);
-        let close_end = source[opening_end..]
-            .find("</template>")
-            .map_or(n, |r| opening_end + r + "</template>".len());
-
-        ranges.push(start..close_end);
-        if close_end >= n {
+    while let Some(span) = next_template_span(source, cursor) {
+        ranges.push(span.range());
+        if span.close_end >= n {
             break;
         }
-        cursor = close_end;
+        cursor = span.close_end;
     }
 
     ranges
@@ -77,54 +86,10 @@ pub fn strip_glimmer_templates(source: &str) -> Option<String> {
     let n = source.len();
     let mut cursor = 0;
 
-    while let Some(relative_start) = source[cursor..].find("<template") {
-        let start = cursor + relative_start;
-        let after_template_word = start + "<template".len();
-        let opening_end = source[after_template_word..]
-            .find('>')
-            .map_or(n, |r| after_template_word + r + 1);
-        let close_relative = source[opening_end..].find("</template>");
-        let (close_start_abs, close_end) = match close_relative {
-            Some(r) => (opening_end + r, opening_end + r + "</template>".len()),
-            None => (n, n),
-        };
-
-        let opening_len = opening_end - start;
-        let closing_len = close_end - close_start_abs;
-        let in_expr_position = is_expression_position(source.as_bytes(), start);
-        let can_use_expr_form =
-            in_expr_position && close_relative.is_some() && opening_len >= 2 && closing_len >= 2;
-
-        if can_use_expr_form {
-            bytes[start] = b'(';
-            bytes[start + 1] = b'`';
-            for byte in &mut bytes[start + 2..opening_end] {
-                if !matches!(*byte, b'\n' | b'\r') {
-                    *byte = b' ';
-                }
-            }
-            for byte in &mut bytes[opening_end..close_start_abs] {
-                if matches!(*byte, b'`' | b'$' | b'\\') {
-                    *byte = b' ';
-                }
-            }
-            for byte in &mut bytes[close_start_abs..close_end - 2] {
-                if !matches!(*byte, b'\n' | b'\r') {
-                    *byte = b' ';
-                }
-            }
-            bytes[close_end - 2] = b'`';
-            bytes[close_end - 1] = b')';
-        } else {
-            for byte in &mut bytes[start..close_end] {
-                if !matches!(*byte, b'\n' | b'\r') {
-                    *byte = b' ';
-                }
-            }
-        }
-
+    while let Some(span) = next_template_span(source, cursor) {
+        rewrite_template_span(source.as_bytes(), &mut bytes, span);
         changed = true;
-        cursor = close_end;
+        cursor = span.close_end;
         if cursor >= n {
             break;
         }
@@ -134,6 +99,84 @@ pub fn strip_glimmer_templates(source: &str) -> Option<String> {
         String::from_utf8(bytes).ok()
     } else {
         None
+    }
+}
+
+fn next_template_span(source: &str, cursor: usize) -> Option<TemplateSpan> {
+    let n = source.len();
+    let relative_start = source[cursor..].find(OPEN_TEMPLATE)?;
+    let start = cursor + relative_start;
+    let after_template_word = start + OPEN_TEMPLATE.len();
+    let opening_end = source[after_template_word..]
+        .find('>')
+        .map_or(n, |relative| after_template_word + relative + 1);
+
+    match source[opening_end..].find(CLOSE_TEMPLATE) {
+        Some(relative_close) => {
+            let close_start = opening_end + relative_close;
+            Some(TemplateSpan {
+                start,
+                opening_end,
+                close_start,
+                close_end: close_start + CLOSE_TEMPLATE.len(),
+                has_closing_tag: true,
+            })
+        }
+        None => Some(TemplateSpan {
+            start,
+            opening_end,
+            close_start: n,
+            close_end: n,
+            has_closing_tag: false,
+        }),
+    }
+}
+
+fn rewrite_template_span(source: &[u8], bytes: &mut [u8], span: TemplateSpan) {
+    if can_rewrite_as_expression(source, span) {
+        rewrite_expression_template(bytes, span);
+    } else {
+        blank_template_span(bytes, span);
+    }
+}
+
+fn can_rewrite_as_expression(source: &[u8], span: TemplateSpan) -> bool {
+    let opening_len = span.opening_end - span.start;
+    let closing_len = span.close_end - span.close_start;
+
+    span.has_closing_tag
+        && opening_len >= 2
+        && closing_len >= 2
+        && is_expression_position(source, span.start)
+}
+
+fn rewrite_expression_template(bytes: &mut [u8], span: TemplateSpan) {
+    bytes[span.start] = b'(';
+    bytes[span.start + 1] = b'`';
+    blank_non_newline(&mut bytes[span.start + 2..span.opening_end]);
+    escape_template_literal_bytes(&mut bytes[span.opening_end..span.close_start]);
+    blank_non_newline(&mut bytes[span.close_start..span.close_end - 2]);
+    bytes[span.close_end - 2] = b'`';
+    bytes[span.close_end - 1] = b')';
+}
+
+fn blank_template_span(bytes: &mut [u8], span: TemplateSpan) {
+    blank_non_newline(&mut bytes[span.start..span.close_end]);
+}
+
+fn blank_non_newline(bytes: &mut [u8]) {
+    for byte in bytes {
+        if !matches!(*byte, b'\n' | b'\r') {
+            *byte = b' ';
+        }
+    }
+}
+
+fn escape_template_literal_bytes(bytes: &mut [u8]) {
+    for byte in bytes {
+        if matches!(*byte, b'`' | b'$' | b'\\') {
+            *byte = b' ';
+        }
     }
 }
 
