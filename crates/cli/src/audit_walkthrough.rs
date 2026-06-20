@@ -32,6 +32,7 @@
 //! agent as untrusted: this loop is injection-resistant because the trusted
 //! surface is the graph, and the untrusted surface is fenced.
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::audit::routing::RoutingFacts;
@@ -223,27 +224,65 @@ pub struct WalkthroughValidation {
     pub unanchored_count: usize,
 }
 
-/// Build the review direction from routing + impact closure. Units carrying
-/// out-of-diff consumers (a coordination gap or affected-not-shown set) sort
+/// True when a routing unit names an analyzable source file worth steering a
+/// reviewer through. Non-code churn (LICENSE, .gitignore, README.md, JSON/YAML
+/// config, lockfiles) is excluded from the direction: it carries no contract to
+/// break and only dilutes the order the agent executes.
+fn is_reviewable_source_unit(file: &str) -> bool {
+    matches!(
+        std::path::Path::new(file)
+            .extension()
+            .and_then(|e| e.to_str()),
+        Some(
+            "ts" | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "mts"
+                | "cts"
+                | "gts"
+                | "gjs"
+                | "vue"
+                | "svelte"
+                | "astro"
+        )
+    )
+}
+
+/// Build the review direction from routing + the per-file coordination map.
+/// Each unit's `out_of_diff` is scoped to the consumers of THAT unit's changed
+/// file (not the global affected set), and its `concern_lens` reflects whether
+/// that unit actually breaks a contract. Units with out-of-diff consumers sort
 /// first: review the load-bearing definitions before the mechanical churn.
+/// Non-source churn is excluded so the agent steers through code only.
+#[allow(
+    clippy::implicit_hasher,
+    reason = "fallow standardizes on FxHashMap; fires on the lib target only, so #[expect] is unfulfilled on the bin"
+)]
 #[must_use]
-pub fn build_direction(routing: &RoutingFacts, affected_not_shown: &[String]) -> ReviewDirection {
+pub fn build_direction(
+    routing: &RoutingFacts,
+    out_of_diff_by_file: &FxHashMap<String, Vec<String>>,
+) -> ReviewDirection {
     let mut units: Vec<DirectionUnit> = routing
         .units
         .iter()
+        .filter(|unit| is_reviewable_source_unit(&unit.file))
         .map(|unit| {
-            // A unit with out-of-diff consumers gets the contract-break lens;
-            // otherwise the plain orientation lens. Graph-derived, not prose.
-            let has_out_of_diff = !affected_not_shown.is_empty();
-            let concern_lens = if has_out_of_diff {
-                "contract-break".to_string()
-            } else {
+            // Per-unit out-of-diff: the consumers of THIS file that sit outside
+            // the diff. A unit that breaks a contract gets the contract-break
+            // lens; the rest get the plain orientation lens. Graph-derived.
+            let out_of_diff = out_of_diff_by_file.get(&unit.file).cloned().unwrap_or_default();
+            let concern_lens = if out_of_diff.is_empty() {
                 "orientation".to_string()
+            } else {
+                "contract-break".to_string()
             };
             DirectionUnit {
                 file: unit.file.clone(),
                 concern_lens,
-                out_of_diff: affected_not_shown.to_vec(),
+                out_of_diff,
                 expert: unit.expert.clone(),
             }
         })
@@ -372,13 +411,23 @@ pub fn build_guide_from_result(result: &crate::audit::AuditResult) -> Walkthroug
     let hash = result.graph_snapshot_hash.clone().unwrap_or_default();
     let empty_routing = RoutingFacts::default();
     let routing = result.routing.as_ref().unwrap_or(&empty_routing);
-    let affected_not_shown = result
-        .check
-        .as_ref()
-        .and_then(|c| c.impact_closure.as_ref())
-        .map(|closure| closure.affected_not_shown.clone())
-        .unwrap_or_default();
-    let direction = build_direction(routing, &affected_not_shown);
+    // Per-file out-of-diff map from the (post-stories-filter) coordination gaps:
+    // each changed file -> the consumers outside the diff it actually affects, so
+    // every direction unit carries its OWN out-of-diff, not the global set.
+    let mut out_of_diff_by_file: FxHashMap<String, Vec<String>> = FxHashMap::default();
+    if let Some(closure) = result.check.as_ref().and_then(|c| c.impact_closure.as_ref()) {
+        for gap in &closure.coordination_gap {
+            out_of_diff_by_file
+                .entry(gap.changed_file.clone())
+                .or_default()
+                .push(gap.consumer_file.clone());
+        }
+        for consumers in out_of_diff_by_file.values_mut() {
+            consumers.sort();
+            consumers.dedup();
+        }
+    }
+    let direction = build_direction(routing, &out_of_diff_by_file);
     build_walkthrough_guide(digest, hash, direction)
 }
 
@@ -537,17 +586,50 @@ mod tests {
                 },
             ],
         };
-        let direction = build_direction(&routing, &["src/consumer.ts".to_string()]);
-        // Both units carry the same out-of-diff set, so the tiebreak is the path:
-        // src/a.ts before src/b.ts.
+        // Only src/a.ts has an out-of-diff consumer; src/b.ts has none.
+        let mut out_of_diff_by_file = FxHashMap::default();
+        out_of_diff_by_file.insert("src/a.ts".to_string(), vec!["src/consumer.ts".to_string()]);
+        let direction = build_direction(&routing, &out_of_diff_by_file);
+        // a.ts breaks a contract -> sorts first with the contract-break lens;
+        // b.ts has no out-of-diff consumer -> orientation lens, empty out_of_diff.
         assert_eq!(direction.order, vec!["src/a.ts", "src/b.ts"]);
-        assert!(
-            direction
-                .units
-                .iter()
-                .all(|u| u.concern_lens == "contract-break")
-        );
+        assert_eq!(direction.units[0].file, "src/a.ts");
+        assert_eq!(direction.units[0].concern_lens, "contract-break");
         assert_eq!(direction.units[0].out_of_diff, vec!["src/consumer.ts"]);
+        assert_eq!(direction.units[1].concern_lens, "orientation");
+        assert!(direction.units[1].out_of_diff.is_empty());
+    }
+
+    #[test]
+    fn direction_excludes_non_source_units() {
+        let routing = RoutingFacts {
+            units: vec![
+                RoutingUnit {
+                    file: "LICENSE".to_string(),
+                    expert: Vec::new(),
+                    bus_factor_one: false,
+                },
+                RoutingUnit {
+                    file: ".gitignore".to_string(),
+                    expert: Vec::new(),
+                    bus_factor_one: false,
+                },
+                RoutingUnit {
+                    file: "README.md".to_string(),
+                    expert: Vec::new(),
+                    bus_factor_one: false,
+                },
+                RoutingUnit {
+                    file: "src/app.component.ts".to_string(),
+                    expert: Vec::new(),
+                    bus_factor_one: false,
+                },
+            ],
+        };
+        let direction = build_direction(&routing, &FxHashMap::default());
+        // Only the source unit survives; docs/config/license churn is dropped.
+        assert_eq!(direction.order, vec!["src/app.component.ts"]);
+        assert_eq!(direction.units[0].concern_lens, "orientation");
     }
 
     #[test]

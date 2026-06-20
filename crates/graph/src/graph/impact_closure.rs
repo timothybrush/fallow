@@ -160,6 +160,18 @@ impl ModuleGraph {
                         // Consumer is inside the diff: updated alongside, no gap.
                         continue;
                     }
+                    // Dev-only glue (stories / specs / tests) co-located with the
+                    // changed module is not a cross-module coordination contract: if
+                    // the symbol's shape changes, the story/spec fails loudly in its
+                    // own dev/CI run rather than hiding a production coordination
+                    // risk. Skip it here; it still appears in `affected_not_shown`.
+                    if self
+                        .modules
+                        .get(consumer_idx)
+                        .is_some_and(|m| is_dev_glue_path(&m.path))
+                    {
+                        continue;
+                    }
                     by_consumer
                         .entry(reference.from_file)
                         .or_default()
@@ -231,6 +243,28 @@ impl ModuleGraph {
             coordination_gap,
         }
     }
+}
+
+/// True when `path` is a dev-only glue file (a Storybook story, a test/spec, a
+/// Cypress spec, or a file under a `__tests__` / `__mocks__` / `__stories__`
+/// directory). Such a consumer is NOT a cross-module coordination contract: a
+/// contract change surfaces in its own dev/CI run, never as a hidden production
+/// coordination gap. Co-located stories pairing with their component were the
+/// dominant low-value noise in the E0 coordination-gap evidence.
+fn is_dev_glue_path(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if [".stories.", ".story.", ".spec.", ".test.", ".cy."]
+        .iter()
+        .any(|marker| name.contains(marker))
+    {
+        return true;
+    }
+    path.components().any(|component| {
+        matches!(
+            component.as_os_str().to_str(),
+            Some("__tests__" | "__mocks__" | "__stories__")
+        )
+    })
 }
 
 /// Strip `root` and forward-slash-normalize a module path for cross-platform
@@ -387,6 +421,50 @@ mod tests {
         assert_eq!(gap.changed_file, FileId(0));
         assert_eq!(gap.consumer_file, FileId(1));
         assert_eq!(gap.consumed_symbols, vec!["compute".to_string()]);
+    }
+
+    #[test]
+    fn coordination_gap_skips_story_and_test_consumers() {
+        use fallow_types::discover::{EntryPoint, EntryPointSource};
+        // button.component (0) is changed; consumed by a co-located story (1) AND a
+        // real panel component (2), both OUTSIDE the diff. Only the real consumer is
+        // a coordination gap; the story is dev-only glue that fails in its own run.
+        let files = vec![
+            file(0, "/p/src/button.component.ts"),
+            file(1, "/p/src/button.stories.ts"),
+            file(2, "/p/src/panel.component.ts"),
+        ];
+        let entry_points = vec![EntryPoint {
+            path: PathBuf::from("/p/src/panel.component.ts"),
+            source: EntryPointSource::PackageJsonMain,
+        }];
+        let resolved = vec![
+            ResolvedModule {
+                file_id: FileId(0),
+                path: PathBuf::from("/p/src/button.component.ts"),
+                exports: vec![named_export("BzmButton")],
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(1),
+                path: PathBuf::from("/p/src/button.stories.ts"),
+                resolved_imports: vec![named_import("./button.component", "BzmButton", FileId(0))],
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(2),
+                path: PathBuf::from("/p/src/panel.component.ts"),
+                resolved_imports: vec![named_import("./button.component", "BzmButton", FileId(0))],
+                ..Default::default()
+            },
+        ];
+        let graph = ModuleGraph::build(&resolved, &entry_points, &files);
+        let closure = graph.impact_closure(&[FileId(0)]);
+        // Exactly one gap, on the real consumer; the story is NOT a gap.
+        assert_eq!(closure.coordination_gap.len(), 1);
+        assert_eq!(closure.coordination_gap[0].consumer_file, FileId(2));
+        // The story is still surfaced as affected (declassified, never hidden).
+        assert!(closure.affected_not_shown.contains(&FileId(1)));
     }
 
     #[test]
