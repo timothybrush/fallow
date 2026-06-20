@@ -330,33 +330,12 @@ pub fn scan_theme_blocks(source: &str) -> ThemeScan {
     if !source.contains("@theme") {
         return ThemeScan::default();
     }
-    // Mask comments AND strings/url() so a brace or semicolon inside either does
-    // not break the block boundary. Both masks preserve byte length, so offsets in the
-    // masked buffer line up 1:1 with the original (line numbers are counted in
-    // the original below).
-    let masked = mask_with_whitespace(&mask_css_comments(source, false), &CSS_NON_SELECTOR_RE);
-    let bytes = masked.as_bytes();
+    let masked = mask_theme_source(source);
     let mut out = ThemeScan::default();
     let mut seen: FxHashSet<String> = FxHashSet::default();
     for open in CSS_THEME_OPEN_RE.find_iter(&masked) {
         let body_start = open.end();
-        // Brace-match from just after the opening `{` to its partner.
-        let mut depth = 1usize;
-        let mut i = body_start;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        let body_end = i.min(bytes.len());
+        let body_end = find_theme_body_end(&masked, body_start);
         collect_theme_declarations(
             source,
             &masked,
@@ -365,15 +344,52 @@ pub fn scan_theme_blocks(source: &str) -> ThemeScan {
             &mut out.tokens,
             &mut seen,
         );
-        if let Some(body) = masked.get(body_start..body_end) {
-            for cap in CSS_VAR_REF_RE.captures_iter(body) {
-                if let Some(name) = cap.get(1) {
-                    out.theme_var_reads.push(name.as_str().to_owned());
-                }
-            }
-        }
+        collect_theme_var_reads(&masked, body_start, body_end, &mut out.theme_var_reads);
     }
     out
+}
+
+/// Mask comments, strings, and `url(...)` while preserving byte offsets so
+/// braces inside those regions never affect `@theme` block matching.
+fn mask_theme_source(source: &str) -> String {
+    mask_with_whitespace(&mask_css_comments(source, false), &CSS_NON_SELECTOR_RE)
+}
+
+/// Brace-match from just after a `@theme {` opener to its partner.
+fn find_theme_body_end(masked: &str, body_start: usize) -> usize {
+    let bytes = masked.as_bytes();
+    let mut depth = 1usize;
+    let mut i = body_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i.min(bytes.len())
+}
+
+fn collect_theme_var_reads(
+    masked: &str,
+    body_start: usize,
+    body_end: usize,
+    out: &mut Vec<String>,
+) {
+    let Some(body) = masked.get(body_start..body_end) else {
+        return;
+    };
+    for cap in CSS_VAR_REF_RE.captures_iter(body) {
+        if let Some(name) = cap.get(1) {
+            out.push(name.as_str().to_owned());
+        }
+    }
 }
 
 /// Walk a masked `@theme` body collecting top-level `--ident: value` declarations
@@ -1665,6 +1681,21 @@ mod tests {
     fn theme_token_backs_token_via_var() {
         let scan = scan_theme_blocks(
             "@theme {\n  --color-brand: #f00;\n  --color-button: var(--color-brand);\n}",
+        );
+        assert!(scan.theme_var_reads.contains(&"color-brand".to_string()));
+    }
+
+    #[test]
+    fn theme_string_braces_do_not_truncate_block() {
+        let scan = scan_theme_blocks(
+            "@theme {\n  --font-label: \"}\";\n  --color-brand: #f00;\n  --color-button: var(--color-brand);\n}",
+        );
+        assert_eq!(
+            scan.tokens
+                .iter()
+                .map(|token| token.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["font-label", "color-brand", "color-button"]
         );
         assert!(scan.theme_var_reads.contains(&"color-brand".to_string()));
     }
