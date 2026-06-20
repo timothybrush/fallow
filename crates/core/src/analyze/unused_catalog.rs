@@ -391,6 +391,13 @@ enum DepSection {
     OptionalDependencies,
 }
 
+const DEP_SECTIONS: &[DepSection] = &[
+    DepSection::Dependencies,
+    DepSection::DevDependencies,
+    DepSection::PeerDependencies,
+    DepSection::OptionalDependencies,
+];
+
 impl DepSection {
     const fn json_key(self) -> &'static str {
         match self {
@@ -428,75 +435,108 @@ impl DepLineMap {
 /// Plain JSON: no comments, no trailing commas. A package.json with comments
 /// would fail `serde_json::from_str` upstream and never reach this scanner.
 fn scan_dep_lines(source: &str) -> DepLineMap {
-    let mut entries = Vec::new();
-    let mut current_section: Option<DepSection> = None;
-    let mut section_depth_at_open: u32 = 0;
-    let mut current_depth: u32 = 0;
-
+    let mut scanner = DepLineScanner::default();
     for (idx, raw_line) in source.lines().enumerate() {
+        scanner.scan_line(idx, raw_line);
+    }
+    scanner.finish()
+}
+
+#[derive(Default)]
+struct DepLineScanner {
+    entries: Vec<((DepSection, String), u32)>,
+    current_section: Option<DepSection>,
+    section_depth_at_open: u32,
+    current_depth: u32,
+}
+
+impl DepLineScanner {
+    fn scan_line(&mut self, idx: usize, raw_line: &str) {
         let line_no = u32::try_from(idx).unwrap_or(u32::MAX).saturating_add(1);
         let trimmed = raw_line.trim();
+        self.enter_section_if_opened(trimmed, raw_line);
 
-        if current_section.is_none() {
-            for section in [
-                DepSection::Dependencies,
-                DepSection::DevDependencies,
-                DepSection::PeerDependencies,
-                DepSection::OptionalDependencies,
-            ] {
-                let needle = format!("\"{}\"", section.json_key());
-                if trimmed.starts_with(&needle) && raw_line.contains('{') {
-                    current_section = Some(section);
-                    section_depth_at_open = current_depth.saturating_add(1);
-                    break;
-                }
-            }
+        let depth_before = self.current_depth;
+        let delta = brace_delta_outside_strings(raw_line);
+        self.record_dep_key_if_in_section(depth_before, trimmed, line_no);
+        self.current_depth = depth_before
+            .saturating_add(delta.opens)
+            .saturating_sub(delta.closes);
+        self.leave_section_if_closed();
+    }
+
+    fn enter_section_if_opened(&mut self, trimmed: &str, raw_line: &str) {
+        if self.current_section.is_some() {
+            return;
         }
 
-        let mut opens: u32 = 0;
-        let mut closes: u32 = 0;
-        let mut in_string = false;
-        let mut escaped = false;
-        for ch in raw_line.chars() {
-            if escaped {
-                escaped = false;
-                continue;
+        for section in DEP_SECTIONS {
+            let needle = format!("\"{}\"", section.json_key());
+            if trimmed.starts_with(&needle) && raw_line.contains('{') {
+                self.current_section = Some(*section);
+                self.section_depth_at_open = self.current_depth.saturating_add(1);
+                break;
             }
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-            if ch == '"' {
-                in_string = !in_string;
-                continue;
-            }
-            if in_string {
-                continue;
-            }
-            match ch {
-                '{' => opens = opens.saturating_add(1),
-                '}' => closes = closes.saturating_add(1),
-                _ => {}
-            }
-        }
-
-        let depth_before = current_depth;
-        let depth_after_opens = depth_before.saturating_add(opens);
-        if let Some(section) = current_section
-            && depth_before == section_depth_at_open
-            && let Some(name) = parse_json_key(trimmed)
-        {
-            entries.push(((section, name), line_no));
-        }
-
-        current_depth = depth_after_opens.saturating_sub(closes);
-
-        if current_section.is_some() && current_depth < section_depth_at_open {
-            current_section = None;
         }
     }
 
-    DepLineMap { entries }
+    fn record_dep_key_if_in_section(&mut self, depth_before: u32, trimmed: &str, line_no: u32) {
+        if let Some(section) = self.current_section
+            && depth_before == self.section_depth_at_open
+            && let Some(name) = parse_json_key(trimmed)
+        {
+            self.entries.push(((section, name), line_no));
+        }
+    }
+
+    fn leave_section_if_closed(&mut self) {
+        if self.current_section.is_some() && self.current_depth < self.section_depth_at_open {
+            self.current_section = None;
+        }
+    }
+
+    fn finish(self) -> DepLineMap {
+        DepLineMap {
+            entries: self.entries,
+        }
+    }
+}
+
+#[derive(Default)]
+struct BraceDelta {
+    opens: u32,
+    closes: u32,
+}
+
+fn brace_delta_outside_strings(raw_line: &str) -> BraceDelta {
+    let mut delta = BraceDelta::default();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in raw_line.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => delta.opens = delta.opens.saturating_add(1),
+            '}' => delta.closes = delta.closes.saturating_add(1),
+            _ => {}
+        }
+    }
+
+    delta
 }
 
 /// Parse a JSON object key from a trimmed line of the form `"key": value,?`.
