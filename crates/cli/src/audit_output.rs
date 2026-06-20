@@ -643,6 +643,9 @@ mod tests {
             dupes: None,
             health: None,
             elapsed: Duration::ZERO,
+            review_deltas: None,
+            weakening_signals: Vec::new(),
+            routing: None,
         }
     }
 

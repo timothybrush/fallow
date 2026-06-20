@@ -9,6 +9,7 @@ mod impact_closure;
 mod namespace_aliases;
 mod namespace_re_exports;
 mod narrowing;
+mod public_exports;
 mod re_export_reachability;
 mod re_exports;
 mod reachability;

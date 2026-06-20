@@ -15794,6 +15794,21 @@
         "impact_closure": {
           "description": "Stage 3: the impact closure (affected-not-shown + coordination gap).",
           "$ref": "#/definitions/ImpactClosureFacts"
+        },
+        "deltas": {
+          "description": "E3 (6.A): diff-aware deterministic deltas (boundary/cycle introduced +\nexports-aware public-API surface delta), new-vs-pre-existing.",
+          "$ref": "#/definitions/ReviewDeltas"
+        },
+        "weakening": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WeakeningSignal"
+          },
+          "description": "E3 (6.F, headline): reviewer-private weakening signals (tests\nremoved/skipped, thresholds lowered, suppressions added, security steps\nremoved). Advisory, never gates, never auto-posted."
+        },
+        "routing": {
+          "description": "E3 (6.D): ownership-aware reviewer routing (per-file expert + bus-factor).",
+          "$ref": "#/definitions/RoutingFacts"
         }
       },
       "required": [
@@ -15802,7 +15817,10 @@
         "command",
         "triage",
         "graph_facts",
-        "impact_closure"
+        "impact_closure",
+        "deltas",
+        "weakening",
+        "routing"
       ],
       "title": "fallow audit --brief --format json",
       "description": "The full `fallow audit --brief --format json` envelope. Carries the\ninformational verdict, the triage and graph-facts orientation stages, plus\nthe reused \"subtract\" section (the same dead-code / duplication / complexity\npayload `fallow audit --format json` emits)."
@@ -15976,6 +15994,127 @@
         "note"
       ],
       "description": "One coordination-gap entry: a changed file exports symbols consumed by a\n`consumer_file` that is NOT in the diff. Deduped per (changed, consumer) pair\n(firing-precision rule R2)."
+    },
+    "ReviewDeltas": {
+      "type": "object",
+      "properties": {
+        "boundary_introduced": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Cross-zone boundary EDGES introduced vs base (R2 first-edge-only: one per\n`<from_zone>-><to_zone>` pair, never per import). New-vs-pre-existing."
+        },
+        "cycle_introduced": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Circular dependencies introduced vs base (canonical file-set keys)."
+        },
+        "public_api_added": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exports-aware public-API surface delta: the public-export keys\n(`<rel_path>::<name>`) added vs base, resolved through `package.json`\n`exports` + re-export reachability. A symbol re-exported only through an\ninternal barrel NOT in `exports` is absent here (zero delta); one\nreachable through an `exports` path is present (exactly one)."
+        }
+      },
+      "required": [
+        "boundary_introduced",
+        "cycle_introduced",
+        "public_api_added"
+      ],
+      "description": "E3 diff-aware deterministic deltas (6.A), framed new-vs-pre-existing against\nthe audit base snapshot. Each entry is a brief summary/verdict line.\n\n`public_api` is batch-consolidated to ONE decision per change (E0 rule R1):\nthe `added` list carries the introduced public-export keys as evidence, but a\nreviewer reads \"the public surface widened by N\", never one decision per\nsymbol."
+    },
+    "WeakeningSignal": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "What kind of guardrail was weakened.",
+          "$ref": "#/definitions/WeakeningKind"
+        },
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file the signal was detected in."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Short evidence string (e.g. the offending token or the threshold delta)."
+        }
+      },
+      "required": [
+        "kind",
+        "file",
+        "evidence"
+      ],
+      "description": "One weakening signal: a category, the file it was detected in, and a short\nhuman-readable evidence string. Reviewer-private; never gates."
+    },
+    "WeakeningKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "test-weakened",
+          "description": "A test was removed (a net-removed `it(`/`test(`/`describe(` callsite) or\nskipped (`it.skip`/`xit`/`describe.skip` added, or a `.only` narrowing\nthat silently excludes sibling tests)."
+        },
+        {
+          "type": "string",
+          "const": "threshold-lowered",
+          "description": "A coverage or quality threshold was lowered (a numeric config key whose\nvalue decreased between base and head)."
+        },
+        {
+          "type": "string",
+          "const": "suppression-added",
+          "description": "A suppression was added (a net-new `fallow-ignore` / `eslint-disable` /\n`@ts-ignore` / `@ts-expect-error` in the diff)."
+        },
+        {
+          "type": "string",
+          "const": "security-check-removed",
+          "description": "A security check / step was removed from CI (a net-removed line invoking\na security scanner or audit step)."
+        }
+      ],
+      "description": "The category of a single weakening signal."
+    },
+    "RoutingFacts": {
+      "type": "object",
+      "properties": {
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RoutingUnit"
+          },
+          "description": "Per-changed-file routing units, sorted by file path."
+        }
+      },
+      "required": [
+        "units"
+      ],
+      "description": "The full routing section: one unit per changed source file with a routable\nsignal. Files with no ownership signal are omitted (no noise)."
+    },
+    "RoutingUnit": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s): the CODEOWNERS declared owner when present, else the\ntop git-blame / recency contributor; empty when no signal is available."
+        },
+        "bus_factor_one": {
+          "type": "boolean",
+          "description": "Whether the only qualified owner is a single contributor (bus-factor-1):\na knowledge-concentration risk worth a second reviewer."
+        }
+      },
+      "required": [
+        "file",
+        "expert"
+      ],
+      "description": "One routed unit (a changed file) with its experts and bus-factor flag."
     }
   }
 }

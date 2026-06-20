@@ -16,7 +16,7 @@ use crate::dupes::{DupesMode, DupesOptions, DupesResult};
 use crate::error::emit_error;
 use crate::health::{HealthOptions, HealthResult, SortBy};
 
-const AUDIT_BASE_SNAPSHOT_CACHE_VERSION: u8 = 2;
+const AUDIT_BASE_SNAPSHOT_CACHE_VERSION: u8 = 3;
 const MAX_AUDIT_BASE_SNAPSHOT_CACHE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Verdict for the audit command.
@@ -85,6 +85,12 @@ pub struct AuditResult {
     pub dupes: Option<DupesResult>,
     pub health: Option<HealthResult>,
     pub elapsed: Duration,
+    /// E3 review-brief data, populated only on the brief path. The deltas are
+    /// computed from the head sets vs the base snapshot; weakening + routing are
+    /// computed from git over the changed files. `None` off the brief path.
+    pub review_deltas: Option<crate::audit_brief::ReviewDeltas>,
+    pub weakening_signals: Vec<weakening::WeakeningSignal>,
+    pub routing: Option<routing::RoutingFacts>,
 }
 
 pub struct AuditOptions<'a> {
@@ -480,6 +486,15 @@ pub struct AuditKeySnapshot {
     dead_code: FxHashSet<String>,
     health: FxHashSet<String>,
     dupes: FxHashSet<String>,
+    /// E3 review-brief delta substrate (populated only on the brief path; empty
+    /// otherwise). Cross-zone boundary EDGE keys (`<from_zone>->-<to_zone>`),
+    /// one per distinct zone pair (R2 first-edge-only framing).
+    boundary_edges: FxHashSet<String>,
+    /// E3: canonical circular-dependency keys (rotation-independent file set).
+    cycles: FxHashSet<String>,
+    /// E3: exports-aware public-export keys (`<rel_path>::<name>`), the surface
+    /// reachable through `package.json` `exports` + re-export reachability.
+    public_api: FxHashSet<String>,
 }
 
 struct AuditBaseSnapshotCacheKey {
@@ -496,6 +511,9 @@ struct CachedAuditKeySnapshot {
     dead_code: Vec<String>,
     health: Vec<String>,
     dupes: Vec<String>,
+    boundary_edges: Vec<String>,
+    cycles: Vec<String>,
+    public_api: Vec<String>,
 }
 
 fn count_introduced(keys: &FxHashSet<String>, base: Option<&FxHashSet<String>>) -> (usize, usize) {
@@ -522,6 +540,9 @@ fn snapshot_from_cached(cached: CachedAuditKeySnapshot) -> AuditKeySnapshot {
         dead_code: cached.dead_code.into_iter().collect(),
         health: cached.health.into_iter().collect(),
         dupes: cached.dupes.into_iter().collect(),
+        boundary_edges: cached.boundary_edges.into_iter().collect(),
+        cycles: cached.cycles.into_iter().collect(),
+        public_api: cached.public_api.into_iter().collect(),
     }
 }
 
@@ -537,6 +558,9 @@ fn cached_from_snapshot(
         dead_code: sorted_keys(&snapshot.dead_code),
         health: sorted_keys(&snapshot.health),
         dupes: sorted_keys(&snapshot.dupes),
+        boundary_edges: sorted_keys(&snapshot.boundary_edges),
+        cycles: sorted_keys(&snapshot.cycles),
+        public_api: sorted_keys(&snapshot.public_api),
     }
 }
 
@@ -775,6 +799,14 @@ fn compute_base_snapshot(
     );
     let mut check = check_res?;
     let dupes = dupes_res?;
+    // Compute the exports-aware public-export set against the BASE graph while it
+    // is still retained on the check result, BEFORE health consumes it. The
+    // public_api delta is brief-only, so this only runs on the brief path.
+    let base_public_api = if opts.brief {
+        public_api_keys_from_check(check.as_ref(), &base_root)
+    } else {
+        FxHashSet::default()
+    };
     let shared_parse = if share_dead_code_parse_with_health {
         check.as_mut().and_then(|r| r.shared_parse.take())
     } else {
@@ -789,15 +821,30 @@ fn compute_base_snapshot(
         check.as_ref(),
         dupes.as_ref(),
         health.as_ref(),
+        base_public_api,
     ))
 }
 
-/// Build an `AuditKeySnapshot` of dead-code/health/dupes keys from analysis results.
+/// Build an `AuditKeySnapshot` of dead-code/health/dupes keys from analysis
+/// results. `public_api` is the exports-aware public-export key set, computed by
+/// the caller from the retained graph BEFORE it is dropped (empty off the brief
+/// path). Boundary-edge and cycle delta keys are derived directly from the
+/// dead-code results, so they are always available.
 fn snapshot_from_results(
     check: Option<&CheckResult>,
     dupes: Option<&DupesResult>,
     health: Option<&HealthResult>,
+    public_api: FxHashSet<String>,
 ) -> AuditKeySnapshot {
+    let (boundary_edges, cycles) = check.map_or_else(
+        || (FxHashSet::default(), FxHashSet::default()),
+        |r| {
+            (
+                review_deltas::boundary_edge_keys(&r.results.boundary_violations),
+                review_deltas::cycle_keys(&r.results.circular_dependencies, &r.config.root),
+            )
+        },
+    );
     AuditKeySnapshot {
         dead_code: check.map_or_else(FxHashSet::default, |r| {
             dead_code_keys(&r.results, &r.config.root)
@@ -808,7 +855,37 @@ fn snapshot_from_results(
         dupes: dupes.map_or_else(FxHashSet::default, |r| {
             dupes_keys(&r.report, &r.config.root)
         }),
+        boundary_edges,
+        cycles,
+        public_api,
     }
+}
+
+/// Compute the exports-aware public-export key set from a check result's retained
+/// graph. Returns an empty set when the graph was not retained (off the brief
+/// path) so non-brief base snapshots stay cheap. Loads the root `package.json`
+/// and discovers workspaces so the exports-aware entry resolution (R4) can run.
+fn public_api_keys_from_check(check: Option<&CheckResult>, root: &Path) -> FxHashSet<String> {
+    let Some(check) = check else {
+        return FxHashSet::default();
+    };
+    let Some(graph) = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())
+    else {
+        return FxHashSet::default();
+    };
+    let root_pkg = fallow_config::PackageJson::load(&check.config.root.join("package.json")).ok();
+    let workspaces = fallow_config::discover_workspaces(&check.config.root);
+    review_deltas::public_export_keys_for(
+        graph,
+        &check.config,
+        root_pkg.as_ref(),
+        &workspaces,
+        root,
+    )
 }
 
 /// Build the `AuditOptions` for the isolated base-worktree analysis pass.
@@ -880,17 +957,14 @@ fn current_keys_as_base_keys(
     dupes: Option<&DupesResult>,
     health: Option<&HealthResult>,
 ) -> AuditKeySnapshot {
-    AuditKeySnapshot {
-        dead_code: check.as_ref().map_or_else(FxHashSet::default, |r| {
-            dead_code_keys(&r.results, &r.config.root)
-        }),
-        health: health.as_ref().map_or_else(FxHashSet::default, |r| {
-            health_keys(&r.report, &r.config.root)
-        }),
-        dupes: dupes.as_ref().map_or_else(FxHashSet::default, |r| {
-            dupes_keys(&r.report, &r.config.root)
-        }),
-    }
+    // Reuse path (no behavioral change vs base): head IS base, so the E3 delta
+    // sets are the head's own keys, which makes every head-minus-base delta
+    // empty. `public_api_keys` is the head set already computed on the brief
+    // path; the boundary/cycle keys come from the head results.
+    let public_api = check
+        .and_then(|r| r.public_api_keys.clone())
+        .unwrap_or_default();
+    snapshot_from_results(check, dupes, health, public_api)
 }
 
 fn can_reuse_current_as_base(
@@ -1147,6 +1221,15 @@ use crate::base_worktree::{
 #[path = "audit_keys.rs"]
 mod keys;
 
+#[path = "audit_review_deltas.rs"]
+pub mod review_deltas;
+
+#[path = "audit_weakening.rs"]
+pub mod weakening;
+
+#[path = "audit_routing.rs"]
+pub mod routing;
+
 use keys::{
     dead_code_keys, dupe_group_key, dupes_keys, health_finding_key, health_keys,
     retain_introduced_dead_code,
@@ -1207,6 +1290,9 @@ struct AuditResultParts {
     dupes: Option<DupesResult>,
     health: Option<HealthResult>,
     elapsed: Duration,
+    review_deltas: Option<crate::audit_brief::ReviewDeltas>,
+    weakening_signals: Vec<weakening::WeakeningSignal>,
+    routing: Option<routing::RoutingFacts>,
 }
 
 /// Run the three HEAD-side analyses with intra-pipeline sharing intact:
@@ -1236,13 +1322,15 @@ fn run_audit_head_analyses(
         None
     };
     let dupes = run_audit_dupes(opts, changed_since, Some(changed_files), dupes_files)?;
-    // Compute the E2 impact closure for the review brief BEFORE health consumes
-    // the shared parse (which owns the retained graph). Stored on the check result
-    // as root-relative paths so it survives the graph drop.
+    // Compute the E2 impact closure AND the E3 exports-aware public-export key
+    // set for the review brief BEFORE health consumes the shared parse (which
+    // owns the retained graph). Both are stored on the check result so they
+    // survive the graph drop.
     if opts.brief
         && let Some(ref mut check) = check
     {
         check.impact_closure = compute_brief_impact_closure(opts.root, check, changed_files);
+        check.public_api_keys = Some(public_api_keys_from_check(Some(check), opts.root));
     }
     let shared_parse = if share_dead_code_parse_with_health {
         check.as_mut().and_then(|r| r.shared_parse.take())
@@ -1415,6 +1503,20 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         base_snapshot.as_ref(),
     );
 
+    // E3 review-brief data: deltas (head-vs-base sets), weakening (base-vs-head
+    // diff scan over the changed files), and ownership routing. Brief-path only.
+    let (review_deltas, weakening_signals, routing) = if opts.brief {
+        compute_brief_e3_data(
+            opts,
+            check_result.as_ref(),
+            base_snapshot.as_ref(),
+            &input.changed_files,
+            &input.base_ref,
+        )
+    } else {
+        (None, Vec::new(), None)
+    };
+
     Ok(build_audit_result(AuditResultParts {
         verdict,
         summary,
@@ -1432,7 +1534,129 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         dupes: dupes_result,
         health: health_result,
         elapsed: input.start.elapsed(),
+        review_deltas,
+        weakening_signals,
+        routing,
     }))
+}
+
+/// Compute the E3 review-brief data: the diff-aware deltas (head sets vs base
+/// snapshot), the weakening-signal pass (base-vs-head diff over the changed
+/// files), and ownership routing. Pure-ish: weakening + routing shell out to git
+/// (via [`BaseFileReader`] / churn), so this runs only on the brief path.
+fn compute_brief_e3_data(
+    opts: &AuditOptions<'_>,
+    check: Option<&CheckResult>,
+    base_snapshot: Option<&AuditKeySnapshot>,
+    changed_files: &FxHashSet<PathBuf>,
+    base_ref: &str,
+) -> (
+    Option<crate::audit_brief::ReviewDeltas>,
+    Vec<weakening::WeakeningSignal>,
+    Option<routing::RoutingFacts>,
+) {
+    let deltas = check.map(|check| {
+        let head_boundary = review_deltas::boundary_edge_keys(&check.results.boundary_violations);
+        let head_cycles =
+            review_deltas::cycle_keys(&check.results.circular_dependencies, &check.config.root);
+        let head_public_api = check.public_api_keys.clone().unwrap_or_default();
+        let empty = FxHashSet::default();
+        let (base_boundary, base_cycles, base_public_api) = base_snapshot
+            .map_or((&empty, &empty, &empty), |b| {
+                (&b.boundary_edges, &b.cycles, &b.public_api)
+            });
+        crate::audit_brief::build_review_deltas(
+            &head_boundary,
+            base_boundary,
+            &head_cycles,
+            base_cycles,
+            &head_public_api,
+            base_public_api,
+        )
+    });
+
+    let weakening_signals = compute_weakening_signals(opts.root, base_ref, changed_files);
+
+    let routing =
+        check.map(|check| routing::compute_routing(opts.root, &check.config, changed_files));
+
+    (deltas, weakening_signals, routing)
+}
+
+/// Run the weakening-signal pass over the changed files: read each file's base
+/// content via [`BaseFileReader`], diff it against the on-disk head content, and
+/// emit a [`weakening::WeakeningSignal`] per detected weakening. Best-effort: a
+/// file whose base or head cannot be read is skipped silently.
+fn compute_weakening_signals(
+    root: &Path,
+    base_ref: &str,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Vec<weakening::WeakeningSignal> {
+    use weakening::{WeakeningKind, WeakeningSignal};
+
+    let Some(git_root) = git_toplevel(root) else {
+        return Vec::new();
+    };
+    let Some(mut reader) = BaseFileReader::spawn(root) else {
+        return Vec::new();
+    };
+
+    let mut signals: Vec<WeakeningSignal> = Vec::new();
+    // Sort the changed files for deterministic signal ordering.
+    let mut files: Vec<&PathBuf> = changed_files.iter().collect();
+    files.sort();
+
+    for abs in files {
+        let Ok(relative) = abs.strip_prefix(&git_root) else {
+            continue;
+        };
+        let rel_str = relative.to_string_lossy().replace('\\', "/");
+        let head = std::fs::read_to_string(abs).unwrap_or_default();
+        let base = reader.read(base_ref, relative).unwrap_or_default();
+        // A net-new file (no base) or a non-source file still gets the scan; the
+        // detectors are no-ops on irrelevant content.
+
+        if weakening::is_test_file(&rel_str) {
+            for token in weakening::detect_test_weakening(&base, &head) {
+                signals.push(WeakeningSignal {
+                    kind: WeakeningKind::TestWeakened,
+                    file: rel_str.clone(),
+                    evidence: format!("{token} added"),
+                });
+            }
+            for ev in weakening::detect_removed_tests(&base, &head) {
+                signals.push(WeakeningSignal {
+                    kind: WeakeningKind::TestWeakened,
+                    file: rel_str.clone(),
+                    evidence: ev,
+                });
+            }
+        }
+        for ev in weakening::detect_added_suppressions(&base, &head) {
+            signals.push(WeakeningSignal {
+                kind: WeakeningKind::SuppressionAdded,
+                file: rel_str.clone(),
+                evidence: ev,
+            });
+        }
+        for ev in weakening::detect_lowered_thresholds(&base, &head) {
+            signals.push(WeakeningSignal {
+                kind: WeakeningKind::ThresholdLowered,
+                file: rel_str.clone(),
+                evidence: ev,
+            });
+        }
+        if weakening::is_ci_file(&rel_str) {
+            for ev in weakening::detect_removed_security_steps(&base, &head) {
+                signals.push(WeakeningSignal {
+                    kind: WeakeningKind::SecurityCheckRemoved,
+                    file: rel_str.clone(),
+                    evidence: ev,
+                });
+            }
+        }
+    }
+    signals
 }
 
 /// Attribution, verdict, and summary computed together from the HEAD analyses and
@@ -1515,6 +1739,9 @@ fn build_audit_result(parts: AuditResultParts) -> AuditResult {
         dupes: parts.dupes,
         health: parts.health,
         elapsed: parts.elapsed,
+        review_deltas: parts.review_deltas,
+        weakening_signals: parts.weakening_signals,
+        routing: parts.routing,
     }
 }
 
@@ -1609,6 +1836,9 @@ fn empty_audit_result(
         dupes: None,
         health: None,
         elapsed,
+        review_deltas: None,
+        weakening_signals: Vec::new(),
+        routing: None,
     }
 }
 
@@ -3050,6 +3280,9 @@ mod tests {
             dupes: ["dupe:a".to_string(), "dupe:b".to_string()]
                 .into_iter()
                 .collect(),
+            boundary_edges: std::iter::once("ui->-db".to_string()).collect(),
+            cycles: std::iter::once("a.ts|b.ts".to_string()).collect(),
+            public_api: std::iter::once("src/index.ts::foo".to_string()).collect(),
         };
 
         let cached = cached_from_snapshot(&key, &snapshot);
@@ -3062,6 +3295,9 @@ mod tests {
         assert_eq!(decoded.dead_code, snapshot.dead_code);
         assert_eq!(decoded.health, snapshot.health);
         assert_eq!(decoded.dupes, snapshot.dupes);
+        assert_eq!(decoded.boundary_edges, snapshot.boundary_edges);
+        assert_eq!(decoded.cycles, snapshot.cycles);
+        assert_eq!(decoded.public_api, snapshot.public_api);
     }
 
     #[test]
@@ -3122,6 +3358,9 @@ mod tests {
             dead_code: std::iter::once("dead:a".to_string()).collect(),
             health: std::iter::once("health:a".to_string()).collect(),
             dupes: std::iter::once("dupe:a".to_string()).collect(),
+            boundary_edges: FxHashSet::default(),
+            cycles: FxHashSet::default(),
+            public_api: FxHashSet::default(),
         };
 
         save_cached_base_snapshot(&opts, &key, &snapshot);
@@ -3184,6 +3423,9 @@ mod tests {
             dead_code: vec!["dead:a".to_string()],
             health: vec![],
             dupes: vec![],
+            boundary_edges: vec![],
+            cycles: vec![],
+            public_api: vec![],
         };
         let cache_dir = audit_base_snapshot_cache_dir(&cache_root);
         ensure_audit_base_snapshot_cache_dir(&cache_dir).expect("cache dir should be created");

@@ -1,0 +1,199 @@
+//! E3 ownership-aware reviewer routing (6.D).
+//!
+//! Per changed file, name the expert(s) to route the review to: CODEOWNERS
+//! declared owner plus git-blame / recency contributors, and flag a bus-factor-1
+//! risk (the only qualified owner is one person). Reuses the health ownership /
+//! bus-factor machinery (`compute_ownership`, `CodeOwners`, churn) rather than a
+//! parallel implementation.
+//!
+//! This is the people-layer of the review direction: it answers "who do I ask?".
+//! Advisory brief data; never gates.
+
+use std::path::{Path, PathBuf};
+
+use rustc_hash::FxHashSet;
+use serde::Serialize;
+
+use crate::codeowners::CodeOwners;
+use crate::health::ownership::{OwnershipContext, compile_bot_globs, compute_ownership};
+use fallow_config::ResolvedConfig;
+use fallow_core::churn::{self, SinceDuration};
+
+/// Default churn window for routing: one year of history is enough to identify
+/// the per-file experts without an unbounded `git log`.
+const ROUTING_CHURN_WINDOW: &str = "1 year ago";
+
+/// One routed unit (a changed file) with its experts and bus-factor flag.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RoutingUnit {
+    /// Root-relative path of the changed file.
+    pub file: String,
+    /// The routed expert(s): the CODEOWNERS declared owner when present, else the
+    /// top git-blame / recency contributor; empty when no signal is available.
+    pub expert: Vec<String>,
+    /// Whether the only qualified owner is a single contributor (bus-factor-1):
+    /// a knowledge-concentration risk worth a second reviewer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bus_factor_one: bool,
+}
+
+/// The full routing section: one unit per changed source file with a routable
+/// signal. Files with no ownership signal are omitted (no noise).
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RoutingFacts {
+    /// Per-changed-file routing units, sorted by file path.
+    pub units: Vec<RoutingUnit>,
+}
+
+/// Compute the routing section for the changed files. Best-effort: returns an
+/// empty `RoutingFacts` when churn is unavailable (non-git repo, shallow clone
+/// with no history). CODEOWNERS is consulted when present.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "callers always pass the audit changed-file FxHashSet; generalizing the hasher adds noise"
+)]
+pub fn compute_routing(
+    root: &Path,
+    config: &ResolvedConfig,
+    changed_files: &FxHashSet<PathBuf>,
+) -> RoutingFacts {
+    let since = SinceDuration {
+        git_after: ROUTING_CHURN_WINDOW.to_string(),
+        display: "1 year".to_string(),
+    };
+    let Some(churn_result) = churn::analyze_churn(root, &since) else {
+        return RoutingFacts::default();
+    };
+
+    let ownership_cfg = &config.health.ownership;
+    let Ok(bot_globs) = compile_bot_globs(&ownership_cfg.bot_patterns) else {
+        return RoutingFacts::default();
+    };
+    let codeowners = CodeOwners::load(root, None).ok();
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let ctx = OwnershipContext {
+        author_pool: &churn_result.author_pool,
+        bot_globs: &bot_globs,
+        codeowners: codeowners.as_ref(),
+        email_mode: ownership_cfg.email_mode,
+        now_secs,
+    };
+
+    let mut units: Vec<RoutingUnit> = changed_files
+        .iter()
+        .filter_map(|abs| route_one(abs, root, &churn_result, &ctx))
+        .collect();
+    units.sort_by(|a, b| a.file.cmp(&b.file));
+    RoutingFacts { units }
+}
+
+/// Route a single changed file: resolve its experts and bus-factor flag from the
+/// ownership machinery. Returns `None` when the file has no churn record (no
+/// signal to route on).
+fn route_one(
+    abs: &Path,
+    root: &Path,
+    churn_result: &churn::ChurnResult,
+    ctx: &OwnershipContext<'_>,
+) -> Option<RoutingUnit> {
+    let file_churn = churn_result.files.get(abs)?;
+    let relative = abs.strip_prefix(root).unwrap_or(abs);
+    let metrics = compute_ownership(file_churn, relative, ctx)?;
+
+    // Prefer the declared CODEOWNERS owner; otherwise the top contributor, then
+    // the suggested reviewers. Deduped, capped to keep the routing line tight.
+    let mut expert: Vec<String> = Vec::new();
+    if let Some(owner) = &metrics.declared_owner {
+        expert.push(owner.clone());
+    }
+    if expert.is_empty() {
+        expert.push(metrics.top_contributor.identifier.clone());
+        for reviewer in metrics.suggested_reviewers.iter().take(2) {
+            if !expert.contains(&reviewer.identifier) {
+                expert.push(reviewer.identifier.clone());
+            }
+        }
+    }
+
+    Some(RoutingUnit {
+        file: relative.to_string_lossy().replace('\\', "/"),
+        expert,
+        bus_factor_one: metrics.bus_factor == 1,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::health_types::{
+        ContributorEntry, ContributorIdentifierFormat, OwnershipMetrics, OwnershipState,
+    };
+
+    fn contributor(id: &str) -> ContributorEntry {
+        ContributorEntry {
+            identifier: id.to_string(),
+            format: ContributorIdentifierFormat::Handle,
+            share: 1.0,
+            stale_days: 1,
+            commits: 5,
+        }
+    }
+
+    fn metrics(declared: Option<&str>, bus_factor: u32) -> OwnershipMetrics {
+        OwnershipMetrics {
+            bus_factor,
+            contributor_count: 1,
+            top_contributor: contributor("alice"),
+            recent_contributors: vec![],
+            suggested_reviewers: vec![contributor("bob")],
+            declared_owner: declared.map(str::to_string),
+            unowned: None,
+            ownership_state: OwnershipState::Active,
+            drift: false,
+            drift_reason: None,
+        }
+    }
+
+    /// `route_one`'s expert-selection logic, exercised through a small shim that
+    /// mirrors its branching without needing a live git repo.
+    fn select_expert(metrics: &OwnershipMetrics) -> (Vec<String>, bool) {
+        let mut expert: Vec<String> = Vec::new();
+        if let Some(owner) = &metrics.declared_owner {
+            expert.push(owner.clone());
+        }
+        if expert.is_empty() {
+            expert.push(metrics.top_contributor.identifier.clone());
+            for reviewer in metrics.suggested_reviewers.iter().take(2) {
+                if !expert.contains(&reviewer.identifier) {
+                    expert.push(reviewer.identifier.clone());
+                }
+            }
+        }
+        (expert, metrics.bus_factor == 1)
+    }
+
+    #[test]
+    fn declared_owner_wins() {
+        let (expert, _) = select_expert(&metrics(Some("@team/web"), 3));
+        assert_eq!(expert, vec!["@team/web".to_string()]);
+    }
+
+    #[test]
+    fn falls_back_to_git_contributors() {
+        let (expert, _) = select_expert(&metrics(None, 2));
+        assert_eq!(expert, vec!["alice".to_string(), "bob".to_string()]);
+    }
+
+    #[test]
+    fn bus_factor_one_is_flagged() {
+        let (_, bus1) = select_expert(&metrics(None, 1));
+        assert!(bus1);
+        let (_, bus2) = select_expert(&metrics(None, 2));
+        assert!(!bus2);
+    }
+}

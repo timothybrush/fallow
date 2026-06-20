@@ -327,6 +327,13 @@ pub struct CheckResult {
     /// `None` outside the brief path. Holds root-relative paths so it survives
     /// the graph drop and serializes directly.
     pub impact_closure: Option<fallow_core::graph::ImpactClosurePaths>,
+    /// Exports-aware public-export key set (E3) for the review brief: the
+    /// `<rel_path>::<name>` keys reachable through `package.json` `exports` +
+    /// re-export reachability. Computed from the retained graph on the brief
+    /// path before the graph is dropped; `None` outside the brief path. Diffed
+    /// against the base snapshot's `public_api` set to produce the public-API
+    /// surface delta.
+    pub public_api_keys: Option<rustc_hash::FxHashSet<String>>,
 }
 
 struct CheckAnalysisData {
@@ -685,6 +692,7 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         timings: trace_timings,
         shared_parse,
         impact_closure: None,
+        public_api_keys: None,
     })
 }
 

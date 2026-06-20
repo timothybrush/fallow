@@ -780,6 +780,10 @@ export type RiskClass = ("low" | "medium" | "high")
  */
 export type ReviewEffort = ("glance" | "review" | "deep_dive")
 /**
+ * The category of a single weakening signal.
+ */
+export type WeakeningKind = ("test-weakened" | "threshold-lowered" | "suppression-added" | "security-check-removed")
+/**
  * Discriminator value for [`CodeClimateIssue::kind`].
  */
 export type CodeClimateIssueKind = "issue"
@@ -8475,6 +8479,14 @@ command: string
 triage: DiffTriage
 graph_facts: GraphFacts
 impact_closure: ImpactClosureFacts
+deltas: ReviewDeltas
+/**
+ * E3 (6.F, headline): reviewer-private weakening signals (tests
+ * removed/skipped, thresholds lowered, suppressions added, security steps
+ * removed). Advisory, never gates, never auto-posted.
+ */
+weakening: WeakeningSignal[]
+routing: RoutingFacts
 }
 /**
  * Stage 0 of the brief: triage facts derived purely from the diff size.
@@ -8573,6 +8585,78 @@ consumed_symbols: string[]
  * Honest scope note: this is a syntactic attention pointer, not a proof.
  */
 note: string
+}
+/**
+ * E3 diff-aware deterministic deltas (6.A), framed new-vs-pre-existing against
+ * the audit base snapshot. Each entry is a brief summary/verdict line.
+ *
+ * `public_api` is batch-consolidated to ONE decision per change (E0 rule R1):
+ * the `added` list carries the introduced public-export keys as evidence, but a
+ * reviewer reads "the public surface widened by N", never one decision per
+ * symbol.
+ */
+export interface ReviewDeltas {
+/**
+ * Cross-zone boundary EDGES introduced vs base (R2 first-edge-only: one per
+ * `<from_zone>-><to_zone>` pair, never per import). New-vs-pre-existing.
+ */
+boundary_introduced: string[]
+/**
+ * Circular dependencies introduced vs base (canonical file-set keys).
+ */
+cycle_introduced: string[]
+/**
+ * Exports-aware public-API surface delta: the public-export keys
+ * (`<rel_path>::<name>`) added vs base, resolved through `package.json`
+ * `exports` + re-export reachability. A symbol re-exported only through an
+ * internal barrel NOT in `exports` is absent here (zero delta); one
+ * reachable through an `exports` path is present (exactly one).
+ */
+public_api_added: string[]
+}
+/**
+ * One weakening signal: a category, the file it was detected in, and a short
+ * human-readable evidence string. Reviewer-private; never gates.
+ */
+export interface WeakeningSignal {
+kind: WeakeningKind
+/**
+ * Root-relative path of the changed file the signal was detected in.
+ */
+file: string
+/**
+ * Short evidence string (e.g. the offending token or the threshold delta).
+ */
+evidence: string
+}
+/**
+ * The full routing section: one unit per changed source file with a routable
+ * signal. Files with no ownership signal are omitted (no noise).
+ */
+export interface RoutingFacts {
+/**
+ * Per-changed-file routing units, sorted by file path.
+ */
+units: RoutingUnit[]
+}
+/**
+ * One routed unit (a changed file) with its experts and bus-factor flag.
+ */
+export interface RoutingUnit {
+/**
+ * Root-relative path of the changed file.
+ */
+file: string
+/**
+ * The routed expert(s): the CODEOWNERS declared owner when present, else the
+ * top git-blame / recency contributor; empty when no signal is available.
+ */
+expert: string[]
+/**
+ * Whether the only qualified owner is a single contributor (bus-factor-1):
+ * a knowledge-concentration risk worth a second reviewer.
+ */
+bus_factor_one?: boolean
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].

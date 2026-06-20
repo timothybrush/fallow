@@ -163,6 +163,51 @@ pub struct CoordinationGapFact {
 /// The honest-scope note stamped on every coordination-gap entry (ADR-001).
 const COORDINATION_GAP_NOTE: &str = "syntactic attention pointer, not a correctness proof";
 
+/// E3 diff-aware deterministic deltas (6.A), framed new-vs-pre-existing against
+/// the audit base snapshot. Each entry is a brief summary/verdict line.
+///
+/// `public_api` is batch-consolidated to ONE decision per change (E0 rule R1):
+/// the `added` list carries the introduced public-export keys as evidence, but a
+/// reviewer reads "the public surface widened by N", never one decision per
+/// symbol.
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ReviewDeltas {
+    /// Cross-zone boundary EDGES introduced vs base (R2 first-edge-only: one per
+    /// `<from_zone>-><to_zone>` pair, never per import). New-vs-pre-existing.
+    pub boundary_introduced: Vec<String>,
+    /// Circular dependencies introduced vs base (canonical file-set keys).
+    pub cycle_introduced: Vec<String>,
+    /// Exports-aware public-API surface delta: the public-export keys
+    /// (`<rel_path>::<name>`) added vs base, resolved through `package.json`
+    /// `exports` + re-export reachability. A symbol re-exported only through an
+    /// internal barrel NOT in `exports` is absent here (zero delta); one
+    /// reachable through an `exports` path is present (exactly one).
+    pub public_api_added: Vec<String>,
+}
+
+/// Build the E3 deltas from head sets vs a base set, sorted for determinism.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "callers always pass the audit FxHashSet key sets; generalizing the hasher adds noise"
+)]
+pub fn build_review_deltas(
+    head_boundary: &FxHashSet<String>,
+    base_boundary: &FxHashSet<String>,
+    head_cycles: &FxHashSet<String>,
+    base_cycles: &FxHashSet<String>,
+    head_public_api: &FxHashSet<String>,
+    base_public_api: &FxHashSet<String>,
+) -> ReviewDeltas {
+    use crate::audit::review_deltas::introduced_keys;
+    ReviewDeltas {
+        boundary_introduced: introduced_keys(head_boundary, base_boundary),
+        cycle_introduced: introduced_keys(head_cycles, base_cycles),
+        public_api_added: introduced_keys(head_public_api, base_public_api),
+    }
+}
+
 /// The full `fallow audit --brief --format json` envelope. Carries the
 /// informational verdict, the triage and graph-facts orientation stages, plus
 /// the reused "subtract" section (the same dead-code / duplication / complexity
@@ -186,6 +231,15 @@ pub struct ReviewBriefOutput {
     pub graph_facts: GraphFacts,
     /// Stage 3: the impact closure (affected-not-shown + coordination gap).
     pub impact_closure: ImpactClosureFacts,
+    /// E3 (6.A): diff-aware deterministic deltas (boundary/cycle introduced +
+    /// exports-aware public-API surface delta), new-vs-pre-existing.
+    pub deltas: ReviewDeltas,
+    /// E3 (6.F, headline): reviewer-private weakening signals (tests
+    /// removed/skipped, thresholds lowered, suppressions added, security steps
+    /// removed). Advisory, never gates, never auto-posted.
+    pub weakening: Vec<crate::audit::weakening::WeakeningSignal>,
+    /// E3 (6.D): ownership-aware reviewer routing (per-file expert + bus-factor).
+    pub routing: crate::audit::routing::RoutingFacts,
 }
 
 /// Classify a changeset's risk purely from its size. `net_lines` is consulted
@@ -300,7 +354,8 @@ pub fn build_brief_output(result: &AuditResult) -> ReviewBriefOutput {
         .check
         .as_ref()
         .and_then(|c| c.impact_closure.as_ref());
-    let graph_facts = result.check.as_ref().map_or_else(
+    let deltas = result.review_deltas.clone().unwrap_or_default();
+    let mut graph_facts = result.check.as_ref().map_or_else(
         || GraphFacts {
             exports_added: 0,
             api_width_delta: 0,
@@ -309,6 +364,12 @@ pub fn build_brief_output(result: &AuditResult) -> ReviewBriefOutput {
         },
         |check| derive_graph_facts(&check.results, closure),
     );
+    // E3 fills the previously-stubbed export facts from the exports-aware delta:
+    // `exports_added` / `api_width_delta` count the public-API surface the change
+    // widened, not raw internal churn.
+    let added = deltas.public_api_added.len();
+    graph_facts.exports_added = added;
+    graph_facts.api_width_delta = i64::try_from(added).unwrap_or(i64::MAX);
     let impact_closure = build_impact_closure_facts(result);
     ReviewBriefOutput {
         schema_version: ReviewBriefSchemaVersion::default(),
@@ -317,6 +378,9 @@ pub fn build_brief_output(result: &AuditResult) -> ReviewBriefOutput {
         triage,
         graph_facts,
         impact_closure,
+        deltas,
+        weakening: result.weakening_signals.clone(),
+        routing: result.routing.clone().unwrap_or_default(),
     }
 }
 
@@ -347,6 +411,22 @@ fn insert_brief_impact_closure_json(
 ) {
     if let Ok(value) = serde_json::to_value(&brief.impact_closure) {
         obj.insert("impact_closure".into(), value);
+    }
+}
+
+/// Insert the E3 deltas / weakening / routing sections into the brief JSON map.
+fn insert_brief_e3_json(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    brief: &ReviewBriefOutput,
+) {
+    if let Ok(value) = serde_json::to_value(&brief.deltas) {
+        obj.insert("deltas".into(), value);
+    }
+    if let Ok(value) = serde_json::to_value(&brief.weakening) {
+        obj.insert("weakening".into(), value);
+    }
+    if let Ok(value) = serde_json::to_value(&brief.routing) {
+        obj.insert("routing".into(), value);
     }
 }
 
@@ -407,6 +487,7 @@ fn build_brief_json(result: &AuditResult) -> Result<serde_json::Value, ExitCode>
     insert_brief_triage_json(&mut obj, &brief);
     insert_brief_graph_facts_json(&mut obj, &brief);
     insert_brief_impact_closure_json(&mut obj, &brief);
+    insert_brief_e3_json(&mut obj, &brief);
     insert_brief_subtract_json(&mut obj, result)?;
 
     Ok(serde_json::Value::Object(obj))
@@ -449,6 +530,9 @@ fn print_brief_human(result: &AuditResult, quiet: bool, explain: bool) {
             );
         }
         print_impact_closure_human(&brief.impact_closure);
+        print_deltas_human(&brief.deltas);
+        print_weakening_human(&brief.weakening);
+        print_routing_human(&brief.routing);
     }
 
     // Always render the findings sections so the brief shows WHERE to look, even
@@ -475,6 +559,73 @@ fn print_impact_closure_human(closure: &ImpactClosureFacts) {
             gap.consumed_symbols.join(", "),
             gap.changed_file,
         );
+    }
+}
+
+/// Print the E3 diff-aware deltas (6.A): boundary/cycle introduced and the
+/// exports-aware public-API surface delta (batch-consolidated per R1). Caller
+/// has already gated on `!quiet`.
+fn print_deltas_human(deltas: &ReviewDeltas) {
+    for edge in &deltas.boundary_introduced {
+        eprintln!("  new boundary edge: {edge} (not present at base)");
+    }
+    for cycle in &deltas.cycle_introduced {
+        eprintln!("  new circular dependency: {cycle} (not present at base)");
+    }
+    if !deltas.public_api_added.is_empty() {
+        eprintln!(
+            "  public API surface widened by {} export{} (exports-aware)",
+            deltas.public_api_added.len(),
+            crate::report::plural(deltas.public_api_added.len()),
+        );
+    }
+}
+
+/// Print the E3 weakening signals (6.F headline). Advisory, reviewer-private.
+fn print_weakening_human(signals: &[crate::audit::weakening::WeakeningSignal]) {
+    if signals.is_empty() {
+        return;
+    }
+    eprintln!(
+        "  weakening signals ({}, reviewer-private, advisory):",
+        signals.len()
+    );
+    for signal in signals {
+        eprintln!(
+            "    {}: {} in {}",
+            weakening_label(signal.kind),
+            signal.evidence,
+            signal.file,
+        );
+    }
+}
+
+/// Print the E3 ownership routing (6.D): per-unit expert + bus-factor flag.
+fn print_routing_human(routing: &crate::audit::routing::RoutingFacts) {
+    for unit in &routing.units {
+        if unit.expert.is_empty() {
+            continue;
+        }
+        let bus = if unit.bus_factor_one {
+            " (bus-factor 1)"
+        } else {
+            ""
+        };
+        eprintln!(
+            "  review {}: ask {}{bus}",
+            unit.file,
+            unit.expert.join(", "),
+        );
+    }
+}
+
+fn weakening_label(kind: crate::audit::weakening::WeakeningKind) -> &'static str {
+    use crate::audit::weakening::WeakeningKind;
+    match kind {
+        WeakeningKind::TestWeakened => "test weakened",
+        WeakeningKind::ThresholdLowered => "threshold lowered",
+        WeakeningKind::SuppressionAdded => "suppression added",
+        WeakeningKind::SecurityCheckRemoved => "security check removed",
     }
 }
 
@@ -561,6 +712,9 @@ mod tests {
             dupes: None,
             health: None,
             elapsed: Duration::ZERO,
+            review_deltas: None,
+            weakening_signals: Vec::new(),
+            routing: None,
         }
     }
 

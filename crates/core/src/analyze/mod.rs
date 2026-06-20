@@ -349,7 +349,13 @@ fn add_exportless_package_source_indexes(
     }
 }
 
-fn public_api_package_entry_points(
+/// Compute the exports-aware public-API entry-point set: the `package.json`
+/// `exports`-mapped modules (non-private packages) plus the no-`exports`
+/// source-index fallback. This encodes E0 rule R4 (the `exports`-mapped copy is
+/// public; a no-`exports` copy is internal). Exposed for the E3 review brief,
+/// which feeds it into [`ModuleGraph::public_export_keys`] to compute the
+/// exports-aware public-API surface delta.
+pub fn public_api_package_entry_points(
     graph: &ModuleGraph,
     config: &ResolvedConfig,
     root_pkg: Option<&PackageJson>,

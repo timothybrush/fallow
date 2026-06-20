@@ -35,7 +35,7 @@ pub struct CoordinationGap {
 }
 
 /// Result of an impact-closure computation. File partitions are `FileId` sets so
-/// the caller relativizes paths in its own path-space; [`ImpactClosure::with_paths`]
+/// the caller relativizes paths in its own path-space; [`ModuleGraph::closure_with_paths`]
 /// produces the root-relative path view for serialization.
 #[derive(Debug, Clone, Default)]
 pub struct ImpactClosure {

@@ -12,6 +12,10 @@ ue = "ue"
 ba = "ba"
 caf = "caf"
 fpr = "fpr"
+# `xdescribe`/`xit` are the Jasmine/Jest skipped-suite APIs matched as
+# string literals by the E3 weakening-signal detector, not misspellings.
+xdescribe = "xdescribe"
+xit = "xit"
 
 [default.extend-words]
 ba = "ba"
