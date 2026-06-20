@@ -398,57 +398,104 @@ pub fn find_unused_dependencies(
     Vec<UnusedDependency>,
     Vec<UnusedDependency>,
 ) {
-    let plugin_referenced = plugin_referenced_set(plugin_result);
-    let plugin_tooling = plugin_tooling_set(plugin_result);
-    let script_used = script_used_set(plugin_result);
-
-    let package_referenced = plugin_result
-        .map(package_referenced_dependencies_by_path)
-        .unwrap_or_default();
-    let empty_package_referenced: FxHashSet<&str> = FxHashSet::default();
-
-    let ignore_deps: FxHashSet<&str> = config
-        .ignore_dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
-
-    let usage = collect_dependency_usage_indices(graph, config, workspaces);
-
-    let shared = shared_dep_sets(
-        &plugin_referenced,
-        package_referenced
-            .get(&config.root.join("package.json"))
-            .unwrap_or(&empty_package_referenced),
-        &plugin_tooling,
-        &script_used,
-        &ignore_deps,
-    );
+    let scan = build_unused_dependency_scan(graph, config, plugin_result, workspaces);
+    let shared = scan.root_shared(config);
 
     let (mut unused_deps, mut unused_dev_deps, mut unused_optional_deps) =
-        collect_root_unused_dependencies(pkg, config, &shared, &usage);
+        collect_root_unused_dependencies(pkg, config, &shared, &scan.usage);
     let root_flagged =
         root_flagged_dependencies(&unused_deps, &unused_dev_deps, &unused_optional_deps);
 
-    let inputs = WorkspaceUnusedDependencyInputs {
-        config,
-        package_referenced: &package_referenced,
-        empty_package_referenced: &empty_package_referenced,
-        plugin_referenced: &plugin_referenced,
-        plugin_tooling: &plugin_tooling,
-        script_used: &script_used,
-        ignore_deps: &ignore_deps,
-        workspace_used_packages: &usage.workspace_used_packages,
-        package_workspace_usage: &usage.package_workspace_usage,
-        root_flagged: &root_flagged,
-    };
-    for (prod, dev, optional) in collect_workspaces_unused_dependencies(workspaces, &inputs) {
+    let inputs = scan.workspace_inputs(config, &root_flagged);
+    append_workspace_unused_dependencies(
+        workspaces,
+        &inputs,
+        &mut unused_deps,
+        &mut unused_dev_deps,
+        &mut unused_optional_deps,
+    );
+
+    (unused_deps, unused_dev_deps, unused_optional_deps)
+}
+
+struct UnusedDependencyScan<'a> {
+    plugin_referenced: FxHashSet<&'a str>,
+    plugin_tooling: FxHashSet<&'a str>,
+    script_used: FxHashSet<&'a str>,
+    package_referenced: FxHashMap<PathBuf, FxHashSet<&'a str>>,
+    empty_package_referenced: FxHashSet<&'a str>,
+    ignore_deps: FxHashSet<&'a str>,
+    usage: DependencyUsageIndices<'a>,
+}
+
+impl<'a> UnusedDependencyScan<'a> {
+    fn root_shared(&'a self, config: &ResolvedConfig) -> SharedDepSets<'a> {
+        shared_dep_sets(
+            &self.plugin_referenced,
+            self.package_referenced
+                .get(&config.root.join("package.json"))
+                .unwrap_or(&self.empty_package_referenced),
+            &self.plugin_tooling,
+            &self.script_used,
+            &self.ignore_deps,
+        )
+    }
+
+    fn workspace_inputs(
+        &'a self,
+        config: &'a ResolvedConfig,
+        root_flagged: &'a FxHashSet<String>,
+    ) -> WorkspaceUnusedDependencyInputs<'a> {
+        WorkspaceUnusedDependencyInputs {
+            config,
+            package_referenced: &self.package_referenced,
+            empty_package_referenced: &self.empty_package_referenced,
+            plugin_referenced: &self.plugin_referenced,
+            plugin_tooling: &self.plugin_tooling,
+            script_used: &self.script_used,
+            ignore_deps: &self.ignore_deps,
+            workspace_used_packages: &self.usage.workspace_used_packages,
+            package_workspace_usage: &self.usage.package_workspace_usage,
+            root_flagged,
+        }
+    }
+}
+
+fn build_unused_dependency_scan<'a>(
+    graph: &'a ModuleGraph,
+    config: &'a ResolvedConfig,
+    plugin_result: Option<&'a crate::plugins::AggregatedPluginResult>,
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+) -> UnusedDependencyScan<'a> {
+    UnusedDependencyScan {
+        plugin_referenced: plugin_referenced_set(plugin_result),
+        plugin_tooling: plugin_tooling_set(plugin_result),
+        script_used: script_used_set(plugin_result),
+        package_referenced: plugin_result
+            .map(package_referenced_dependencies_by_path)
+            .unwrap_or_default(),
+        empty_package_referenced: FxHashSet::default(),
+        ignore_deps: config
+            .ignore_dependencies
+            .iter()
+            .map(String::as_str)
+            .collect(),
+        usage: collect_dependency_usage_indices(graph, config, workspaces),
+    }
+}
+
+fn append_workspace_unused_dependencies(
+    workspaces: &[fallow_config::WorkspaceInfo],
+    inputs: &WorkspaceUnusedDependencyInputs<'_>,
+    unused_deps: &mut Vec<UnusedDependency>,
+    unused_dev_deps: &mut Vec<UnusedDependency>,
+    unused_optional_deps: &mut Vec<UnusedDependency>,
+) {
+    for (prod, dev, optional) in collect_workspaces_unused_dependencies(workspaces, inputs) {
         unused_deps.extend(prod);
         unused_dev_deps.extend(dev);
         unused_optional_deps.extend(optional);
     }
-
-    (unused_deps, unused_dev_deps, unused_optional_deps)
 }
 
 type UnusedDependencyTriple = (
