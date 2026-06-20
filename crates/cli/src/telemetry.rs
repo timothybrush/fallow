@@ -807,6 +807,16 @@ struct EffectiveConfig {
     config_path: Option<PathBuf>,
 }
 
+#[derive(Debug)]
+struct TelemetryStatus {
+    state: &'static str,
+    source: &'static str,
+    config_path: Option<PathBuf>,
+    admin_disabled: bool,
+    explicit_decision: bool,
+    install_grouping_token: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct TelemetryEvent {
     schema_version: u8,
@@ -1037,72 +1047,85 @@ pub fn maybe_print_opt_in_note(output: OutputFormat, quiet: bool) -> bool {
 }
 
 fn print_status(output: OutputFormat) -> ExitCode {
+    let status = collect_status();
+    match output {
+        OutputFormat::Json => print_status_json(&status),
+        _ => print_status_human(status),
+    }
+}
+
+fn collect_status() -> TelemetryStatus {
     let effective = effective_config();
     let state = mode_label(effective.mode);
     let source = source_label(effective.source);
-    // Whether an anonymous install grouping token currently exists on disk. The
-    // token itself is never surfaced (it is a private grouping identifier); only
-    // its presence is reported so the user can see opt-in minted one and disable
-    // forgot it. Never read or created when telemetry is off or admin-disabled.
-    let install_grouping_token = matches!(effective.mode, EffectiveMode::On)
-        && effective
-            .config_path
-            .as_deref()
-            .and_then(|path| read_config_from(path).ok())
-            .is_some_and(|config| config.install_id.is_some());
-    let explicit_decision = effective
+    let config = effective
         .config_path
         .as_deref()
-        .and_then(|path| read_config_from(path).ok())
-        .is_some_and(|config| config.explicit_decision);
-    match output {
-        OutputFormat::Json => {
-            let value = serde_json::json!({
-                "telemetry": {
-                    "state": state,
-                    "source": source,
-                    "config_path": effective.config_path.as_ref().map(|p| p.display().to_string()),
-                    "admin_disabled": matches!(effective.mode, EffectiveMode::DisabledByAdmin),
-                    "explicit_decision": explicit_decision,
-                    "install_grouping_token": install_grouping_token,
-                    "commands": {
-                        "enable": "fallow telemetry enable",
-                        "disable": "fallow telemetry disable",
-                        "inspect_example": "fallow telemetry inspect --example",
-                        "inspect_command": "FALLOW_TELEMETRY=inspect fallow audit --format json --quiet"
-                    },
-                    "docs": "docs/telemetry.md"
-                }
-            });
-            crate::report::emit_json(&value, "telemetry status")
-        }
-        _ => {
-            println!("Telemetry: {state} ({source})");
-            if let Some(path) = effective.config_path {
-                println!("Config: {}", path.display());
-            }
-            println!(
-                "Install grouping token: {}",
-                if install_grouping_token {
-                    "present (anonymous, random; sent as a private header, never an event property)"
-                } else {
-                    "none"
-                }
-            );
-            println!(
-                "Explicit decision: {}",
-                if explicit_decision { "yes" } else { "no" }
-            );
-            println!("Enable:  fallow telemetry enable");
-            println!("Disable: fallow telemetry disable");
-            println!("Inspect an example: fallow telemetry inspect --example");
-            println!(
-                "Inspect a real command: FALLOW_TELEMETRY=inspect fallow audit --format json --quiet"
-            );
-            println!("Docs: docs/telemetry.md");
-            ExitCode::SUCCESS
-        }
+        .and_then(|path| read_config_from(path).ok());
+
+    TelemetryStatus {
+        state,
+        source,
+        config_path: effective.config_path,
+        admin_disabled: matches!(effective.mode, EffectiveMode::DisabledByAdmin),
+        explicit_decision: config
+            .as_ref()
+            .is_some_and(|config| config.explicit_decision),
+        // Whether an anonymous install grouping token currently exists on disk.
+        // The token itself is never surfaced; only its presence is reported.
+        install_grouping_token: matches!(effective.mode, EffectiveMode::On)
+            && config.is_some_and(|config| config.install_id.is_some()),
     }
+}
+
+fn print_status_json(status: &TelemetryStatus) -> ExitCode {
+    let value = serde_json::json!({
+        "telemetry": {
+            "state": status.state,
+            "source": status.source,
+            "config_path": status.config_path.as_ref().map(|p| p.display().to_string()),
+            "admin_disabled": status.admin_disabled,
+            "explicit_decision": status.explicit_decision,
+            "install_grouping_token": status.install_grouping_token,
+            "commands": {
+                "enable": "fallow telemetry enable",
+                "disable": "fallow telemetry disable",
+                "inspect_example": "fallow telemetry inspect --example",
+                "inspect_command": "FALLOW_TELEMETRY=inspect fallow audit --format json --quiet"
+            },
+            "docs": "docs/telemetry.md"
+        }
+    });
+    crate::report::emit_json(&value, "telemetry status")
+}
+
+fn print_status_human(status: TelemetryStatus) -> ExitCode {
+    println!("Telemetry: {} ({})", status.state, status.source);
+    if let Some(path) = status.config_path {
+        println!("Config: {}", path.display());
+    }
+    println!(
+        "Install grouping token: {}",
+        if status.install_grouping_token {
+            "present (anonymous, random; sent as a private header, never an event property)"
+        } else {
+            "none"
+        }
+    );
+    println!(
+        "Explicit decision: {}",
+        if status.explicit_decision {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!("Enable:  fallow telemetry enable");
+    println!("Disable: fallow telemetry disable");
+    println!("Inspect an example: fallow telemetry inspect --example");
+    println!("Inspect a real command: FALLOW_TELEMETRY=inspect fallow audit --format json --quiet");
+    println!("Docs: docs/telemetry.md");
+    ExitCode::SUCCESS
 }
 
 fn set_enabled(enabled: bool, output: OutputFormat) -> ExitCode {
