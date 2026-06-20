@@ -19,7 +19,7 @@ use super::used_class_members::UsedClassMemberRule;
 use crate::external_plugin::{ExternalPluginDef, discover_external_plugins};
 
 use super::IgnoreExportsUsedInFileConfig;
-use super::{FallowConfig, SecurityConfig};
+use super::{BoundaryConfig, FallowConfig, ProductionConfig, SecurityConfig};
 
 /// Process-local dedup state for inter-file rule warnings.
 static INTER_FILE_WARN_SEEN: OnceLock<Mutex<FxHashSet<u64>>> = OnceLock::new();
@@ -434,6 +434,119 @@ fn compile_ignore_dependency_override_rules(
         .collect()
 }
 
+struct CompiledIgnoreSettings {
+    patterns: GlobSet,
+    unresolved_imports: Vec<GlobMatcher>,
+    exports: Vec<CompiledIgnoreExportRule>,
+    catalog_references: Vec<CompiledIgnoreCatalogReferenceRule>,
+    dependency_overrides: Vec<CompiledIgnoreDependencyOverrideRule>,
+}
+
+fn compile_ignore_settings(config: &FallowConfig) -> CompiledIgnoreSettings {
+    CompiledIgnoreSettings {
+        patterns: compile_ignore_patterns(&config.ignore_patterns),
+        unresolved_imports: compile_ignore_unresolved_imports(&config.ignore_unresolved_imports),
+        exports: compile_ignore_export_rules(&config.ignore_exports),
+        catalog_references: compile_ignore_catalog_reference_rules(
+            &config.ignore_catalog_references,
+        ),
+        dependency_overrides: compile_ignore_dependency_override_rules(
+            &config.ignore_dependency_overrides,
+        ),
+    }
+}
+
+struct ResolvedPluginSettings {
+    external_plugins: Vec<ExternalPluginDef>,
+    rule_packs: Vec<crate::rule_pack::RulePackDef>,
+}
+
+fn resolve_plugin_settings(
+    root: &Path,
+    configured_plugins: &[String],
+    framework: Vec<ExternalPluginDef>,
+    rule_packs: &[String],
+) -> ResolvedPluginSettings {
+    let mut external_plugins = discover_external_plugins(root, configured_plugins);
+    external_plugins.extend(framework);
+
+    let rule_packs = crate::rule_pack::load_rule_packs(root, rule_packs).unwrap_or_else(|errors| {
+        for error in &errors {
+            tracing::error!("invalid rule pack: {error}");
+        }
+        Vec::new()
+    });
+
+    ResolvedPluginSettings {
+        external_plugins,
+        rule_packs,
+    }
+}
+
+struct ResolvedCacheSettings {
+    dir: PathBuf,
+    max_size_mb: Option<u32>,
+    config_hash: u64,
+}
+
+struct ResolvedProductionRules {
+    production: bool,
+    rules: RulesConfig,
+}
+
+fn resolve_production_rules(
+    production_config: ProductionConfig,
+    rules: RulesConfig,
+) -> ResolvedProductionRules {
+    let production = production_config.global();
+    ResolvedProductionRules {
+        production,
+        rules: resolve_rules_for_production(rules, production),
+    }
+}
+
+fn resolve_cache_settings(
+    root: &Path,
+    configured_dir: Option<PathBuf>,
+    configured_max_size_mb: Option<u32>,
+    override_max_size_mb: Option<u32>,
+    no_cache: bool,
+    external_plugins: &[ExternalPluginDef],
+) -> ResolvedCacheSettings {
+    ResolvedCacheSettings {
+        dir: resolve_cache_dir(root, configured_dir),
+        max_size_mb: override_max_size_mb.or(configured_max_size_mb),
+        config_hash: if no_cache {
+            0
+        } else {
+            compute_cache_config_hash(external_plugins)
+        },
+    }
+}
+
+fn normalize_security_config(security: SecurityConfig) -> SecurityConfig {
+    SecurityConfig {
+        request_receivers: security.normalized_request_receivers(),
+        ..security
+    }
+}
+
+struct ResolvedPathPolicySettings {
+    boundaries: ResolvedBoundaryConfig,
+    overrides: Vec<ResolvedOverride>,
+}
+
+fn resolve_path_policy_settings(
+    boundaries: BoundaryConfig,
+    overrides: Vec<ConfigOverride>,
+    root: &Path,
+) -> ResolvedPathPolicySettings {
+    ResolvedPathPolicySettings {
+        boundaries: resolve_boundaries(boundaries, root),
+        overrides: compile_overrides(overrides),
+    }
+}
+
 impl FallowConfig {
     /// Resolve into a fully resolved config with compiled globs.
     pub fn resolve(
@@ -445,83 +558,59 @@ impl FallowConfig {
         quiet: bool,
         cache_max_size_mb: Option<u32>,
     ) -> ResolvedConfig {
-        let compiled_ignore_patterns = compile_ignore_patterns(&self.ignore_patterns);
-        let ignore_unresolved_imports =
-            compile_ignore_unresolved_imports(&self.ignore_unresolved_imports);
-        let cache_dir = resolve_cache_dir(&root, self.cache.dir.clone());
+        let compiled_ignores = compile_ignore_settings(&self);
 
-        let production = self.production.global();
-        let rules = resolve_rules_for_production(self.rules, production);
+        let production_rules = resolve_production_rules(self.production, self.rules);
 
-        let mut external_plugins = discover_external_plugins(&root, &self.plugins);
-        external_plugins.extend(self.framework);
+        let plugins =
+            resolve_plugin_settings(&root, &self.plugins, self.framework, &self.rule_packs);
 
-        let rule_packs =
-            crate::rule_pack::load_rule_packs(&root, &self.rule_packs).unwrap_or_else(|errors| {
-                for error in &errors {
-                    tracing::error!("invalid rule pack: {error}");
-                }
-                Vec::new()
-            });
+        let cache = resolve_cache_settings(
+            &root,
+            self.cache.dir,
+            self.cache.max_size_mb,
+            cache_max_size_mb,
+            no_cache,
+            &plugins.external_plugins,
+        );
 
-        let boundaries = resolve_boundaries(self.boundaries, &root);
-
-        let overrides = compile_overrides(self.overrides);
-
-        let compiled_ignore_exports = compile_ignore_export_rules(&self.ignore_exports);
-        let compiled_ignore_catalog_references =
-            compile_ignore_catalog_reference_rules(&self.ignore_catalog_references);
-        let compiled_ignore_dependency_overrides =
-            compile_ignore_dependency_override_rules(&self.ignore_dependency_overrides);
-
-        let cache_max_size_mb = cache_max_size_mb.or(self.cache.max_size_mb);
-
-        let cache_config_hash = if no_cache {
-            0
-        } else {
-            compute_cache_config_hash(&external_plugins)
-        };
-
-        let security = SecurityConfig {
-            request_receivers: self.security.normalized_request_receivers(),
-            ..self.security
-        };
+        let path_policy = resolve_path_policy_settings(self.boundaries, self.overrides, &root);
 
         ResolvedConfig {
             root,
             entry_patterns: self.entry,
-            ignore_patterns: compiled_ignore_patterns,
+            ignore_patterns: compiled_ignores.patterns,
             output,
-            cache_dir,
+            cache_dir: cache.dir,
             threads,
             no_cache,
-            cache_max_size_mb,
-            cache_config_hash,
+            cache_max_size_mb: cache.max_size_mb,
+            cache_config_hash: cache.config_hash,
             ignore_dependencies: self.ignore_dependencies,
-            ignore_unresolved_imports,
+            ignore_unresolved_imports: compiled_ignores.unresolved_imports,
             ignore_export_rules: self.ignore_exports,
-            compiled_ignore_exports,
-            compiled_ignore_catalog_references,
-            compiled_ignore_dependency_overrides,
+            compiled_ignore_exports: compiled_ignores.exports,
+            compiled_ignore_catalog_references: compiled_ignores.catalog_references,
+            compiled_ignore_dependency_overrides: compiled_ignores.dependency_overrides,
             ignore_exports_used_in_file: self.ignore_exports_used_in_file,
             used_class_members: self.used_class_members,
             ignore_decorators: self.ignore_decorators,
             duplicates: self.duplicates,
             health: self.health,
-            rules,
-            boundaries,
-            rule_packs,
-            production,
+            rules: production_rules.rules,
+            boundaries: path_policy.boundaries,
+            rule_packs: plugins.rule_packs,
+            production: production_rules.production,
             quiet,
-            external_plugins,
+            external_plugins: plugins.external_plugins,
             dynamically_loaded: self.dynamically_loaded,
-            overrides,
+            overrides: path_policy.overrides,
             regression: self.regression,
             audit: self.audit,
             codeowners: self.codeowners,
             public_packages: self.public_packages,
             flags: self.flags,
-            security,
+            security: normalize_security_config(self.security),
             fix: self.fix,
             resolve: self.resolve,
             include_entry_exports: self.include_entry_exports,
