@@ -12,6 +12,7 @@
 use lightningcss::printer::PrinterOptions;
 use lightningcss::properties::Property;
 use lightningcss::properties::animation::AnimationName;
+use lightningcss::properties::box_shadow::BoxShadow;
 use lightningcss::properties::custom::{
     CustomProperty, CustomPropertyName, Token, TokenOrValue, Variable,
 };
@@ -327,43 +328,25 @@ fn collect_rule_property_tokens(style: &StyleRule<'_>, acc: &mut Accumulator) {
 fn collect_property_tokens(property: &Property<'_>, acc: &mut Accumulator) {
     match property {
         Property::FontSize(font_size) => {
-            if let Ok(rendered) = font_size.to_css_string(PrinterOptions::default()) {
-                acc.font_sizes.insert(rendered);
-            }
+            insert_rendered_css(font_size, &mut acc.font_sizes);
         }
         Property::ZIndex(z_index) => {
-            if let Ok(rendered) = z_index.to_css_string(PrinterOptions::default()) {
-                acc.z_indexes.insert(rendered);
-            }
+            insert_rendered_css(z_index, &mut acc.z_indexes);
         }
         // Shadow / radius / line-height tokens (design-token-sprawl axes).
         // The INNER value is serialized (not the property), so the vendor
         // prefix is dropped and `-webkit-box-shadow: X` collapses to the same
         // distinct value as `box-shadow: X` rather than inflating the count.
-        Property::BoxShadow(shadows, _) => {
-            let rendered: Vec<String> = shadows
-                .iter()
-                .filter_map(|shadow| shadow.to_css_string(PrinterOptions::default()).ok())
-                .collect();
-            if !rendered.is_empty() && rendered.len() == shadows.len() {
-                acc.box_shadows.insert(rendered.join(", "));
-            }
-        }
+        Property::BoxShadow(shadows, _) => collect_box_shadow_tokens(shadows, acc),
         Property::BorderRadius(radius, _) => {
-            if let Ok(rendered) = radius.to_css_string(PrinterOptions::default()) {
-                acc.border_radii.insert(rendered);
-            }
+            insert_rendered_css(radius, &mut acc.border_radii);
         }
         Property::LineHeight(line_height) => {
-            if let Ok(rendered) = line_height.to_css_string(PrinterOptions::default()) {
-                acc.line_heights.insert(rendered);
-            }
+            insert_rendered_css(line_height, &mut acc.line_heights);
         }
         Property::Custom(custom) => collect_custom_property_tokens(custom, acc),
         Property::AnimationName(names, _) => {
-            for name in names {
-                collect_animation_name(name, &mut acc.referenced_keyframes);
-            }
+            collect_animation_references(names, &mut acc.referenced_keyframes);
         }
         Property::Animation(animations, _) => {
             for animation in animations {
@@ -371,20 +354,42 @@ fn collect_property_tokens(property: &Property<'_>, acc: &mut Accumulator) {
             }
         }
         Property::FontFamily(families) => {
-            for family in families {
-                if let Some(name) = font_family_name(family) {
-                    acc.referenced_font_families.insert(name);
-                }
-            }
+            collect_font_family_references(families, &mut acc.referenced_font_families);
         }
         Property::Font(font) => {
-            for family in &font.family {
-                if let Some(name) = font_family_name(family) {
-                    acc.referenced_font_families.insert(name);
-                }
-            }
+            collect_font_family_references(&font.family, &mut acc.referenced_font_families);
         }
         _ => {}
+    }
+}
+
+fn insert_rendered_css<T: ToCss>(value: &T, out: &mut FxHashSet<String>) {
+    if let Ok(rendered) = value.to_css_string(PrinterOptions::default()) {
+        out.insert(rendered);
+    }
+}
+
+fn collect_box_shadow_tokens(shadows: &[BoxShadow], acc: &mut Accumulator) {
+    let rendered: Vec<String> = shadows
+        .iter()
+        .filter_map(|shadow| shadow.to_css_string(PrinterOptions::default()).ok())
+        .collect();
+    if !rendered.is_empty() && rendered.len() == shadows.len() {
+        acc.box_shadows.insert(rendered.join(", "));
+    }
+}
+
+fn collect_animation_references(names: &[AnimationName<'_>], out: &mut FxHashSet<String>) {
+    for name in names {
+        collect_animation_name(name, out);
+    }
+}
+
+fn collect_font_family_references(families: &[FontFamily<'_>], out: &mut FxHashSet<String>) {
+    for family in families {
+        if let Some(name) = font_family_name(family) {
+            out.insert(name);
+        }
     }
 }
 
