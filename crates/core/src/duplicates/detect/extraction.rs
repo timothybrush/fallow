@@ -173,6 +173,15 @@ struct RawGroupInput<'a> {
 }
 
 fn build_raw_group(input: &RawGroupInput<'_>) -> Option<RawGroup> {
+    let instances = collect_raw_group_instances(input);
+    let instances = filter_overlapping_instances(instances, input.length)?;
+    Some(RawGroup {
+        instances,
+        length: input.length,
+    })
+}
+
+fn collect_raw_group_instances(input: &RawGroupInput<'_>) -> Vec<(usize, usize)> {
     let sa = input.sa;
     let file_of = input.file_of;
     let file_offsets = input.file_offsets;
@@ -202,27 +211,49 @@ fn build_raw_group(input: &RawGroupInput<'_>) -> Option<RawGroup> {
         instances.push((fid, offset_in_file));
     }
 
+    instances
+}
+
+fn filter_overlapping_instances(
+    mut instances: Vec<(usize, usize)>,
+    length: usize,
+) -> Option<Vec<(usize, usize)>> {
     if instances.len() < 2 {
         return None;
     }
 
     if instances.len() == 2 {
-        if instances[1] < instances[0] {
-            instances.swap(0, 1);
-        }
-        let first = instances[0];
-        let second = instances[1];
-
-        if first.0 != second.0 || second.1 >= first.1 + length {
-            return Some(RawGroup { instances, length });
-        }
-
-        return None;
+        return filter_pair_instances(instances, length);
     }
 
     instances.sort_unstable();
+    let deduped = dedupe_overlapping_instances(&instances, length);
+    if deduped.len() < 2 {
+        return None;
+    }
+
+    Some(deduped)
+}
+
+fn filter_pair_instances(
+    mut instances: Vec<(usize, usize)>,
+    length: usize,
+) -> Option<Vec<(usize, usize)>> {
+    if instances[1] < instances[0] {
+        instances.swap(0, 1);
+    }
+    let first = instances[0];
+    let second = instances[1];
+
+    (first.0 != second.0 || second.1 >= first.1 + length).then_some(instances)
+}
+
+fn dedupe_overlapping_instances(
+    instances: &[(usize, usize)],
+    length: usize,
+) -> Vec<(usize, usize)> {
     let mut deduped: Vec<(usize, usize)> = Vec::with_capacity(instances.len());
-    for &(fid, offset) in &instances {
+    for &(fid, offset) in instances {
         if let Some(&(last_fid, last_offset)) = deduped.last()
             && fid == last_fid
             && offset < last_offset + length
@@ -232,12 +263,5 @@ fn build_raw_group(input: &RawGroupInput<'_>) -> Option<RawGroup> {
         deduped.push((fid, offset));
     }
 
-    if deduped.len() < 2 {
-        return None;
-    }
-
-    Some(RawGroup {
-        instances: deduped,
-        length,
-    })
+    deduped
 }
