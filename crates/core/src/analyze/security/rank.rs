@@ -196,50 +196,97 @@ pub fn rank_security_findings(
         return;
     }
 
-    // O(1) path -> FileId index over graph modules, built once.
-    let path_to_id: FxHashMap<&Path, FileId> = graph
-        .modules
-        .iter()
-        .map(|node| (node.path.as_path(), node.file_id))
-        .collect();
-    let source_index =
-        UntrustedSourceIndex::build(graph, modules, declared_deps, request_receivers);
-    let modules_by_id: FxHashMap<FileId, &ModuleInfo> = modules
-        .iter()
-        .map(|module| (module.file_id, module))
-        .collect();
-    let modules_by_path: FxHashMap<&Path, &ModuleInfo> = graph
-        .modules
-        .iter()
-        .filter_map(|node| {
-            modules_by_id
-                .get(&node.file_id)
-                .map(|module| (node.path.as_path(), *module))
-        })
-        .collect();
+    let context = SecurityRankingContext::build(
+        graph,
+        modules,
+        line_offsets_by_file,
+        declared_deps,
+        request_receivers,
+        boundary_crossings,
+    );
 
     for finding in findings.iter_mut() {
-        let reachability = path_to_id.get(finding.path.as_path()).map(|&file_id| {
-            compute_reachability(
-                graph,
-                file_id,
-                finding,
-                boundary_crossings,
-                &source_index,
-                line_offsets_by_file,
-            )
-        });
-        finding.reachability = reachability;
-        // Issue #900: fill the candidate boundary slot and the taint-flow triple
-        // from the reachability + trace just computed. Pure re-projection: no new
-        // analysis. The zone names come from the same boundary-crossing map.
-        enrich_candidate(finding, boundary_crossings.get(&finding.path));
-        finding.attack_surface =
-            build_attack_surface(finding, &modules_by_path, line_offsets_by_file);
-        finding.severity = derive_security_severity(finding);
+        enrich_ranked_security_finding(finding, &context);
     }
 
     findings.sort_by(compare_ranked_findings);
+}
+
+struct SecurityRankingContext<'a> {
+    graph: &'a ModuleGraph,
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    boundary_crossings: &'a FxHashMap<PathBuf, (String, String)>,
+    path_to_id: FxHashMap<&'a Path, FileId>,
+    source_index: UntrustedSourceIndex,
+    modules_by_path: FxHashMap<&'a Path, &'a ModuleInfo>,
+}
+
+impl<'a> SecurityRankingContext<'a> {
+    fn build(
+        graph: &'a ModuleGraph,
+        modules: &'a [ModuleInfo],
+        line_offsets_by_file: &'a LineOffsetsMap<'a>,
+        declared_deps: &FxHashSet<String>,
+        request_receivers: &FxHashSet<String>,
+        boundary_crossings: &'a FxHashMap<PathBuf, (String, String)>,
+    ) -> Self {
+        let path_to_id = graph
+            .modules
+            .iter()
+            .map(|node| (node.path.as_path(), node.file_id))
+            .collect();
+        let source_index =
+            UntrustedSourceIndex::build(graph, modules, declared_deps, request_receivers);
+        let modules_by_id: FxHashMap<FileId, &ModuleInfo> = modules
+            .iter()
+            .map(|module| (module.file_id, module))
+            .collect();
+        let modules_by_path = graph
+            .modules
+            .iter()
+            .filter_map(|node| {
+                modules_by_id
+                    .get(&node.file_id)
+                    .map(|module| (node.path.as_path(), *module))
+            })
+            .collect();
+
+        Self {
+            graph,
+            line_offsets_by_file,
+            boundary_crossings,
+            path_to_id,
+            source_index,
+            modules_by_path,
+        }
+    }
+}
+
+fn enrich_ranked_security_finding(
+    finding: &mut SecurityFinding,
+    context: &SecurityRankingContext<'_>,
+) {
+    finding.reachability = context
+        .path_to_id
+        .get(finding.path.as_path())
+        .map(|&file_id| {
+            compute_reachability(
+                context.graph,
+                file_id,
+                finding,
+                context.boundary_crossings,
+                &context.source_index,
+                context.line_offsets_by_file,
+            )
+        });
+
+    enrich_candidate(finding, context.boundary_crossings.get(&finding.path));
+    finding.attack_surface = build_attack_surface(
+        finding,
+        &context.modules_by_path,
+        context.line_offsets_by_file,
+    );
+    finding.severity = derive_security_severity(finding);
 }
 
 /// Rank ordering for two enriched security findings: entry-reachable, then
