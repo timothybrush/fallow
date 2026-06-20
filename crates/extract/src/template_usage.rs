@@ -1,6 +1,8 @@
 use fallow_types::extract::{SinkArgKind, SinkShape, SinkSite};
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{BinaryOperator, Expression, ObjectPropertyKind, Statement};
+use oxc_ast::ast::{
+    BinaryOperator, CallExpression, Expression, ObjectExpression, ObjectPropertyKind, Statement,
+};
 use oxc_ast_visit::Visit;
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
@@ -362,21 +364,16 @@ fn collect_template_idents_into(expr: &Expression<'_>, out: &mut Vec<String>) {
             collect_template_idents_into(&member.object, out);
         }
         Expression::ComputedMemberExpression(member) => {
-            collect_template_idents_into(&member.object, out);
-            collect_template_idents_into(&member.expression, out);
+            collect_template_pair_idents(&member.object, &member.expression, out);
         }
         Expression::BinaryExpression(bin) => {
-            collect_template_idents_into(&bin.left, out);
-            collect_template_idents_into(&bin.right, out);
+            collect_template_pair_idents(&bin.left, &bin.right, out);
         }
         Expression::LogicalExpression(logical) => {
-            collect_template_idents_into(&logical.left, out);
-            collect_template_idents_into(&logical.right, out);
+            collect_template_pair_idents(&logical.left, &logical.right, out);
         }
         Expression::ConditionalExpression(cond) => {
-            collect_template_idents_into(&cond.test, out);
-            collect_template_idents_into(&cond.consequent, out);
-            collect_template_idents_into(&cond.alternate, out);
+            collect_template_conditional_idents(&cond.test, &cond.consequent, &cond.alternate, out);
         }
         Expression::SequenceExpression(seq) => {
             for expr in &seq.expressions {
@@ -395,21 +392,49 @@ fn collect_template_idents_into(expr: &Expression<'_>, out: &mut Vec<String>) {
             collect_template_idents_into(&unary.argument, out);
         }
         Expression::CallExpression(call) => {
-            collect_template_idents_into(&call.callee, out);
-            for arg in &call.arguments {
-                if let Some(arg_expr) = arg.as_expression() {
-                    collect_template_idents_into(arg_expr, out);
-                }
-            }
+            collect_template_call_idents(call, out);
         }
         Expression::ObjectExpression(obj) => {
-            for prop in &obj.properties {
-                if let ObjectPropertyKind::ObjectProperty(prop) = prop {
-                    collect_template_idents_into(&prop.value, out);
-                }
-            }
+            collect_template_object_idents(obj, out);
         }
         _ => {}
+    }
+}
+
+fn collect_template_pair_idents(
+    left: &Expression<'_>,
+    right: &Expression<'_>,
+    out: &mut Vec<String>,
+) {
+    collect_template_idents_into(left, out);
+    collect_template_idents_into(right, out);
+}
+
+fn collect_template_conditional_idents(
+    test: &Expression<'_>,
+    consequent: &Expression<'_>,
+    alternate: &Expression<'_>,
+    out: &mut Vec<String>,
+) {
+    collect_template_idents_into(test, out);
+    collect_template_idents_into(consequent, out);
+    collect_template_idents_into(alternate, out);
+}
+
+fn collect_template_call_idents(call: &CallExpression<'_>, out: &mut Vec<String>) {
+    collect_template_idents_into(&call.callee, out);
+    for arg in &call.arguments {
+        if let Some(arg_expr) = arg.as_expression() {
+            collect_template_idents_into(arg_expr, out);
+        }
+    }
+}
+
+fn collect_template_object_idents(obj: &ObjectExpression<'_>, out: &mut Vec<String>) {
+    for prop in &obj.properties {
+        if let ObjectPropertyKind::ObjectProperty(prop) = prop {
+            collect_template_idents_into(&prop.value, out);
+        }
     }
 }
 
