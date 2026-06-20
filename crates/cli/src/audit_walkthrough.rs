@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::audit::routing::RoutingFacts;
 use crate::audit_brief::{ReviewBriefOutput, ReviewBriefSchemaVersion, build_brief_output};
+use crate::audit_focus::FocusMap;
 use crate::audit_decision_surface::DecisionSurface;
 
 /// The standing injection-resistance note stamped on every guide. States the
@@ -58,6 +59,10 @@ pub struct DirectionUnit {
     /// The concern lens the agent should check for this unit, derived from the
     /// unit's risk signals (impact-closure consumers vs a plain touched file).
     pub concern_lens: String,
+    /// Per-unit review-effort budget: the E7 weighted-focus composite score for
+    /// this file. A cloud fan-out spends AI passes/verifiers PROPORTIONAL to this
+    /// (higher = review harder); a local single-agent loop can ignore it.
+    pub scoring_budget: u32,
     /// Root-relative paths of modules affected by this unit but NOT in the diff
     /// (the out-of-diff context the agent must reason about).
     pub out_of_diff: Vec<String>,
@@ -250,30 +255,47 @@ fn is_reviewable_source_unit(file: &str) -> bool {
     )
 }
 
-/// Build the review direction from routing + the per-file coordination map.
-/// Each unit's `out_of_diff` is scoped to the consumers of THAT unit's changed
-/// file (not the global affected set), and its `concern_lens` reflects whether
-/// that unit actually breaks a contract. Units with out-of-diff consumers sort
-/// first: review the load-bearing definitions before the mechanical churn.
-/// Non-source churn is excluded so the agent steers through code only.
+/// Build the review direction. The SPINE is the change itself: every reviewable
+/// E7 focus unit (`review_here` + the `deprioritized` escape hatch), so the
+/// direction is never empty when there is code to review. Ownership routing is a
+/// LEFT-JOINED overlay for the optional `expert` field, NOT the spine: sourcing
+/// the work-list from routing made it empty on solo / author's-own-PR changes (no
+/// one else to ask), which is exactly the cloud's dominant case. Each unit carries
+/// its `scoring_budget` (the focus composite score) so a fan-out spends AI
+/// proportional to risk, its per-file `out_of_diff` consumers, and the
+/// `concern_lens`. Non-source churn is excluded. Units with out-of-diff consumers
+/// sort first (load-bearing definitions before mechanical churn), then by budget.
 #[allow(
     clippy::implicit_hasher,
     reason = "fallow standardizes on FxHashMap; fires on the lib target only, so #[expect] is unfulfilled on the bin"
 )]
 #[must_use]
 pub fn build_direction(
-    routing: &RoutingFacts,
+    focus: &FocusMap,
     out_of_diff_by_file: &FxHashMap<String, Vec<String>>,
+    routing: &RoutingFacts,
 ) -> ReviewDirection {
-    let mut units: Vec<DirectionUnit> = routing
+    // Optional expert overlay: file -> routed expert(s). Empty on the author's own
+    // PR, which is why it is an overlay and not the spine.
+    let expert_by_file: FxHashMap<&str, &[String]> = routing
         .units
         .iter()
+        .map(|unit| (unit.file.as_str(), unit.expert.as_slice()))
+        .collect();
+
+    let mut units: Vec<DirectionUnit> = focus
+        .review_here
+        .iter()
+        .chain(focus.deprioritized.iter())
         .filter(|unit| is_reviewable_source_unit(&unit.file))
         .map(|unit| {
-            // Per-unit out-of-diff: the consumers of THIS file that sit outside
-            // the diff. A unit that breaks a contract gets the contract-break
-            // lens; the rest get the plain orientation lens. Graph-derived.
-            let out_of_diff = out_of_diff_by_file.get(&unit.file).cloned().unwrap_or_default();
+            // Per-unit out-of-diff: the consumers of THIS file outside the diff. A
+            // unit that breaks a contract gets the contract-break lens; the rest
+            // the plain orientation lens. Graph-derived.
+            let out_of_diff = out_of_diff_by_file
+                .get(&unit.file)
+                .cloned()
+                .unwrap_or_default();
             let concern_lens = if out_of_diff.is_empty() {
                 "orientation".to_string()
             } else {
@@ -282,18 +304,23 @@ pub fn build_direction(
             DirectionUnit {
                 file: unit.file.clone(),
                 concern_lens,
+                scoring_budget: unit.score.total,
                 out_of_diff,
-                expert: unit.expert.clone(),
+                expert: expert_by_file
+                    .get(unit.file.as_str())
+                    .map(|experts| experts.to_vec())
+                    .unwrap_or_default(),
             }
         })
         .collect();
 
-    // Dependency-sensible order: units with out-of-diff consumers first, then
-    // deterministic tiebreak on the file path.
+    // Review the load-bearing units first: contract-breakers (out-of-diff
+    // consumers) ahead of the rest, then by budget (riskiest first), then path.
     units.sort_by(|a, b| {
         b.out_of_diff
             .len()
             .cmp(&a.out_of_diff.len())
+            .then_with(|| b.scoring_budget.cmp(&a.scoring_budget))
             .then_with(|| a.file.cmp(&b.file))
     });
 
@@ -415,7 +442,11 @@ pub fn build_guide_from_result(result: &crate::audit::AuditResult) -> Walkthroug
     // each changed file -> the consumers outside the diff it actually affects, so
     // every direction unit carries its OWN out-of-diff, not the global set.
     let mut out_of_diff_by_file: FxHashMap<String, Vec<String>> = FxHashMap::default();
-    if let Some(closure) = result.check.as_ref().and_then(|c| c.impact_closure.as_ref()) {
+    if let Some(closure) = result
+        .check
+        .as_ref()
+        .and_then(|c| c.impact_closure.as_ref())
+    {
         for gap in &closure.coordination_gap {
             out_of_diff_by_file
                 .entry(gap.changed_file.clone())
@@ -427,7 +458,10 @@ pub fn build_guide_from_result(result: &crate::audit::AuditResult) -> Walkthroug
             consumers.dedup();
         }
     }
-    let direction = build_direction(routing, &out_of_diff_by_file);
+    // Spine the direction on the CHANGE (the focus units), with routing as the
+    // optional expert overlay, so the work-list is never empty on the author's own
+    // PR. Borrow `digest.focus` before `digest` is moved into the guide.
+    let direction = build_direction(&digest.focus, &out_of_diff_by_file, routing);
     build_walkthrough_guide(digest, hash, direction)
 }
 
@@ -570,66 +604,71 @@ mod tests {
         assert_eq!(validation.accepted_count, 0);
     }
 
+    fn focus_unit(file: &str, total: u32) -> crate::audit_focus::FocusUnit {
+        crate::audit_focus::FocusUnit {
+            file: file.to_string(),
+            score: crate::audit_focus::FocusScore {
+                total,
+                ..Default::default()
+            },
+            label: crate::audit_focus::FocusLabel::ReviewHere,
+            reason: String::new(),
+            confidence: Vec::new(),
+        }
+    }
+
     #[test]
-    fn direction_orders_out_of_diff_units_first() {
+    fn direction_spines_on_focus_units_with_expert_overlay() {
+        // The SPINE is the change (focus units), never the routing. The author's
+        // own PR has expert: [] on every routing unit, yet the direction still
+        // enumerates the units. b.ts has a real expert overlay; a.ts has none.
+        let focus = FocusMap {
+            review_here: vec![focus_unit("src/b.ts", 5), focus_unit("src/a.ts", 3)],
+            deprioritized: vec![],
+        };
         let routing = RoutingFacts {
-            units: vec![
-                RoutingUnit {
-                    file: "src/b.ts".to_string(),
-                    expert: vec!["@team".to_string()],
-                    bus_factor_one: false,
-                },
-                RoutingUnit {
-                    file: "src/a.ts".to_string(),
-                    expert: Vec::new(),
-                    bus_factor_one: false,
-                },
-            ],
+            units: vec![RoutingUnit {
+                file: "src/b.ts".to_string(),
+                expert: vec!["@team".to_string()],
+                bus_factor_one: false,
+            }],
         };
         // Only src/a.ts has an out-of-diff consumer; src/b.ts has none.
         let mut out_of_diff_by_file = FxHashMap::default();
         out_of_diff_by_file.insert("src/a.ts".to_string(), vec!["src/consumer.ts".to_string()]);
-        let direction = build_direction(&routing, &out_of_diff_by_file);
-        // a.ts breaks a contract -> sorts first with the contract-break lens;
-        // b.ts has no out-of-diff consumer -> orientation lens, empty out_of_diff.
+        let direction = build_direction(&focus, &out_of_diff_by_file, &routing);
+        // a.ts breaks a contract -> sorts first with the contract-break lens,
+        // carrying its budget; b.ts has no out-of-diff -> orientation, but the
+        // expert overlay still attaches @team.
         assert_eq!(direction.order, vec!["src/a.ts", "src/b.ts"]);
         assert_eq!(direction.units[0].file, "src/a.ts");
         assert_eq!(direction.units[0].concern_lens, "contract-break");
         assert_eq!(direction.units[0].out_of_diff, vec!["src/consumer.ts"]);
+        assert_eq!(direction.units[0].scoring_budget, 3);
+        assert!(direction.units[0].expert.is_empty());
+        assert_eq!(direction.units[1].file, "src/b.ts");
         assert_eq!(direction.units[1].concern_lens, "orientation");
-        assert!(direction.units[1].out_of_diff.is_empty());
+        assert_eq!(direction.units[1].scoring_budget, 5);
+        assert_eq!(direction.units[1].expert, vec!["@team".to_string()]);
     }
 
     #[test]
     fn direction_excludes_non_source_units() {
-        let routing = RoutingFacts {
-            units: vec![
-                RoutingUnit {
-                    file: "LICENSE".to_string(),
-                    expert: Vec::new(),
-                    bus_factor_one: false,
-                },
-                RoutingUnit {
-                    file: ".gitignore".to_string(),
-                    expert: Vec::new(),
-                    bus_factor_one: false,
-                },
-                RoutingUnit {
-                    file: "README.md".to_string(),
-                    expert: Vec::new(),
-                    bus_factor_one: false,
-                },
-                RoutingUnit {
-                    file: "src/app.component.ts".to_string(),
-                    expert: Vec::new(),
-                    bus_factor_one: false,
-                },
+        let focus = FocusMap {
+            review_here: vec![
+                focus_unit("LICENSE", 1),
+                focus_unit(".gitignore", 1),
+                focus_unit("README.md", 1),
+                focus_unit("src/app.component.ts", 4),
             ],
+            deprioritized: vec![],
         };
-        let direction = build_direction(&routing, &FxHashMap::default());
+        let direction =
+            build_direction(&focus, &FxHashMap::default(), &RoutingFacts::default());
         // Only the source unit survives; docs/config/license churn is dropped.
         assert_eq!(direction.order, vec!["src/app.component.ts"]);
         assert_eq!(direction.units[0].concern_lens, "orientation");
+        assert_eq!(direction.units[0].scoring_budget, 4);
     }
 
     #[test]

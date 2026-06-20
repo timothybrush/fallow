@@ -16544,6 +16544,10 @@
           "type": "string",
           "description": "The concern lens the agent should check for this unit, derived from the\nunit's risk signals (impact-closure consumers vs a plain touched file)."
         },
+        "scoring_budget": {
+          "type": "integer",
+          "description": "Per-unit review-effort budget: the E7 weighted-focus composite score for\nthis file. A cloud fan-out spends AI passes/verifiers PROPORTIONAL to this\n(higher = review harder); a local single-agent loop can ignore it."
+        },
         "out_of_diff": {
           "type": "array",
           "items": {
@@ -16562,6 +16566,7 @@
       "required": [
         "file",
         "concern_lens",
+        "scoring_budget",
         "out_of_diff",
         "expert"
       ],

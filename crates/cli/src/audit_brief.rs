@@ -27,7 +27,7 @@ use crate::audit::AuditResult;
 ///
 /// v2 (E7): adds the stage-4 weighted `focus` map (composite attention score per
 /// unit + no-skip labels + confidence flags + the `deprioritized` escape hatch).
-pub const REVIEW_BRIEF_SCHEMA_VERSION: u32 = 2;
+pub const REVIEW_BRIEF_SCHEMA_VERSION: u32 = 3;
 
 /// A file count at or above which a changeset is classified [`RiskClass::High`].
 const RISK_HIGH_FILES: usize = 20;

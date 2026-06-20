@@ -8940,6 +8940,12 @@ file: string
  */
 concern_lens: string
 /**
+ * Per-unit review-effort budget: the E7 weighted-focus composite score for
+ * this file. A cloud fan-out spends AI passes/verifiers PROPORTIONAL to this
+ * (higher = review harder); a local single-agent loop can ignore it.
+ */
+scoring_budget: number
+/**
  * Root-relative paths of modules affected by this unit but NOT in the diff
  * (the out-of-diff context the agent must reason about).
  */
