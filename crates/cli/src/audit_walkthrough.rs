@@ -37,8 +37,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::audit::routing::RoutingFacts;
 use crate::audit_brief::{ReviewBriefOutput, ReviewBriefSchemaVersion, build_brief_output};
-use crate::audit_focus::FocusMap;
 use crate::audit_decision_surface::DecisionSurface;
+use crate::audit_focus::FocusMap;
 
 /// The standing injection-resistance note stamped on every guide. States the
 /// trust boundary: the digest is graph-derived, PR prose is untrusted.
@@ -499,6 +499,7 @@ mod tests {
             deltas: &deltas,
             boundary_anchors: &anchors,
             coordination: &[],
+            public_api_anchor_line: 0,
             affected_not_shown: 3,
             routing: &routing,
             head_source: &no_source,
@@ -663,8 +664,7 @@ mod tests {
             ],
             deprioritized: vec![],
         };
-        let direction =
-            build_direction(&focus, &FxHashMap::default(), &RoutingFacts::default());
+        let direction = build_direction(&focus, &FxHashMap::default(), &RoutingFacts::default());
         // Only the source unit survives; docs/config/license churn is dropped.
         assert_eq!(direction.order, vec!["src/app.component.ts"]);
         assert_eq!(direction.units[0].concern_lens, "orientation");

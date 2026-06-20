@@ -1365,6 +1365,7 @@ fn run_audit_head_analyses(
         check.public_api_keys = Some(public_api_keys_from_check(Some(check), opts.root));
         check.partition_order = compute_brief_partition_order(opts.root, check, changed_files);
         check.focus_facts = compute_brief_focus_facts(opts.root, check, changed_files);
+        check.export_lines = compute_brief_export_lines(opts.root, check, changed_files);
     }
     let shared_parse = if share_dead_code_parse_with_health {
         check.as_mut().and_then(|r| r.shared_parse.take())
@@ -1461,6 +1462,50 @@ fn compute_brief_partition_order(
 
     let partition = graph.partition_order(&changed_ids);
     Some(graph.partition_order_with_paths(&partition, root))
+}
+
+/// Precompute the per-changed-file `rel_path -> [(export-name, 1-based line)]` map
+/// for the decision surface, from the retained graph's export spans + each file's
+/// line offsets, BEFORE health drops the graph. Lets a coordination / public-API
+/// decision anchor to the exact export line. `None` when the graph is not retained.
+fn compute_brief_export_lines(
+    root: &std::path::Path,
+    check: &CheckResult,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Option<FxHashMap<String, Vec<(String, u32)>>> {
+    let graph = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())?;
+
+    let changed_norm: FxHashSet<String> = changed_files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    let mut map: FxHashMap<String, Vec<(String, u32)>> = FxHashMap::default();
+    for module in &graph.modules {
+        let abs = module.path.to_string_lossy().replace('\\', "/");
+        if !changed_norm.contains(&abs) || module.exports.is_empty() {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&module.path) else {
+            continue;
+        };
+        let offsets = fallow_types::extract::compute_line_offsets(&content);
+        let exports: Vec<(String, u32)> = module
+            .exports
+            .iter()
+            .map(|export| {
+                let (line, _) =
+                    fallow_types::extract::byte_offset_to_line_col(&offsets, export.span.start);
+                (export.name.to_string(), line)
+            })
+            .collect();
+        map.insert(keys::relative_key_path(&module.path, root), exports);
+    }
+    Some(map)
 }
 
 /// Compute the E7 per-file focus graph facts (fan-in/out + the dynamic-dispatch /
@@ -1777,7 +1822,7 @@ fn compute_decision_surface(
     // Aggregate per changed file: ONE contract decision per changed file (R1
     // batch-consolidate), counting its distinct non-diff consumers as the blast.
     let closure = check.impact_closure.as_ref();
-    let coordination: Vec<CoordinationAnchor> = closure
+    let mut coordination: Vec<CoordinationAnchor> = closure
         .map(|c| aggregate_coordination_gaps(&c.coordination_gap))
         .unwrap_or_default();
     let affected_not_shown = closure.map_or(0, |c| c.affected_not_shown.len() as u64);
@@ -1785,16 +1830,42 @@ fn compute_decision_surface(
     let empty_routing = routing::RoutingFacts::default();
     let routing = routing.unwrap_or(&empty_routing);
 
-    // Head-source reader for suppression checks: read the on-disk (head) content
-    // of an anchor file by its root-relative path. Best-effort; a file that
-    // cannot be read is simply not suppressed.
+    // Head-source reader for suppression checks AND for resolving a contract
+    // symbol's declaration line: read the on-disk (head) content of an anchor file
+    // by its root-relative path. Best-effort; an unreadable file is not suppressed.
     let root_owned = root.clone();
     let head_source = move |rel: &str| std::fs::read_to_string(root_owned.join(rel)).ok();
+
+    // Resolve a contract symbol's 1-based declaration line from the per-file
+    // export-line map precomputed on the brief path (the graph is already dropped
+    // by health here, so we cannot re-derive it now). Lets coordination /
+    // public-API decisions deep-link to the exact export instead of the file head.
+    let export_lines = check.export_lines.as_ref();
+    let resolve_line = |rel: &str, symbols: &[String]| -> u32 {
+        let Some(exports) = export_lines.and_then(|map| map.get(rel)) else {
+            return 0;
+        };
+        exports
+            .iter()
+            .find(|(name, _)| symbols.iter().any(|s| name == s))
+            .or_else(|| exports.first())
+            .map_or(0, |(_, line)| *line)
+    };
+    for anchor in &mut coordination {
+        anchor.line = resolve_line(&anchor.changed_file, &anchor.consumed_symbols);
+    }
+    let public_api_anchor_line = deltas.public_api_added.first().map_or(0, |key| {
+        let mut parts = key.splitn(2, "::");
+        let path = parts.next().unwrap_or_default();
+        let name = parts.next().unwrap_or_default();
+        resolve_line(path, &[name.to_string()])
+    });
 
     extract_decision_surface(&DecisionInputs {
         deltas,
         boundary_anchors: &boundary_anchors,
         coordination: &coordination,
+        public_api_anchor_line,
         affected_not_shown,
         routing,
         head_source: &head_source,
@@ -1829,6 +1900,7 @@ fn aggregate_coordination_gaps(
                 changed_file,
                 consumed_symbols,
                 consumer_count,
+                line: 0,
             }
         })
         .collect();

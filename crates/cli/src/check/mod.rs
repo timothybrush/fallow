@@ -348,6 +348,12 @@ pub struct CheckResult {
     /// dropped; `None` outside the brief path. Holds root-relative paths so it
     /// survives the graph drop.
     pub focus_facts: Option<Vec<fallow_core::graph::FocusFileFactsPaths>>,
+    /// Per-changed-file `rel_path -> [(exported-symbol, 1-based declaration line)]`
+    /// map for the decision surface, so a coordination / public-API decision can
+    /// anchor an inline comment to the exact export line. Computed from the
+    /// retained graph on the brief path BEFORE the graph is dropped; `None`
+    /// otherwise. Internal (CheckResult is not serialized).
+    pub export_lines: Option<rustc_hash::FxHashMap<String, Vec<(String, u32)>>>,
 }
 
 struct CheckAnalysisData {
@@ -709,6 +715,7 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         public_api_keys: None,
         partition_order: None,
         focus_facts: None,
+        export_lines: None,
     })
 }
 

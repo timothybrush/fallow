@@ -216,6 +216,10 @@ pub struct CoordinationAnchor {
     pub consumed_symbols: Vec<String>,
     /// Count of distinct non-diff consumers of this changed file's contract.
     pub consumer_count: u64,
+    /// 1-based line of the contract symbol's declaration in `changed_file`, so the
+    /// decision deep-links / inline-anchors to the exact export. `0` when the line
+    /// could not be resolved (graph not retained or file unreadable).
+    pub line: u32,
 }
 
 /// All inputs the extractor needs, gathered from the assembled brief data.
@@ -226,6 +230,9 @@ pub struct DecisionInputs<'a> {
     pub boundary_anchors: &'a [BoundaryAnchor],
     /// E2 coordination gaps projected to the contract decision shape.
     pub coordination: &'a [CoordinationAnchor],
+    /// 1-based line of the first widened public-API export's declaration, so the
+    /// public-API-surface decision anchors to a real line. `0` when unresolved.
+    pub public_api_anchor_line: u32,
     /// Project-wide fan-in beyond the diff (impact-closure `affected_not_shown`).
     /// Used as the blast magnitude for boundary + public-API-surface decisions.
     pub affected_not_shown: u64,
@@ -401,7 +408,7 @@ fn classify_candidates(inputs: &DecisionInputs<'_>) -> Vec<Decision> {
             key,
             public_api_question(inputs.deltas.public_api_added.len()),
             anchor_file,
-            0,
+            inputs.public_api_anchor_line,
             inputs.affected_not_shown,
             inputs,
         ));
@@ -416,7 +423,7 @@ fn classify_candidates(inputs: &DecisionInputs<'_>) -> Vec<Decision> {
             key,
             coordination_question(&gap.changed_file, &gap.consumed_symbols, gap.consumer_count),
             gap.changed_file.clone(),
-            0,
+            gap.line,
             gap.consumer_count,
             inputs,
         ));
@@ -654,6 +661,7 @@ mod tests {
             deltas,
             boundary_anchors,
             coordination,
+            public_api_anchor_line: 0,
             affected_not_shown: 3,
             routing,
             head_source,
@@ -901,6 +909,7 @@ mod tests {
             changed_file: "src/core.ts".to_string(),
             consumed_symbols: vec!["compute".to_string()],
             consumer_count: 4,
+            line: 7,
         }];
         let routing = empty_routing();
         let surface =
@@ -911,6 +920,9 @@ mod tests {
             DecisionCategory::PublicApiContract
         );
         assert_eq!(surface.decisions[0].blast, 4);
+        // The contract symbol's declaration line flows onto the decision so a PR
+        // review can anchor an inline comment to the exact export.
+        assert_eq!(surface.decisions[0].anchor_line, 7);
     }
 
     #[test]
