@@ -63,34 +63,7 @@ pub fn find_unused_component_props(
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.component_props.is_empty() {
-            continue;
-        }
-        // Whole-file abstain ladder: any signal that a prop could be consumed
-        // indirectly skips the file (zero-FP doctrine).
-        if module.has_unharvestable_props
-            || module.has_props_attrs_fallthrough
-            || module.has_define_expose
-            || module.has_define_model
-        {
-            continue;
-        }
-
-        let component_name = component_name_for(&node.path);
-        for prop in &module.component_props {
-            if prop.used_in_script || prop.used_in_template {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
-            findings.push(UnusedComponentProp {
-                path: node.path.clone(),
-                component_name: component_name.clone(),
-                prop_name: prop.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_sfc_props(node, module, line_offsets_by_file, &mut findings);
     }
 
     findings.sort_by(|a, b| {
@@ -100,6 +73,42 @@ pub fn find_unused_component_props(
             .then(a.prop_name.cmp(&b.prop_name))
     });
     findings
+}
+
+fn collect_module_unused_sfc_props(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<UnusedComponentProp>,
+) {
+    if module.component_props.is_empty() {
+        return;
+    }
+    // Whole-file abstain ladder: any signal that a prop could be consumed
+    // indirectly skips the file (zero-FP doctrine).
+    if module.has_unharvestable_props
+        || module.has_props_attrs_fallthrough
+        || module.has_define_expose
+        || module.has_define_model
+    {
+        return;
+    }
+
+    let component_name = component_name_for(&node.path);
+    for prop in &module.component_props {
+        if prop.used_in_script || prop.used_in_template {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
+        findings.push(UnusedComponentProp {
+            path: node.path.clone(),
+            component_name: component_name.clone(),
+            prop_name: prop.name.clone(),
+            line,
+            col,
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
