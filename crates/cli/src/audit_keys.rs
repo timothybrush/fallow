@@ -1098,51 +1098,80 @@ pub(super) fn retain_introduced_dead_code(
     // `!base.contains(key)` filter below removes the same base-member keys
     // from the full key set, so `introduced` is identical either way.
     let introduced = introduced_dead_code_keys(results, root, base);
-    let keep = |key: String| introduced.contains(&key);
+    classify_introduced_dead_code_fields(results);
 
+    // The three "fast path" retains use a direct base-lookup rather than the
+    // introduced set; both predicates are equivalent for these collections
+    // (see the `introduced` comment above), so this preserves the original
+    // behavior.
+    retain_introduced_fast_paths(
+        &mut results.unused_files,
+        &mut results.unused_exports,
+        &mut results.unused_types,
+        root,
+        base,
+    );
+    retain_introduced_core_findings(results, root, &introduced);
+    retain_introduced_dependency_and_graph_findings(results, root, &introduced);
+    retain_introduced_workspace_findings(results, root, &introduced);
+    retain_introduced_framework_findings(results, root, &introduced);
+}
+
+fn introduced_dead_code_keys(
+    results: &fallow_core::results::AnalysisResults,
+    root: &Path,
+    base: &FxHashSet<String>,
+) -> FxHashSet<String> {
+    dead_code_keys(results, root)
+        .into_iter()
+        .filter(|key| !base.contains(key))
+        .collect()
+}
+
+fn classify_introduced_dead_code_fields(results: &fallow_core::results::AnalysisResults) {
     let fallow_core::results::AnalysisResults {
-        unused_files,
-        unused_exports,
-        unused_types,
-        private_type_leaks,
-        unused_dependencies,
-        unused_dev_dependencies,
-        unused_optional_dependencies,
-        unused_enum_members,
-        unused_class_members,
-        unused_store_members,
-        unresolved_imports,
-        unlisted_dependencies,
-        duplicate_exports,
-        type_only_dependencies,
-        test_only_dependencies,
-        circular_dependencies,
-        re_export_cycles,
-        boundary_violations,
-        boundary_coverage_violations,
-        boundary_call_violations,
-        policy_violations,
-        stale_suppressions,
-        unused_catalog_entries,
-        empty_catalog_groups,
-        unresolved_catalog_references,
-        unused_dependency_overrides,
-        misconfigured_dependency_overrides,
-        invalid_client_exports,
-        mixed_client_server_barrels,
-        misplaced_directives,
-        unprovided_injects,
-        unrendered_components,
-        unused_component_props,
-        unused_component_emits,
-        unused_component_inputs,
-        unused_component_outputs,
-        unused_svelte_events,
-        unused_server_actions,
-        unused_load_data_keys,
+        unused_files: _unused_files,
+        unused_exports: _unused_exports,
+        unused_types: _unused_types,
+        private_type_leaks: _private_type_leaks,
+        unused_dependencies: _unused_dependencies,
+        unused_dev_dependencies: _unused_dev_dependencies,
+        unused_optional_dependencies: _unused_optional_dependencies,
+        unused_enum_members: _unused_enum_members,
+        unused_class_members: _unused_class_members,
+        unused_store_members: _unused_store_members,
+        unresolved_imports: _unresolved_imports,
+        unlisted_dependencies: _unlisted_dependencies,
+        duplicate_exports: _duplicate_exports,
+        type_only_dependencies: _type_only_dependencies,
+        test_only_dependencies: _test_only_dependencies,
+        circular_dependencies: _circular_dependencies,
+        re_export_cycles: _re_export_cycles,
+        boundary_violations: _boundary_violations,
+        boundary_coverage_violations: _boundary_coverage_violations,
+        boundary_call_violations: _boundary_call_violations,
+        policy_violations: _policy_violations,
+        stale_suppressions: _stale_suppressions,
+        unused_catalog_entries: _unused_catalog_entries,
+        empty_catalog_groups: _empty_catalog_groups,
+        unresolved_catalog_references: _unresolved_catalog_references,
+        unused_dependency_overrides: _unused_dependency_overrides,
+        misconfigured_dependency_overrides: _misconfigured_dependency_overrides,
+        invalid_client_exports: _invalid_client_exports,
+        mixed_client_server_barrels: _mixed_client_server_barrels,
+        misplaced_directives: _misplaced_directives,
+        unprovided_injects: _unprovided_injects,
+        unrendered_components: _unrendered_components,
+        unused_component_props: _unused_component_props,
+        unused_component_emits: _unused_component_emits,
+        unused_component_inputs: _unused_component_inputs,
+        unused_component_outputs: _unused_component_outputs,
+        unused_svelte_events: _unused_svelte_events,
+        unused_server_actions: _unused_server_actions,
+        unused_load_data_keys: _unused_load_data_keys,
         unused_load_data_keys_global_abstain: _unused_load_data_keys_global_abstain,
-        route_collisions,
-        dynamic_segment_name_conflicts,
+        route_collisions: _route_collisions,
+        dynamic_segment_name_conflicts: _dynamic_segment_name_conflicts,
         // Non-finding fields: counts and metadata, not subject to base-keyed
         // filtering.
         suppression_count: _suppression_count,
@@ -1172,92 +1201,6 @@ pub(super) fn retain_introduced_dead_code(
         // collection; no key needed.
         render_fan_in: _render_fan_in,
     } = results;
-
-    // The three "fast path" retains use a direct base-lookup rather than the
-    // introduced set; both predicates are equivalent for these collections
-    // (see the `introduced` comment above), so this preserves the original
-    // behavior.
-    retain_introduced_fast_paths(unused_files, unused_exports, unused_types, root, base);
-    private_type_leaks.retain(|item| {
-        keep(format!(
-            "private-type-leak:{}:{}:{}",
-            relative_key_path(&item.leak.path, root),
-            item.leak.export_name,
-            item.leak.type_name
-        ))
-    });
-    unused_dependencies.retain(|item| keep(unused_dependency_key(&item.dep, root)));
-    unused_dev_dependencies.retain(|item| keep(unused_dependency_key(&item.dep, root)));
-    unused_optional_dependencies.retain(|item| keep(unused_dependency_key(&item.dep, root)));
-    unused_enum_members
-        .retain(|item| keep(unused_member_key("unused-enum-member", &item.member, root)));
-    unused_class_members
-        .retain(|item| keep(unused_member_key("unused-class-member", &item.member, root)));
-    unused_store_members
-        .retain(|item| keep(unused_member_key("unused-store-member", &item.member, root)));
-    unresolved_imports.retain(|item| {
-        keep(format!(
-            "unresolved-import:{}:{}",
-            relative_key_path(&item.import.path, root),
-            item.import.specifier
-        ))
-    });
-    unlisted_dependencies.retain(|item| keep(unlisted_dependency_key(&item.dep, root)));
-    duplicate_exports.retain(|item| keep(duplicate_export_key(item, root)));
-    type_only_dependencies.retain(|item| {
-        keep(format!(
-            "type-only-dependency:{}:{}",
-            relative_key_path(&item.dep.path, root),
-            item.dep.package_name
-        ))
-    });
-    test_only_dependencies.retain(|item| {
-        keep(format!(
-            "test-only-dependency:{}:{}",
-            relative_key_path(&item.dep.path, root),
-            item.dep.package_name
-        ))
-    });
-    circular_dependencies.retain(|item| keep(circular_dependency_key(item, root)));
-    re_export_cycles.retain(|item| keep(re_export_cycle_key(item, root)));
-    boundary_violations.retain(|item| keep(boundary_violation_key(item, root)));
-    boundary_coverage_violations.retain(|item| keep(boundary_coverage_key(item, root)));
-    boundary_call_violations.retain(|item| keep(boundary_call_key(item, root)));
-    policy_violations.retain(|item| keep(policy_violation_key(item, root)));
-    stale_suppressions.retain(|item| keep(stale_suppression_key(item, root)));
-    unresolved_catalog_references.retain(|item| keep(unresolved_catalog_reference_key(item, root)));
-    unused_catalog_entries.retain(|item| keep(unused_catalog_entry_key(&item.entry, root)));
-    empty_catalog_groups.retain(|item| keep(empty_catalog_group_key(&item.group, root)));
-    unused_dependency_overrides.retain(|item| keep(unused_dependency_override_key(item, root)));
-    misconfigured_dependency_overrides
-        .retain(|item| keep(misconfigured_dependency_override_key(item, root)));
-    invalid_client_exports.retain(|item| keep(invalid_client_export_key(&item.export, root)));
-    mixed_client_server_barrels
-        .retain(|item| keep(mixed_client_server_barrel_key(&item.barrel, root)));
-    misplaced_directives.retain(|item| keep(misplaced_directive_key(&item.directive_site, root)));
-    unprovided_injects.retain(|item| keep(unprovided_inject_key(&item.inject, root)));
-    unrendered_components.retain(|item| keep(unrendered_component_key(&item.component, root)));
-    unused_component_props.retain(|item| keep(unused_component_prop_key(&item.prop, root)));
-    unused_component_emits.retain(|item| keep(unused_component_emit_key(&item.emit, root)));
-    unused_component_inputs.retain(|item| keep(unused_component_input_key(&item.input, root)));
-    unused_component_outputs.retain(|item| keep(unused_component_output_key(&item.output, root)));
-    unused_svelte_events.retain(|item| keep(unused_svelte_event_key(&item.event, root)));
-    unused_server_actions.retain(|item| keep(unused_server_action_key(&item.action, root)));
-    unused_load_data_keys.retain(|item| keep(unused_load_data_key_key(&item.key, root)));
-    route_collisions.retain(|item| keep(route_collision_key(&item.collision, root)));
-    dynamic_segment_name_conflicts
-        .retain(|item| keep(dynamic_segment_name_conflict_key(&item.conflict, root)));
-}
-
-fn introduced_dead_code_keys(
-    results: &fallow_core::results::AnalysisResults,
-    root: &Path,
-    base: &FxHashSet<String>,
-) -> FxHashSet<String> {
-    dead_code_keys(results, root)
-        .into_iter()
-        .filter(|key| !base.contains(key))
-        .collect()
 }
 
 fn retain_introduced_fast_paths(
@@ -1286,6 +1229,202 @@ fn retain_introduced_fast_paths(
             relative_key_path(&item.export.path, root),
             item.export.export_name
         ))
+    });
+}
+
+fn keep_introduced(introduced: &FxHashSet<String>, key: impl AsRef<str>) -> bool {
+    introduced.contains(key.as_ref())
+}
+
+fn retain_introduced_core_findings(
+    results: &mut fallow_core::results::AnalysisResults,
+    root: &Path,
+    introduced: &FxHashSet<String>,
+) {
+    results.private_type_leaks.retain(|item| {
+        keep_introduced(
+            introduced,
+            format!(
+                "private-type-leak:{}:{}:{}",
+                relative_key_path(&item.leak.path, root),
+                item.leak.export_name,
+                item.leak.type_name
+            ),
+        )
+    });
+    results.unused_enum_members.retain(|item| {
+        keep_introduced(
+            introduced,
+            unused_member_key("unused-enum-member", &item.member, root),
+        )
+    });
+    results.unused_class_members.retain(|item| {
+        keep_introduced(
+            introduced,
+            unused_member_key("unused-class-member", &item.member, root),
+        )
+    });
+    results.unused_store_members.retain(|item| {
+        keep_introduced(
+            introduced,
+            unused_member_key("unused-store-member", &item.member, root),
+        )
+    });
+    results.unresolved_imports.retain(|item| {
+        keep_introduced(
+            introduced,
+            format!(
+                "unresolved-import:{}:{}",
+                relative_key_path(&item.import.path, root),
+                item.import.specifier
+            ),
+        )
+    });
+}
+
+fn retain_introduced_dependency_and_graph_findings(
+    results: &mut fallow_core::results::AnalysisResults,
+    root: &Path,
+    introduced: &FxHashSet<String>,
+) {
+    results
+        .unused_dependencies
+        .retain(|item| keep_introduced(introduced, unused_dependency_key(&item.dep, root)));
+    results
+        .unused_dev_dependencies
+        .retain(|item| keep_introduced(introduced, unused_dependency_key(&item.dep, root)));
+    results
+        .unused_optional_dependencies
+        .retain(|item| keep_introduced(introduced, unused_dependency_key(&item.dep, root)));
+    results
+        .unlisted_dependencies
+        .retain(|item| keep_introduced(introduced, unlisted_dependency_key(&item.dep, root)));
+    results
+        .duplicate_exports
+        .retain(|item| keep_introduced(introduced, duplicate_export_key(item, root)));
+    results.type_only_dependencies.retain(|item| {
+        keep_introduced(
+            introduced,
+            format!(
+                "type-only-dependency:{}:{}",
+                relative_key_path(&item.dep.path, root),
+                item.dep.package_name
+            ),
+        )
+    });
+    results.test_only_dependencies.retain(|item| {
+        keep_introduced(
+            introduced,
+            format!(
+                "test-only-dependency:{}:{}",
+                relative_key_path(&item.dep.path, root),
+                item.dep.package_name
+            ),
+        )
+    });
+    results
+        .circular_dependencies
+        .retain(|item| keep_introduced(introduced, circular_dependency_key(item, root)));
+    results
+        .re_export_cycles
+        .retain(|item| keep_introduced(introduced, re_export_cycle_key(item, root)));
+    results
+        .boundary_violations
+        .retain(|item| keep_introduced(introduced, boundary_violation_key(item, root)));
+    results
+        .boundary_coverage_violations
+        .retain(|item| keep_introduced(introduced, boundary_coverage_key(item, root)));
+    results
+        .boundary_call_violations
+        .retain(|item| keep_introduced(introduced, boundary_call_key(item, root)));
+    results
+        .policy_violations
+        .retain(|item| keep_introduced(introduced, policy_violation_key(item, root)));
+    results
+        .stale_suppressions
+        .retain(|item| keep_introduced(introduced, stale_suppression_key(item, root)));
+}
+
+fn retain_introduced_workspace_findings(
+    results: &mut fallow_core::results::AnalysisResults,
+    root: &Path,
+    introduced: &FxHashSet<String>,
+) {
+    results
+        .unresolved_catalog_references
+        .retain(|item| keep_introduced(introduced, unresolved_catalog_reference_key(item, root)));
+    results
+        .unused_catalog_entries
+        .retain(|item| keep_introduced(introduced, unused_catalog_entry_key(&item.entry, root)));
+    results
+        .empty_catalog_groups
+        .retain(|item| keep_introduced(introduced, empty_catalog_group_key(&item.group, root)));
+    results
+        .unused_dependency_overrides
+        .retain(|item| keep_introduced(introduced, unused_dependency_override_key(item, root)));
+    results.misconfigured_dependency_overrides.retain(|item| {
+        keep_introduced(
+            introduced,
+            misconfigured_dependency_override_key(item, root),
+        )
+    });
+}
+
+fn retain_introduced_framework_findings(
+    results: &mut fallow_core::results::AnalysisResults,
+    root: &Path,
+    introduced: &FxHashSet<String>,
+) {
+    results
+        .invalid_client_exports
+        .retain(|item| keep_introduced(introduced, invalid_client_export_key(&item.export, root)));
+    results.mixed_client_server_barrels.retain(|item| {
+        keep_introduced(
+            introduced,
+            mixed_client_server_barrel_key(&item.barrel, root),
+        )
+    });
+    results.misplaced_directives.retain(|item| {
+        keep_introduced(
+            introduced,
+            misplaced_directive_key(&item.directive_site, root),
+        )
+    });
+    results
+        .unprovided_injects
+        .retain(|item| keep_introduced(introduced, unprovided_inject_key(&item.inject, root)));
+    results.unrendered_components.retain(|item| {
+        keep_introduced(introduced, unrendered_component_key(&item.component, root))
+    });
+    results
+        .unused_component_props
+        .retain(|item| keep_introduced(introduced, unused_component_prop_key(&item.prop, root)));
+    results
+        .unused_component_emits
+        .retain(|item| keep_introduced(introduced, unused_component_emit_key(&item.emit, root)));
+    results
+        .unused_component_inputs
+        .retain(|item| keep_introduced(introduced, unused_component_input_key(&item.input, root)));
+    results.unused_component_outputs.retain(|item| {
+        keep_introduced(introduced, unused_component_output_key(&item.output, root))
+    });
+    results
+        .unused_svelte_events
+        .retain(|item| keep_introduced(introduced, unused_svelte_event_key(&item.event, root)));
+    results
+        .unused_server_actions
+        .retain(|item| keep_introduced(introduced, unused_server_action_key(&item.action, root)));
+    results
+        .unused_load_data_keys
+        .retain(|item| keep_introduced(introduced, unused_load_data_key_key(&item.key, root)));
+    results
+        .route_collisions
+        .retain(|item| keep_introduced(introduced, route_collision_key(&item.collision, root)));
+    results.dynamic_segment_name_conflicts.retain(|item| {
+        keep_introduced(
+            introduced,
+            dynamic_segment_name_conflict_key(&item.conflict, root),
+        )
     });
 }
 
