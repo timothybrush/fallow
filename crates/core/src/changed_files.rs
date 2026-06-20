@@ -403,47 +403,152 @@ pub fn filter_results_by_changed_files(
     results: &mut AnalysisResults,
     changed_files: &FxHashSet<PathBuf>,
 ) {
+    let cf = normalize_changed_files_set(changed_files);
+    {
+        let AnalysisResults {
+            unused_files,
+            unused_exports,
+            unused_types,
+            private_type_leaks,
+            // Dependency-level issues are graph-global: "unused" is a function
+            // of the whole import graph and cannot be attributed to a changed
+            // file.
+            unused_dependencies: _unused_dependencies,
+            unused_dev_dependencies: _unused_dev_dependencies,
+            unused_optional_dependencies: _unused_optional_dependencies,
+            unused_enum_members,
+            unused_class_members,
+            unused_store_members,
+            unresolved_imports,
+            unlisted_dependencies,
+            duplicate_exports,
+            // Type-only and test-only dependency issues are graph-global for
+            // the same reason as the other dependency kinds above.
+            type_only_dependencies: _type_only_dependencies,
+            test_only_dependencies: _test_only_dependencies,
+            circular_dependencies,
+            re_export_cycles,
+            boundary_violations,
+            boundary_coverage_violations,
+            boundary_call_violations,
+            policy_violations,
+            stale_suppressions,
+            // Catalog entries are workspace-global: whether a catalog entry is
+            // unused depends on all workspace packages, not a single changed
+            // file.
+            unused_catalog_entries: _unused_catalog_entries,
+            empty_catalog_groups,
+            unresolved_catalog_references,
+            unused_dependency_overrides,
+            misconfigured_dependency_overrides,
+            invalid_client_exports: _invalid_client_exports,
+            mixed_client_server_barrels: _mixed_client_server_barrels,
+            misplaced_directives: _misplaced_directives,
+            unprovided_injects: _unprovided_injects,
+            unrendered_components: _unrendered_components,
+            route_collisions: _route_collisions,
+            dynamic_segment_name_conflicts: _dynamic_segment_name_conflicts,
+            unused_component_props: _unused_component_props,
+            unused_component_emits: _unused_component_emits,
+            unused_component_inputs: _unused_component_inputs,
+            unused_component_outputs: _unused_component_outputs,
+            unused_svelte_events: _unused_svelte_events,
+            unused_server_actions: _unused_server_actions,
+            unused_load_data_keys: _unused_load_data_keys,
+            // Observability flag, not an issue collection.
+            unused_load_data_keys_global_abstain: _unused_load_data_keys_global_abstain,
+            prop_drilling_chains: _prop_drilling_chains,
+            thin_wrappers: _thin_wrappers,
+            duplicate_prop_shapes: _duplicate_prop_shapes,
+            // Non-finding fields: counts and metadata, not issue collections.
+            suppression_count: _suppression_count,
+            active_suppressions: _active_suppressions,
+            feature_flags: _feature_flags,
+            security_findings,
+            security_unresolved_edge_files: _security_unresolved_edge_files,
+            security_unresolved_callee_sites: _security_unresolved_callee_sites,
+            security_unresolved_callee_diagnostics,
+            // Export usages and entry-point summary are metadata, not issue
+            // collections; they are not changed-files filtered.
+            export_usages: _export_usages,
+            entry_point_summary: _entry_point_summary,
+            // Render fan-in is a whole-project descriptive metric (the
+            // component-graph analogue of module fan-in), not an issue
+            // collection; it is not changed-files filtered.
+            render_fan_in: _render_fan_in,
+        } = &mut *results;
+
+        retain_by_changed_path(unused_files, &cf, |f| &f.file.path);
+        retain_by_changed_path(unused_exports, &cf, |e| &e.export.path);
+        retain_by_changed_path(unused_types, &cf, |e| &e.export.path);
+        retain_by_changed_path(private_type_leaks, &cf, |e| &e.leak.path);
+        retain_by_changed_path(unused_enum_members, &cf, |m| &m.member.path);
+        retain_by_changed_path(unused_class_members, &cf, |m| &m.member.path);
+        retain_by_changed_path(unused_store_members, &cf, |m| &m.member.path);
+        retain_by_changed_path(unresolved_imports, &cf, |i| &i.import.path);
+
+        retain_unlisted_dependencies_by_import_site(unlisted_dependencies, &cf);
+        retain_duplicate_exports_by_changed_locations(duplicate_exports, &cf);
+        retain_circular_dependencies_by_changed_file(circular_dependencies, &cf);
+        retain_re_export_cycles_by_changed_file(re_export_cycles, &cf);
+
+        retain_by_changed_path(boundary_violations, &cf, |v| &v.violation.from_path);
+        retain_by_changed_path(boundary_coverage_violations, &cf, |v| &v.violation.path);
+        retain_by_changed_path(boundary_call_violations, &cf, |v| &v.violation.path);
+        retain_by_changed_path(policy_violations, &cf, |v| &v.violation.path);
+
+        retain_by_changed_path(stale_suppressions, &cf, |s| &s.path);
+
+        retain_security_findings_by_changed_path(security_findings, &cf);
+        retain_by_changed_path(security_unresolved_callee_diagnostics, &cf, |d| &d.path);
+
+        retain_by_changed_path(unresolved_catalog_references, &cf, |r| &r.reference.path);
+        empty_catalog_groups.retain(|g| normalized_set_contains_path(&cf, &g.group.path));
+
+        retain_by_changed_path(unused_dependency_overrides, &cf, |o| &o.entry.path);
+        retain_by_changed_path(misconfigured_dependency_overrides, &cf, |o| &o.entry.path);
+    }
+
+    retain_framework_findings_by_changed_files(results, &cf);
+}
+
+fn retain_framework_findings_by_changed_files(
+    results: &mut AnalysisResults,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    retain_client_boundary_findings_by_changed_files(results, changed_files);
+    retain_component_contract_findings_by_changed_files(results, changed_files);
+    retain_react_health_findings_by_changed_files(results, changed_files);
+    retain_nextjs_findings_by_changed_files(results, changed_files);
+}
+
+fn retain_client_boundary_findings_by_changed_files(
+    results: &mut AnalysisResults,
+    changed_files: &FxHashSet<PathBuf>,
+) {
     let AnalysisResults {
-        unused_files,
-        unused_exports,
-        unused_types,
-        private_type_leaks,
-        // Dependency-level issues are graph-global: "unused" is a function of
-        // the whole import graph and cannot be attributed to a changed file.
-        unused_dependencies: _unused_dependencies,
-        unused_dev_dependencies: _unused_dev_dependencies,
-        unused_optional_dependencies: _unused_optional_dependencies,
-        unused_enum_members,
-        unused_class_members,
-        unused_store_members,
-        unresolved_imports,
-        unlisted_dependencies,
-        duplicate_exports,
-        // Type-only and test-only dependency issues are graph-global for the
-        // same reason as the other dependency kinds above.
-        type_only_dependencies: _type_only_dependencies,
-        test_only_dependencies: _test_only_dependencies,
-        circular_dependencies,
-        re_export_cycles,
-        boundary_violations,
-        boundary_coverage_violations,
-        boundary_call_violations,
-        policy_violations,
-        stale_suppressions,
-        // Catalog entries are workspace-global: whether a catalog entry is
-        // unused depends on all workspace packages, not a single changed file.
-        unused_catalog_entries: _unused_catalog_entries,
-        empty_catalog_groups,
-        unresolved_catalog_references,
-        unused_dependency_overrides,
-        misconfigured_dependency_overrides,
         invalid_client_exports,
         mixed_client_server_barrels,
         misplaced_directives,
+        ..
+    } = results;
+
+    retain_by_changed_path(invalid_client_exports, changed_files, |e| &e.export.path);
+    retain_by_changed_path(mixed_client_server_barrels, changed_files, |b| {
+        &b.barrel.path
+    });
+    retain_by_changed_path(misplaced_directives, changed_files, |d| {
+        &d.directive_site.path
+    });
+}
+
+fn retain_component_contract_findings_by_changed_files(
+    results: &mut AnalysisResults,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    let AnalysisResults {
         unprovided_injects,
         unrendered_components,
-        route_collisions,
-        dynamic_segment_name_conflicts,
         unused_component_props,
         unused_component_emits,
         unused_component_inputs,
@@ -451,78 +556,50 @@ pub fn filter_results_by_changed_files(
         unused_svelte_events,
         unused_server_actions,
         unused_load_data_keys,
-        // Observability flag, not an issue collection.
-        unused_load_data_keys_global_abstain: _unused_load_data_keys_global_abstain,
+        ..
+    } = results;
+
+    retain_by_changed_path(unprovided_injects, changed_files, |i| &i.inject.path);
+    retain_by_changed_path(unrendered_components, changed_files, |c| &c.component.path);
+    retain_by_changed_path(unused_component_props, changed_files, |p| &p.prop.path);
+    retain_by_changed_path(unused_component_emits, changed_files, |e| &e.emit.path);
+    retain_by_changed_path(unused_component_inputs, changed_files, |i| &i.input.path);
+    retain_by_changed_path(unused_component_outputs, changed_files, |o| &o.output.path);
+    retain_by_changed_path(unused_svelte_events, changed_files, |e| &e.event.path);
+    retain_by_changed_path(unused_server_actions, changed_files, |a| &a.action.path);
+    retain_by_changed_path(unused_load_data_keys, changed_files, |k| &k.key.path);
+}
+
+fn retain_react_health_findings_by_changed_files(
+    results: &mut AnalysisResults,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    let AnalysisResults {
         prop_drilling_chains,
         thin_wrappers,
         duplicate_prop_shapes,
-        // Non-finding fields: counts and metadata, not issue collections.
-        suppression_count: _suppression_count,
-        active_suppressions: _active_suppressions,
-        feature_flags: _feature_flags,
-        security_findings,
-        security_unresolved_edge_files: _security_unresolved_edge_files,
-        security_unresolved_callee_sites: _security_unresolved_callee_sites,
-        security_unresolved_callee_diagnostics,
-        // Export usages and entry-point summary are metadata, not issue
-        // collections; they are not changed-files filtered.
-        export_usages: _export_usages,
-        entry_point_summary: _entry_point_summary,
-        // Render fan-in is a whole-project descriptive metric (the
-        // component-graph analogue of module fan-in), not an issue collection;
-        // it is not changed-files filtered.
-        render_fan_in: _render_fan_in,
-    } = &mut *results;
+        ..
+    } = results;
 
-    let cf = normalize_changed_files_set(changed_files);
-    retain_by_changed_path(unused_files, &cf, |f| &f.file.path);
-    retain_by_changed_path(unused_exports, &cf, |e| &e.export.path);
-    retain_by_changed_path(unused_types, &cf, |e| &e.export.path);
-    retain_by_changed_path(private_type_leaks, &cf, |e| &e.leak.path);
-    retain_by_changed_path(unused_enum_members, &cf, |m| &m.member.path);
-    retain_by_changed_path(unused_class_members, &cf, |m| &m.member.path);
-    retain_by_changed_path(unused_store_members, &cf, |m| &m.member.path);
-    retain_by_changed_path(unresolved_imports, &cf, |i| &i.import.path);
+    retain_prop_drilling_chains_by_anchor(prop_drilling_chains, changed_files);
+    retain_by_changed_path(thin_wrappers, changed_files, |w| &w.wrapper.file);
+    retain_duplicate_prop_shapes_by_anchor(duplicate_prop_shapes, changed_files);
+}
 
-    retain_unlisted_dependencies_by_import_site(unlisted_dependencies, &cf);
-    retain_duplicate_exports_by_changed_locations(duplicate_exports, &cf);
-    retain_circular_dependencies_by_changed_file(circular_dependencies, &cf);
-    retain_re_export_cycles_by_changed_file(re_export_cycles, &cf);
+fn retain_nextjs_findings_by_changed_files(
+    results: &mut AnalysisResults,
+    changed_files: &FxHashSet<PathBuf>,
+) {
+    let AnalysisResults {
+        route_collisions,
+        dynamic_segment_name_conflicts,
+        ..
+    } = results;
 
-    retain_by_changed_path(boundary_violations, &cf, |v| &v.violation.from_path);
-    retain_by_changed_path(boundary_coverage_violations, &cf, |v| &v.violation.path);
-    retain_by_changed_path(boundary_call_violations, &cf, |v| &v.violation.path);
-    retain_by_changed_path(policy_violations, &cf, |v| &v.violation.path);
-
-    retain_by_changed_path(stale_suppressions, &cf, |s| &s.path);
-
-    retain_security_findings_by_changed_path(security_findings, &cf);
-    retain_by_changed_path(security_unresolved_callee_diagnostics, &cf, |d| &d.path);
-
-    retain_by_changed_path(unresolved_catalog_references, &cf, |r| &r.reference.path);
-    empty_catalog_groups.retain(|g| normalized_set_contains_path(&cf, &g.group.path));
-
-    retain_by_changed_path(unused_dependency_overrides, &cf, |o| &o.entry.path);
-    retain_by_changed_path(misconfigured_dependency_overrides, &cf, |o| &o.entry.path);
-
-    retain_by_changed_path(invalid_client_exports, &cf, |e| &e.export.path);
-    retain_by_changed_path(mixed_client_server_barrels, &cf, |b| &b.barrel.path);
-    retain_by_changed_path(misplaced_directives, &cf, |d| &d.directive_site.path);
-    retain_by_changed_path(unprovided_injects, &cf, |i| &i.inject.path);
-    retain_by_changed_path(unrendered_components, &cf, |c| &c.component.path);
-    retain_by_changed_path(route_collisions, &cf, |c| &c.collision.path);
-    retain_by_changed_path(dynamic_segment_name_conflicts, &cf, |c| &c.conflict.path);
-    retain_by_changed_path(unused_component_props, &cf, |p| &p.prop.path);
-    retain_by_changed_path(unused_component_emits, &cf, |e| &e.emit.path);
-    retain_by_changed_path(unused_component_inputs, &cf, |i| &i.input.path);
-    retain_by_changed_path(unused_component_outputs, &cf, |o| &o.output.path);
-    retain_by_changed_path(unused_svelte_events, &cf, |e| &e.event.path);
-    retain_by_changed_path(unused_server_actions, &cf, |a| &a.action.path);
-    retain_by_changed_path(unused_load_data_keys, &cf, |k| &k.key.path);
-    retain_prop_drilling_chains_by_anchor(prop_drilling_chains, &cf);
-    // Anchor a thin wrapper on its component definition file.
-    retain_by_changed_path(thin_wrappers, &cf, |w| &w.wrapper.file);
-    retain_duplicate_prop_shapes_by_anchor(duplicate_prop_shapes, &cf);
+    retain_by_changed_path(route_collisions, changed_files, |c| &c.collision.path);
+    retain_by_changed_path(dynamic_segment_name_conflicts, changed_files, |c| {
+        &c.conflict.path
+    });
 }
 
 fn retain_unlisted_dependencies_by_import_site(
