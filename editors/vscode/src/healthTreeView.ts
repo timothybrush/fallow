@@ -4,7 +4,6 @@
 // fallow-ignore-next-line unlisted-dependency
 import * as vscode from "vscode";
 import {
-  countHealthItems,
   escapeHealthMarkdown,
   formatComplexityOffense,
   formatHotspotDescription,
@@ -233,11 +232,7 @@ export class HealthTreeProvider implements vscode.TreeDataProvider<HealthItem> {
     if (!this.view) {
       return;
     }
-    const count = countHealthItems(this.report);
-    this.view.badge =
-      count > 0
-        ? { value: count, tooltip: `${count} health item${count === 1 ? "" : "s"}` }
-        : undefined;
+    this.view.badge = undefined;
   }
 
   getTreeItem(element: HealthItem): vscode.TreeItem {

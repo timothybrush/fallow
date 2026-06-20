@@ -3,12 +3,7 @@
 // VS Code injects this module into the extension host at runtime.
 // fallow-ignore-next-line unlisted-dependency
 import * as vscode from "vscode";
-import {
-  countCoverageItems,
-  formatConfidence,
-  sortHotPaths,
-  splitCleanupCandidates,
-} from "./coverage-utils.js";
+import { formatConfidence, sortHotPaths, splitCleanupCandidates } from "./coverage-utils.js";
 import { openFileCommand } from "./openFileCommand.js";
 import { middleElidePath, resolveFilePath as resolveFilePathPure } from "./treeView-utils.js";
 import type {
@@ -93,11 +88,7 @@ export class RuntimeCoverageTreeProvider implements vscode.TreeDataProvider<Cove
     if (!this.view) {
       return;
     }
-    const count = countCoverageItems(this.report);
-    this.view.badge =
-      count > 0
-        ? { value: count, tooltip: `${count} runtime item${count === 1 ? "" : "s"}` }
-        : undefined;
+    this.view.badge = undefined;
   }
 
   getTreeItem(element: CoverageItem): vscode.TreeItem {

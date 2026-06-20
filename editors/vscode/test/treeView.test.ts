@@ -40,6 +40,168 @@ const selectionOf = (item: TestTreeItem): TestRange => {
 };
 
 describe("DeadCodeTreeProvider", () => {
+  it("counts only diagnostic errors in the view badge", () => {
+    const provider = new DeadCodeTreeProvider();
+    const view: { badge?: { value: number; tooltip: string } } = {};
+    provider.setView(view as never);
+
+    provider.update({
+      ...emptyCheck(),
+      unused_files: [{ path: "unused.ts", actions: [] }],
+      unlisted_dependencies: [
+        {
+          package_name: "left-pad",
+          imported_from: [{ path: "src/app.ts", line: 1, col: 0 }],
+          actions: [],
+        },
+      ],
+      unprovided_injects: [
+        {
+          key_name: "theme",
+          path: "src/App.vue",
+          framework: "vue",
+          line: 2,
+          col: 1,
+          actions: [],
+        },
+      ],
+      invalid_client_exports: [
+        {
+          export_name: "metadata",
+          path: "src/app/page.tsx",
+          directive: "use client",
+          line: 3,
+          col: 0,
+          actions: [],
+        },
+      ],
+      mixed_client_server_barrels: [
+        {
+          path: "src/components/index.ts",
+          line: 4,
+          col: 0,
+          client_origin: "src/components/button.tsx",
+          server_origin: "src/components/data.ts",
+          actions: [],
+        },
+      ],
+      misplaced_directives: [
+        {
+          directive: "use client",
+          path: "src/components/button.tsx",
+          line: 5,
+          col: 0,
+          actions: [],
+        },
+      ],
+      unresolved_imports: [
+        {
+          path: "src/app.ts",
+          specifier: "missing",
+          line: 1,
+          col: 0,
+          specifier_col: 15,
+          actions: [],
+        },
+      ],
+      route_collisions: [
+        {
+          path: "src/app/(marketing)/about/page.tsx",
+          url: "/about",
+          conflicting_paths: ["src/app/about/page.tsx"],
+          line: 1,
+          col: 0,
+          actions: [],
+        },
+      ],
+      dynamic_segment_name_conflicts: [
+        {
+          path: "src/app/shop/[id]/page.tsx",
+          position: "/shop",
+          conflicting_segments: ["[id]", "[slug]"],
+          conflicting_paths: ["src/app/shop/[slug]/page.tsx"],
+          line: 1,
+          col: 0,
+          actions: [],
+        },
+      ],
+      policy_violations: [
+        {
+          path: "src/shell.ts",
+          line: 3,
+          col: 2,
+          pack: "local",
+          rule_id: "no-exec",
+          kind: "banned-call",
+          matched: "child_process.exec",
+          severity: "error",
+          actions: [],
+        },
+        {
+          path: "src/legacy.ts",
+          line: 4,
+          col: 2,
+          pack: "local",
+          rule_id: "avoid-legacy",
+          kind: "banned-import",
+          matched: "legacy",
+          severity: "warn",
+          actions: [],
+        },
+      ],
+      unresolved_catalog_references: [
+        {
+          entry_name: "react",
+          catalog_name: "default",
+          path: "package.json",
+          line: 8,
+          available_in_catalogs: [],
+          actions: [],
+        },
+      ],
+      misconfigured_dependency_overrides: [
+        {
+          raw_key: "react@<18",
+          raw_value: "",
+          reason: "empty-value",
+          source: "pnpm-workspace.yaml",
+          path: "package.json",
+          line: 12,
+          actions: [],
+        },
+      ],
+    });
+
+    // The four RSC structural findings above (unprovided_injects,
+    // invalid_client_exports, mixed_client_server_barrels, misplaced_directives)
+    // render at LSP WARNING severity, so they are excluded from the "errors"
+    // badge. Only the six true-ERROR categories count: unresolved_imports,
+    // route_collisions, dynamic_segment_name_conflicts, one error-severity
+    // policy_violation, unresolved_catalog_references, and
+    // misconfigured_dependency_overrides.
+    expect(view.badge).toEqual({ value: 6, tooltip: "6 errors" });
+
+    provider.update({
+      ...emptyCheck(),
+      unused_files: [{ path: "unused.ts", actions: [] }],
+      policy_violations: [
+        {
+          path: "src/legacy.ts",
+          line: 4,
+          col: 2,
+          pack: "local",
+          rule_id: "avoid-legacy",
+          kind: "banned-import",
+          matched: "legacy",
+          severity: "warn",
+          actions: [],
+        },
+      ],
+    });
+
+    expect(view.badge).toBeUndefined();
+  });
+
   it("renders new schema categories and navigates to their reported locations", () => {
     const provider = new DeadCodeTreeProvider();
     provider.update({

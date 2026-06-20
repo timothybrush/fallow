@@ -158,6 +158,9 @@ interface FilterClient {
 
 type DiagnosticSeverityGetter = () => DiagnosticSeveritySetting;
 
+const uriFromDiagnosticDocument = (document: vscode.TextDocument | vscode.Uri): vscode.Uri =>
+  "uri" in document ? document.uri : document;
+
 /** LSP diagnostics get tagged with `source: "fallow"` (see
  *  `crates/lsp/src/diagnostics/*.rs`). Anything else flows through
  *  the filter untouched so we never affect TypeScript or ESLint. */
@@ -471,6 +474,7 @@ export class DiagnosticFilter {
     if (!result) {
       return result;
     }
+    this.client?.diagnostics?.set(uriFromDiagnosticDocument(document), []);
     if (result.kind !== "full") {
       return result;
     }

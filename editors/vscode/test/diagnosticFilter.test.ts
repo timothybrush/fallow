@@ -713,6 +713,32 @@ describe("DiagnosticFilter pull-mode middleware", () => {
     expect(c.sets.some((s) => s.uri === "file:///open.ts")).toBe(false);
   });
 
+  it("clears stale push diagnostics when a pull report owns the same document", async () => {
+    const f = new DiagnosticFilter(memento() as never);
+    const c = collection();
+    f.attachClient({ diagnostics: c as never, refreshPullDiagnostics: vi.fn() });
+    f.handleDiagnostics(
+      fakeUri("file:///open.ts") as never,
+      [diag({ code: "unused-export" })] as never,
+      vi.fn()
+    );
+
+    await f.provideDiagnostics(
+      fakeUri("file:///open.ts") as never,
+      undefined,
+      {} as never,
+      vi.fn(async () => ({
+        kind: "full",
+        items: [diag({ code: "unused-export" })],
+      })) as never
+    );
+
+    expect(c.sets[c.sets.length - 1]).toEqual({
+      uri: "file:///open.ts",
+      diags: [],
+    });
+  });
+
   it("refresh re-publishes push-delivered files but leaves pull-delivered files to the re-pull", async () => {
     const f = new DiagnosticFilter(memento() as never);
     const c = collection();

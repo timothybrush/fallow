@@ -395,6 +395,21 @@ describe("planDegradation", () => {
     expect(plan.kind).toBe("retry");
   });
 
+  it("retries with complexity breakdown stripped for older CLIs", () => {
+    const plan = planDegradation("unexpected argument '--complexity-breakdown' found", [
+      "health",
+      "--format",
+      "json",
+      "--quiet",
+      "--complexity-breakdown",
+    ]);
+    expect(plan).toEqual({
+      kind: "retry",
+      dropped: "--complexity-breakdown",
+      args: ["health", "--format", "json", "--quiet"],
+    });
+  });
+
   it("rethrows when the offending flag is not on the version-gated allowlist", () => {
     // A flag the extension did not intend to be auto-stripped must stay loud, so
     // a real bug or corrupt binary is not silently masked.

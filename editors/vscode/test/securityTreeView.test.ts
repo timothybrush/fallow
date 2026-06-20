@@ -127,7 +127,7 @@ describe("SecurityTreeProvider", () => {
     expect(selectionOf(item)).toMatchObject({ startLine: 11, startCharacter: 4 });
     // No trace -> not collapsible.
     expect(item.collapsibleState).toBe(0);
-    expect(view.badge).toMatchObject({ value: 1 });
+    expect(view.badge).toBeUndefined();
   });
 
   it("renders trace hops as navigable children with role descriptions", () => {
@@ -263,7 +263,7 @@ describe("SecurityTreeProvider", () => {
       ]),
     );
 
-    expect(view.badge).toMatchObject({ value: 2 });
+    expect(view.badge).toBeUndefined();
   });
 
   it("renders non-zero blind-spot counts as a non-actionable info node", () => {
@@ -300,7 +300,7 @@ describe("SecurityTreeProvider", () => {
     expect(blindSpot.iconPath?.id).toBe("info");
     expect(blindSpot.command).toBeUndefined();
     expect(provider.getChildren(blindSpot as never)).toEqual([]);
-    expect(view.badge).toMatchObject({ value: 1 });
+    expect(view.badge).toBeUndefined();
   });
 
   it("omits the blind-spot node when both counters are zero", () => {

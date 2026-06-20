@@ -4,7 +4,7 @@
 // fallow-ignore-next-line unlisted-dependency
 import * as vscode from "vscode";
 import { openFileCommand } from "./openFileCommand.js";
-import { countSecurityFindings, hopRoleLabel, securityFindingLabel } from "./security-utils.js";
+import { hopRoleLabel, securityFindingLabel } from "./security-utils.js";
 import { middleElidePath, resolveFilePath as resolveFilePathPure } from "./treeView-utils.js";
 import type { SecurityFinding, SecurityOutput, TraceHop } from "./types.js";
 
@@ -178,14 +178,7 @@ export class SecurityTreeProvider implements vscode.TreeDataProvider<SecurityIte
     if (!this.view) {
       return;
     }
-    const count = countSecurityFindings(this.result);
-    this.view.badge =
-      count > 0
-        ? {
-            value: count,
-            tooltip: `${count} security candidate${count === 1 ? "" : "s"} to verify`,
-          }
-        : undefined;
+    this.view.badge = undefined;
   }
 
   getTreeItem(element: SecurityItem): vscode.TreeItem {

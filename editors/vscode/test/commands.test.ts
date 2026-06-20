@@ -15,6 +15,7 @@ let mockExtensionVersion: string | null = null;
 let mockBinaryVersions: Readonly<Record<string, string | null>> = {};
 let mockConfigPathSetting = "";
 let mockResolvedConfigRoots: string[] = [];
+let mockComplexityBreakdownEnabled = false;
 let mockActiveTextEditor:
   | {
       readonly document: {
@@ -91,7 +92,7 @@ vi.mock("../src/config.js", () => ({
   getDuplicationThresholdOverride: () => undefined,
   getHealthHotspots: () => true,
   getHealthTopFindings: () => 20,
-  getComplexityBreakdownEnabled: () => false,
+  getComplexityBreakdownEnabled: () => mockComplexityBreakdownEnabled,
   getComplexityDecorationCap: () => 200,
   getIssueTypes: () => ({}),
   getChangedSince: () => "",
@@ -415,6 +416,7 @@ describe("resolveCliForRun", () => {
     mockDownloadedCli = null;
     mockExtensionVersion = "2.88.1";
     mockBinaryVersions = {};
+    mockComplexityBreakdownEnabled = false;
     vi.clearAllMocks();
   });
 
@@ -948,6 +950,7 @@ describe("runHealthAnalysis return type (envelope reachable)", () => {
     mockDownloadedCli = null;
     mockExtensionVersion = null;
     mockBinaryVersions = {};
+    mockComplexityBreakdownEnabled = false;
     setWorkspaceRoot(null);
     resetHealthNoWorkspaceWarning();
     vi.clearAllMocks();
@@ -991,6 +994,54 @@ describe("runHealthAnalysis return type (envelope reachable)", () => {
       expect(report?.version).toBe("9.9.9-test");
       expect(report?.next_steps?.[0]?.id).toBe("health-clean");
     } finally {
+      setWorkspaceRoot(null);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries without complexity breakdown when an older CLI rejects the flag", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "fallow-vscode-health-old-cli-"));
+    const script = join(dir, "fallow-cli.js");
+    const logPath = join(dir, "spawn.log");
+    const output = JSON.stringify({
+      schema_version: 7,
+      version: "9.9.9-test",
+      elapsed_ms: 12,
+      findings: [],
+      summary: {},
+      next_steps: [],
+    });
+
+    try {
+      await writeFile(
+        script,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          `fs.appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(' ') + '\\n');`,
+          "if (process.argv.includes('--complexity-breakdown')) {",
+          "  console.error(\"error: unexpected argument '--complexity-breakdown' found\");",
+          "  process.exit(2);",
+          "}",
+          `process.stdout.write(${JSON.stringify(output)});`,
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(script, 0o755);
+
+      mockPathBinary = script;
+      mockComplexityBreakdownEnabled = true;
+      setWorkspaceRoot(dir);
+
+      const report = await runHealthAnalysis(workspaceContext);
+      expect(report?.version).toBe("9.9.9-test");
+
+      const calls = (await readFile(logPath, "utf8")).trim().split("\n");
+      expect(calls).toHaveLength(2);
+      expect(calls[0]).toContain("--complexity-breakdown");
+      expect(calls[1]).not.toContain("--complexity-breakdown");
+    } finally {
+      mockComplexityBreakdownEnabled = false;
       setWorkspaceRoot(null);
       await rm(dir, { recursive: true, force: true });
     }
