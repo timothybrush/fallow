@@ -8306,6 +8306,26 @@
               ]
             }
           ]
+        },
+        {
+          "description": "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, `triage`, and\n`graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;\nalways emitted with exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReviewBriefOutput"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "audit-brief"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
         }
       ],
       "title": "fallow --format json (typed root)",
@@ -15742,6 +15762,155 @@
         "ok",
         "error"
       ]
+    },
+    "ReviewBriefOutput": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Independently-versioned brief schema version.",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this output."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"audit-brief\"`."
+        },
+        "triage": {
+          "description": "Stage 0: diff triage.",
+          "$ref": "#/definitions/DiffTriage"
+        },
+        "graph_facts": {
+          "description": "Stage 1: graph orientation facts.",
+          "$ref": "#/definitions/GraphFacts"
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "triage",
+        "graph_facts"
+      ],
+      "title": "fallow audit --brief --format json",
+      "description": "The full `fallow audit --brief --format json` envelope. Carries the\ninformational verdict, the triage and graph-facts orientation stages, plus\nthe reused \"subtract\" section (the same dead-code / duplication / complexity\npayload `fallow audit --format json` emits)."
+    },
+    "ReviewBriefSchemaVersion": {
+      "type": "integer",
+      "description": "Independently-versioned wire-version newtype for the brief envelope.\nSerializes as the integer `REVIEW_BRIEF_SCHEMA_VERSION`."
+    },
+    "RiskClass": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "low",
+          "description": "Small, contained change."
+        },
+        {
+          "type": "string",
+          "const": "medium",
+          "description": "Moderately sized change."
+        },
+        {
+          "type": "string",
+          "const": "high",
+          "description": "Large change spanning many files or lines."
+        }
+      ],
+      "description": "Coarse risk classification for a changeset, a pure function of the change\nsize (file count plus, once threaded, net lines)."
+    },
+    "ReviewEffort": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "glance",
+          "description": "A quick scan is enough."
+        },
+        {
+          "type": "string",
+          "const": "review",
+          "description": "A normal line-by-line review."
+        },
+        {
+          "type": "string",
+          "const": "deep_dive",
+          "description": "A careful, deep review is warranted."
+        }
+      ],
+      "description": "Suggested reviewer effort, a pure function of [`RiskClass`]."
+    },
+    "DiffTriage": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer",
+          "description": "Number of changed files in the audit scope."
+        },
+        "hunks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Number of diff hunks. `None` in v1 (no diff index threaded yet)."
+        },
+        "net_lines": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Net added-minus-removed lines. `None` in v1 (no diff index threaded yet)."
+        },
+        "risk_class": {
+          "description": "Coarse risk class derived from the change size.",
+          "$ref": "#/definitions/RiskClass"
+        },
+        "review_effort": {
+          "description": "Suggested reviewer effort derived from `risk_class`.",
+          "$ref": "#/definitions/ReviewEffort"
+        }
+      },
+      "required": [
+        "files",
+        "risk_class",
+        "review_effort"
+      ],
+      "description": "Stage 0 of the brief: triage facts derived purely from the diff size.\n\n`hunks` and `net_lines` are `None` in v1: the file-level audit does not yet\nthread a `DiffIndex` (from `report/ci/diff_filter.rs`). They populate later,\non `--diff-file` / `--diff-stdin`, without a schema bump."
+    },
+    "GraphFacts": {
+      "type": "object",
+      "properties": {
+        "exports_added": {
+          "type": "integer",
+          "description": "Number of exports added by the changeset. Stubbed to `0` in v1."
+        },
+        "api_width_delta": {
+          "type": "integer",
+          "description": "Change in public API width (added minus removed exports). Stubbed to `0`\nin v1."
+        },
+        "reachable_from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Entry points or modules the changed code is reachable from. Empty in v1\n(reachability is not yet computed on the file-level audit path)."
+        },
+        "boundaries_touched": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Architecture boundary zones touched by the changeset, deduped and sorted.\nDerived from the run's boundary-violation findings."
+        }
+      },
+      "required": [
+        "exports_added",
+        "api_width_delta",
+        "reachable_from",
+        "boundaries_touched"
+      ],
+      "description": "Stage 1 of the brief: graph-derived orientation facts.\n\nv1 is best-effort: `boundaries_touched` is derived from the run's\nboundary-violation zones; `exports_added` and `reachable_from` are honestly\nstubbed (`0` / empty) because the file-level audit does not yet diff the\nexport surface or compute reachability. The fields are present and correctly\ntyped so values fill in later without a schema bump."
     }
   }
 }

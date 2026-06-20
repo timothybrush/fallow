@@ -20,6 +20,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 mod api;
 mod audit;
+mod audit_brief;
 mod base_worktree;
 mod baseline;
 mod cache_notice;
@@ -1034,6 +1035,12 @@ enum Command {
     /// Purpose-built for reviewing AI-generated code and PR quality gates.
     /// Combines dead-code + complexity + duplication scoped to changed files
     /// and returns a verdict (pass/warn/fail).
+    ///
+    /// `fallow audit` answers "will CI block this?": it gates (exit 1 on a
+    /// fail verdict). The `review` alias plus `--brief` answer "where do I
+    /// look?": the same analysis rendered as a deterministic orientation brief
+    /// that ALWAYS exits 0, so a reviewer or agent can read it regardless of
+    /// the verdict. `--format` is orthogonal to `--brief`.
     /// When `--changed-since`/`--base` is unset, the base is the git merge-base
     /// against the branch's upstream or the remote default (`origin/HEAD`,
     /// `origin/main`, `origin/master`); set `FALLOW_AUDIT_BASE` to pin it.
@@ -1047,6 +1054,7 @@ enum Command {
     /// Use --dead-code-baseline, --health-baseline, and --dupes-baseline
     /// (or their config equivalents) because each sub-analysis uses a
     /// different baseline format.
+    #[command(visible_alias = "review")]
     Audit {
         /// Run dead-code analysis in production mode for this audit.
         #[arg(long = "production-dead-code")]
@@ -1122,6 +1130,14 @@ enum Command {
         /// verdict, exit code, or output.
         #[arg(long, value_name = "MARKER", hide = true)]
         gate_marker: Option<String>,
+
+        /// Render the deterministic review brief instead of the gating audit
+        /// report. The brief answers "where do I look?" rather than "will CI
+        /// block this?", runs the same analysis, and ALWAYS exits 0 (the
+        /// verdict is carried informationally). Implied by `fallow review`.
+        /// Orthogonal to `--format`.
+        #[arg(long)]
+        brief: bool,
     },
 
     /// Show what fallow has done for you: how many issues it is surfacing, the
@@ -2530,7 +2546,11 @@ fn install_signal_handlers() {
     }
 }
 
-fn args_use_legacy_check_alias<I>(args: I) -> bool
+/// Find the first positional (non-flag) token in argv, which is the invoked
+/// subcommand name. Skips global flags and their values so `fallow --root /p
+/// review` still resolves to `review`. Returns `None` when there is no
+/// positional token (bare `fallow`, or only flags).
+fn first_subcommand_token<I>(args: I) -> Option<String>
 where
     I: IntoIterator<Item = String>,
 {
@@ -2586,13 +2606,35 @@ where
             }
             continue;
         }
-        return arg == "check";
+        return Some(arg);
     }
-    false
+    None
+}
+
+fn args_use_legacy_check_alias<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = String>,
+{
+    first_subcommand_token(args).as_deref() == Some("check")
+}
+
+/// Whether argv invoked the `review` alias of the audit command. The clap
+/// `visible_alias` routes `review` to `Command::Audit` but does NOT set
+/// `--brief`; the alias implies the brief, so we detect it from raw argv and
+/// force `brief = true` post-parse.
+fn args_invoked_review_alias<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = String>,
+{
+    first_subcommand_token(args).as_deref() == Some("review")
 }
 
 fn raw_args_use_legacy_check_alias() -> bool {
     args_use_legacy_check_alias(std::env::args())
+}
+
+fn raw_args_invoked_review_alias() -> bool {
+    args_invoked_review_alias(std::env::args())
 }
 
 fn warn_legacy_check_alias_if_needed(used_legacy_check_alias: bool, quiet: bool) {
@@ -2664,8 +2706,14 @@ fn finalize_report_file(
 /// the output format. Returns the parse error's exit code on failure.
 fn parse_cli_args() -> Result<(Cli, FormatConfig), ExitCode> {
     let used_legacy_check_alias = raw_args_use_legacy_check_alias();
-    let cli = Cli::try_parse().map_err(|err| handle_cli_parse_error(&err))?;
+    let mut cli = Cli::try_parse().map_err(|err| handle_cli_parse_error(&err))?;
     warn_legacy_check_alias_if_needed(used_legacy_check_alias, cli.quiet);
+    // `fallow review` is the `visible_alias` of `audit`; it implies `--brief`.
+    if raw_args_invoked_review_alias()
+        && let Some(Command::Audit { brief, .. }) = cli.command.as_mut()
+    {
+        *brief = true;
+    }
     output_envelope::set_legacy_envelope(cli.legacy_envelope);
     runtime_support::set_max_file_size_override(cli.max_file_size);
 
@@ -4106,6 +4154,7 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
         runtime_coverage,
         min_invocations_hot,
         gate_marker,
+        brief,
     } = command
     else {
         unreachable!("audit dispatcher only handles audit commands");
@@ -4127,6 +4176,7 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
             runtime_coverage,
             min_invocations_hot,
             gate_marker,
+            brief,
         },
     )
 }
@@ -4956,6 +5006,7 @@ struct AuditDispatchArgs {
     runtime_coverage: Option<PathBuf>,
     min_invocations_hot: u64,
     gate_marker: Option<String>,
+    brief: bool,
 }
 
 struct ResolvedAuditInputs {
@@ -5081,6 +5132,7 @@ fn run_resolved_audit(
             include_entry_exports: cli.include_entry_exports,
             runtime_coverage: args.runtime_coverage.as_deref(),
             min_invocations_hot: args.min_invocations_hot,
+            brief: args.brief,
         },
         args.gate_marker.as_deref(),
     )

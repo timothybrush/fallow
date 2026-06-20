@@ -24,6 +24,15 @@ mod api;
     reason = "shared CLI library compiles bin-oriented support modules for reuse"
 )]
 pub mod audit;
+/// `fallow audit --brief` (alias `fallow review`): deterministic, always-exit-0
+/// rendering mode layered over the audit analysis. Public so the schema-emit
+/// binary can derive the `ReviewBriefOutput` envelope.
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "shared CLI library compiles bin-oriented support modules for reuse"
+)]
+pub mod audit_brief;
 #[allow(
     dead_code,
     unused_imports,

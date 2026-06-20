@@ -61,7 +61,11 @@ pub struct AuditResult {
     pub verdict: AuditVerdict,
     pub summary: AuditSummary,
     pub attribution: AuditAttribution,
-    base_snapshot: Option<AuditKeySnapshot>,
+    /// Key snapshot of the base ref for new-vs-inherited attribution. `None`
+    /// when the base pass was skipped (`--gate all`) or unavailable. Exposed at
+    /// crate scope so test fixtures in sibling modules can construct an
+    /// `AuditResult` with `base_snapshot: None`.
+    pub base_snapshot: Option<AuditKeySnapshot>,
     pub base_snapshot_skipped: bool,
     pub changed_files_count: usize,
     /// Absolute paths of the files this run re-analyzed. Threaded into the
@@ -126,6 +130,11 @@ pub struct AuditOptions<'a> {
     pub runtime_coverage: Option<&'a std::path::Path>,
     /// Threshold for hot-path classification, forwarded to the sidecar.
     pub min_invocations_hot: u64,
+    /// Render the deterministic, always-exit-0 review brief (`fallow audit
+    /// --brief` / `fallow review`) instead of the gating audit report. The
+    /// audit analysis still runs and the verdict is still computed and carried
+    /// informationally; it just never drives the exit code on this path.
+    pub brief: bool,
 }
 
 /// A base ref resolved by auto-detection: the git ref to diff against plus a
@@ -467,7 +476,7 @@ fn introduced_dupes_verdict(result: &DupesResult, base: Option<&AuditKeySnapshot
     }
 }
 
-struct AuditKeySnapshot {
+pub struct AuditKeySnapshot {
     dead_code: FxHashSet<String>,
     health: FxHashSet<String>,
     dupes: FxHashSet<String>,
@@ -842,6 +851,7 @@ fn build_base_audit_options<'a>(
         include_entry_exports: opts.include_entry_exports,
         runtime_coverage: None,
         min_invocations_hot: opts.min_invocations_hot,
+        brief: false,
     }
 }
 
@@ -1785,7 +1795,10 @@ fn build_audit_health_options<'a>(
 #[path = "audit_output.rs"]
 mod output;
 
-pub use output::print_audit_result;
+pub use output::{
+    insert_audit_dead_code_json, insert_audit_duplication_json, insert_audit_health_json,
+    insert_audit_json_header, print_audit_findings, print_audit_result,
+};
 
 /// Run the full audit command: execute analyses, print results, return exit code.
 /// Run audit, optionally tagged with a gate marker (e.g. `"pre-commit"`) so
@@ -1845,7 +1858,14 @@ pub fn run_audit(opts: &AuditOptions<'_>, gate_marker: Option<&str>) -> ExitCode
                     attribution: Some(&attribution),
                 },
             );
-            print_audit_result(&result, opts.quiet, opts.explain)
+            if opts.brief {
+                // Exit-0 seam: the brief renders the same analysis but never
+                // gates on the verdict. `print_brief_result` always returns
+                // SUCCESS.
+                crate::audit_brief::print_brief_result(&result, opts.quiet, opts.explain)
+            } else {
+                print_audit_result(&result, opts.quiet, opts.explain)
+            }
         }
         Err(code) => code,
     }
@@ -3034,6 +3054,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xfeed,
@@ -3091,6 +3112,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xbeef,
@@ -3162,6 +3184,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let first = config_file_fingerprint(&opts).expect("fingerprint should be computed");
@@ -3234,6 +3257,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3311,6 +3335,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3404,6 +3429,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3481,6 +3507,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3637,6 +3664,7 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3767,6 +3795,7 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3904,6 +3933,7 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3986,6 +4016,7 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute with a new explicit config");
@@ -4062,6 +4093,7 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4144,6 +4176,7 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let first = execute_audit(&opts).expect("first audit should execute");
@@ -4249,6 +4282,7 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");

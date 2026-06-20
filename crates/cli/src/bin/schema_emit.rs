@@ -25,6 +25,9 @@ use std::process::ExitCode;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value};
 
+use fallow_cli::audit_brief::{
+    DiffTriage, GraphFacts, ReviewBriefOutput, ReviewBriefSchemaVersion, ReviewEffort, RiskClass,
+};
 use fallow_cli::health_types::{
     ComplexityViolation, ContributorEntry, ContributorIdentifierFormat, CoverageGapSummary,
     CoverageGaps, CoverageModel, CoverageTier, ExceededThreshold, FileHealthScore, FindingSeverity,
@@ -299,6 +302,12 @@ const DERIVED_DEFINITION_NAMES: &[&str] = &[
     "CodeClimateIssue",
     "CodeClimateOutput",
     "CombinedOutput",
+    "ReviewBriefOutput",
+    "ReviewBriefSchemaVersion",
+    "RiskClass",
+    "ReviewEffort",
+    "DiffTriage",
+    "GraphFacts",
     "CoverageSetupFileToEdit",
     "CoverageSetupMember",
     "CoverageSetupOutput",
@@ -454,6 +463,7 @@ fn derived_definitions() -> Map<String, Value> {
     register_health_definitions(&mut generator);
     register_meta_definitions(&mut generator);
     register_per_command_envelope_definitions(&mut generator);
+    register_audit_brief_definitions(&mut generator);
     register_impact_definitions(&mut generator);
     register_security_definitions(&mut generator);
     let _ = generator.subschema_for::<FallowOutput>();
@@ -609,6 +619,16 @@ fn register_meta_definitions(generator: &mut schemars::SchemaGenerator) {
     let _ = generator.subschema_for::<MetaMetric>();
     let _ = generator.subschema_for::<MetaRule>();
     let _ = generator.subschema_for::<TelemetryMeta>();
+}
+
+/// Register the `fallow audit --brief --format json` envelope.
+fn register_audit_brief_definitions(generator: &mut schemars::SchemaGenerator) {
+    let _ = generator.subschema_for::<ReviewBriefSchemaVersion>();
+    let _ = generator.subschema_for::<RiskClass>();
+    let _ = generator.subschema_for::<ReviewEffort>();
+    let _ = generator.subschema_for::<DiffTriage>();
+    let _ = generator.subschema_for::<GraphFacts>();
+    let _ = generator.subschema_for::<ReviewBriefOutput>();
 }
 
 fn register_impact_definitions(generator: &mut schemars::SchemaGenerator) {
@@ -902,6 +922,11 @@ const FALLOW_OUTPUT_VARIANTS: &[(&str, &[&str], &str)] = &[
         "combined",
         &["CombinedOutput"],
         "Bare `fallow --format json` (combined dead-code + dupes + health).\nRequired `schema_version`, `version`, and `elapsed_ms`, with optional\n`check`, `dupes`, and `health` subreports.",
+    ),
+    (
+        "audit-brief",
+        &["ReviewBriefOutput"],
+        "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, `triage`, and\n`graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;\nalways emitted with exit 0.",
     ),
 ];
 
@@ -1236,6 +1261,7 @@ mod drift_tests {
             ("SecurityBlindSpots", "SecurityBlindSpotsOutput"),
             ("Check", "CheckOutput"),
             ("Combined", "CombinedOutput"),
+            ("AuditBrief", "ReviewBriefOutput"),
         ];
 
         #[expect(
@@ -1264,6 +1290,7 @@ mod drift_tests {
                 FallowOutput::SecurityBlindSpots(_) => "SecurityBlindSpots",
                 FallowOutput::Check(_) => "Check",
                 FallowOutput::Combined(_) => "Combined",
+                FallowOutput::AuditBrief(_) => "AuditBrief",
             }
         }
 

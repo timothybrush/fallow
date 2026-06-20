@@ -1218,6 +1218,12 @@ pub enum FallowOutput {
     /// `check`, `dupes`, and `health` subreports.
     #[serde(rename = "combined")]
     Combined(CombinedOutput),
+    /// `fallow audit --brief --format json` (alias `fallow review`). Required
+    /// `schema_version`, `version`, `command: "audit-brief"`, `triage`, and
+    /// `graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;
+    /// always emitted with exit 0.
+    #[serde(rename = "audit-brief")]
+    AuditBrief(crate::audit_brief::ReviewBriefOutput),
 }
 
 #[cfg(test)]

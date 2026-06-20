@@ -85,6 +85,8 @@ kind: "security-blind-spots"
 kind: "dead-code"
 }) | (CombinedOutput & {
 kind: "combined"
+}) | (ReviewBriefOutput & {
+kind: "audit-brief"
 }))
 /**
  * Schema version for this output format (independent of tool version). Bump
@@ -763,6 +765,20 @@ export type SecurityVerifierVerdictStatus = ("survivor" | "dismissed" | "needs-h
  * The `fallow security blind-spots --format json` schema version.
  */
 export type SecurityBlindSpotsSchemaVersion = "1"
+/**
+ * Independently-versioned wire-version newtype for the brief envelope.
+ * Serializes as the integer `REVIEW_BRIEF_SCHEMA_VERSION`.
+ */
+export type ReviewBriefSchemaVersion = number
+/**
+ * Coarse risk classification for a changeset, a pure function of the change
+ * size (file count plus, once threaded, net lines).
+ */
+export type RiskClass = ("low" | "medium" | "high")
+/**
+ * Suggested reviewer effort, a pure function of [`RiskClass`].
+ */
+export type ReviewEffort = ("glance" | "review" | "deep_dive")
 /**
  * Discriminator value for [`CodeClimateIssue::kind`].
  */
@@ -8438,6 +8454,78 @@ check?: (Meta | null)
 dupes?: (Meta | null)
 health?: (Meta | null)
 telemetry?: (TelemetryMeta | null)
+}
+/**
+ * The full `fallow audit --brief --format json` envelope. Carries the
+ * informational verdict, the triage and graph-facts orientation stages, plus
+ * the reused "subtract" section (the same dead-code / duplication / complexity
+ * payload `fallow audit --format json` emits).
+ */
+export interface ReviewBriefOutput {
+schema_version: ReviewBriefSchemaVersion
+/**
+ * Fallow CLI version that produced this output.
+ */
+version: string
+/**
+ * Command discriminator singleton: always `"audit-brief"`.
+ */
+command: string
+triage: DiffTriage
+graph_facts: GraphFacts
+}
+/**
+ * Stage 0 of the brief: triage facts derived purely from the diff size.
+ *
+ * `hunks` and `net_lines` are `None` in v1: the file-level audit does not yet
+ * thread a `DiffIndex` (from `report/ci/diff_filter.rs`). They populate later,
+ * on `--diff-file` / `--diff-stdin`, without a schema bump.
+ */
+export interface DiffTriage {
+/**
+ * Number of changed files in the audit scope.
+ */
+files: number
+/**
+ * Number of diff hunks. `None` in v1 (no diff index threaded yet).
+ */
+hunks?: (number | null)
+/**
+ * Net added-minus-removed lines. `None` in v1 (no diff index threaded yet).
+ */
+net_lines?: (number | null)
+risk_class: RiskClass
+review_effort: ReviewEffort
+}
+/**
+ * Stage 1 of the brief: graph-derived orientation facts.
+ *
+ * v1 is best-effort: `boundaries_touched` is derived from the run's
+ * boundary-violation zones; `exports_added` and `reachable_from` are honestly
+ * stubbed (`0` / empty) because the file-level audit does not yet diff the
+ * export surface or compute reachability. The fields are present and correctly
+ * typed so values fill in later without a schema bump.
+ */
+export interface GraphFacts {
+/**
+ * Number of exports added by the changeset. Stubbed to `0` in v1.
+ */
+exports_added: number
+/**
+ * Change in public API width (added minus removed exports). Stubbed to `0`
+ * in v1.
+ */
+api_width_delta: number
+/**
+ * Entry points or modules the changed code is reachable from. Empty in v1
+ * (reachability is not yet computed on the file-level audit path).
+ */
+reachable_from: string[]
+/**
+ * Architecture boundary zones touched by the changeset, deduped and sorted.
+ * Derived from the run's boundary-violation findings.
+ */
+boundaries_touched: string[]
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].
