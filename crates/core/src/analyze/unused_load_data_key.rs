@@ -93,11 +93,35 @@ pub fn find_unused_load_data_keys(
 
     let module_indexes = build_module_indexes(graph, modules);
     let global_used = collect_global_page_data_member_accesses(modules);
+    let findings = collect_unused_load_data_key_findings(
+        graph,
+        modules,
+        &module_indexes,
+        &global_used,
+        root,
+        suppressions,
+        line_offsets_by_file,
+    );
 
+    LoadDataKeyResult {
+        findings,
+        global_abstain: false,
+    }
+}
+
+fn collect_unused_load_data_key_findings(
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    module_indexes: &ModuleIndexes<'_>,
+    global_used: &FxHashSet<&str>,
+    root: &Path,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Vec<UnusedLoadDataKey> {
     let mut findings = Vec::new();
     for node in &graph.modules {
         let Some(candidate) =
-            producer_candidate_for_node(node, modules, &module_indexes, &global_used, root)
+            producer_candidate_for_node(node, modules, module_indexes, global_used, root)
         else {
             continue;
         };
@@ -121,10 +145,7 @@ pub fn find_unused_load_data_keys(
         append_unused_keys_for_producer(&mut findings, &finding_input);
     }
 
-    LoadDataKeyResult {
-        findings,
-        global_abstain: false,
-    }
+    findings
 }
 
 struct ProducerCandidate<'a> {
