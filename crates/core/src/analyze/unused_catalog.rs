@@ -307,53 +307,79 @@ impl ConsumerKey<'_> {
 fn collect_catalog_consumers(pkg_paths: &[PathBuf], root: &Path) -> CatalogConsumers {
     let mut consumers = CatalogConsumers::default();
     for pkg_path in pkg_paths {
-        let Ok(raw_source) = std::fs::read_to_string(pkg_path) else {
-            continue;
-        };
-        let Ok(pkg) = serde_json::from_str::<PackageJson>(&raw_source) else {
-            continue;
-        };
-        let relative_path = pkg_path
-            .strip_prefix(root)
-            .map_or_else(|_| pkg_path.clone(), Path::to_path_buf);
-        let absolute_path = pkg_path.clone();
-
-        let line_map = scan_dep_lines(&raw_source);
-
-        for (section, deps) in [
-            (DepSection::Dependencies, pkg.dependencies.as_ref()),
-            (DepSection::DevDependencies, pkg.dev_dependencies.as_ref()),
-            (DepSection::PeerDependencies, pkg.peer_dependencies.as_ref()),
-            (
-                DepSection::OptionalDependencies,
-                pkg.optional_dependencies.as_ref(),
-            ),
-        ] {
-            let Some(deps) = deps else {
-                continue;
-            };
-            for (name, version) in deps {
-                if let Some(catalog) = parse_catalog_reference(version) {
-                    consumers.references.insert(OwnedConsumerKey {
-                        package_name: name.clone(),
-                        catalog_name: catalog.to_string(),
-                    });
-                    let line = line_map.line_for(section, name).unwrap_or(1);
-                    consumers.referenced_with_locations.push(ConsumerReference {
-                        package_name: name.clone(),
-                        catalog_name: catalog.to_string(),
-                        consumer_path: absolute_path.clone(),
-                        line,
-                    });
-                } else if is_hardcoded_version(version) {
-                    consumers
-                        .hardcoded
-                        .push((name.clone(), relative_path.clone()));
-                }
-            }
-        }
+        collect_catalog_consumers_from_package(pkg_path, root, &mut consumers);
     }
     consumers
+}
+
+fn collect_catalog_consumers_from_package(
+    pkg_path: &Path,
+    root: &Path,
+    consumers: &mut CatalogConsumers,
+) {
+    let Ok(raw_source) = std::fs::read_to_string(pkg_path) else {
+        return;
+    };
+    let Ok(pkg) = serde_json::from_str::<PackageJson>(&raw_source) else {
+        return;
+    };
+    let relative_path = pkg_path
+        .strip_prefix(root)
+        .map_or_else(|_| pkg_path.to_path_buf(), Path::to_path_buf);
+    let line_map = scan_dep_lines(&raw_source);
+
+    for (section, deps) in [
+        (DepSection::Dependencies, pkg.dependencies.as_ref()),
+        (DepSection::DevDependencies, pkg.dev_dependencies.as_ref()),
+        (DepSection::PeerDependencies, pkg.peer_dependencies.as_ref()),
+        (
+            DepSection::OptionalDependencies,
+            pkg.optional_dependencies.as_ref(),
+        ),
+    ] {
+        let Some(deps) = deps else {
+            continue;
+        };
+        for (name, version) in deps {
+            collect_catalog_consumer_dependency(
+                consumers,
+                name,
+                version,
+                section,
+                &line_map,
+                pkg_path,
+                &relative_path,
+            );
+        }
+    }
+}
+
+fn collect_catalog_consumer_dependency(
+    consumers: &mut CatalogConsumers,
+    name: &str,
+    version: &str,
+    section: DepSection,
+    line_map: &DepLineMap,
+    absolute_path: &Path,
+    relative_path: &Path,
+) {
+    if let Some(catalog) = parse_catalog_reference(version) {
+        consumers.references.insert(OwnedConsumerKey {
+            package_name: name.to_string(),
+            catalog_name: catalog.to_string(),
+        });
+        let line = line_map.line_for(section, name).unwrap_or(1);
+        consumers.referenced_with_locations.push(ConsumerReference {
+            package_name: name.to_string(),
+            catalog_name: catalog.to_string(),
+            consumer_path: absolute_path.to_path_buf(),
+            line,
+        });
+    } else if is_hardcoded_version(version) {
+        consumers
+            .hardcoded
+            .push((name.to_string(), relative_path.to_path_buf()));
+    }
 }
 
 /// Parse a `catalog:` protocol value. Returns the catalog name (`"default"`
