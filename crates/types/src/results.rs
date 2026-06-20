@@ -459,6 +459,76 @@ pub struct AnalysisResults {
     pub render_fan_in: Option<RenderFanInMetric>,
 }
 
+struct AnalysisResultsCoreMergeParts {
+    unused_files: Vec<UnusedFileFinding>,
+    unused_exports: Vec<UnusedExportFinding>,
+    unused_types: Vec<UnusedTypeFinding>,
+    private_type_leaks: Vec<PrivateTypeLeakFinding>,
+    unused_enum_members: Vec<UnusedEnumMemberFinding>,
+    unused_class_members: Vec<UnusedClassMemberFinding>,
+    unused_store_members: Vec<UnusedStoreMemberFinding>,
+    unresolved_imports: Vec<UnresolvedImportFinding>,
+    boundary_violations: Vec<BoundaryViolationFinding>,
+    boundary_coverage_violations: Vec<BoundaryCoverageViolationFinding>,
+    boundary_call_violations: Vec<BoundaryCallViolationFinding>,
+    policy_violations: Vec<PolicyViolationFinding>,
+    stale_suppressions: Vec<StaleSuppression>,
+}
+
+struct AnalysisResultsGraphMergeParts {
+    unused_dependencies: Vec<UnusedDependencyFinding>,
+    unused_dev_dependencies: Vec<UnusedDevDependencyFinding>,
+    unused_optional_dependencies: Vec<UnusedOptionalDependencyFinding>,
+    unlisted_dependencies: Vec<UnlistedDependencyFinding>,
+    duplicate_exports: Vec<DuplicateExportFinding>,
+    type_only_dependencies: Vec<TypeOnlyDependencyFinding>,
+    test_only_dependencies: Vec<TestOnlyDependencyFinding>,
+    circular_dependencies: Vec<CircularDependencyFinding>,
+    re_export_cycles: Vec<ReExportCycleFinding>,
+}
+
+struct AnalysisResultsWorkspaceMergeParts {
+    unused_catalog_entries: Vec<UnusedCatalogEntryFinding>,
+    empty_catalog_groups: Vec<EmptyCatalogGroupFinding>,
+    unresolved_catalog_references: Vec<UnresolvedCatalogReferenceFinding>,
+    unused_dependency_overrides: Vec<UnusedDependencyOverrideFinding>,
+    misconfigured_dependency_overrides: Vec<MisconfiguredDependencyOverrideFinding>,
+}
+
+struct AnalysisResultsFrameworkMergeParts {
+    invalid_client_exports: Vec<InvalidClientExportFinding>,
+    mixed_client_server_barrels: Vec<MixedClientServerBarrelFinding>,
+    misplaced_directives: Vec<MisplacedDirectiveFinding>,
+    unprovided_injects: Vec<UnprovidedInjectFinding>,
+    unrendered_components: Vec<UnrenderedComponentFinding>,
+    route_collisions: Vec<RouteCollisionFinding>,
+    dynamic_segment_name_conflicts: Vec<DynamicSegmentNameConflictFinding>,
+    unused_component_props: Vec<UnusedComponentPropFinding>,
+    unused_component_emits: Vec<UnusedComponentEmitFinding>,
+    unused_component_inputs: Vec<UnusedComponentInputFinding>,
+    unused_component_outputs: Vec<UnusedComponentOutputFinding>,
+    unused_svelte_events: Vec<UnusedSvelteEventFinding>,
+    unused_server_actions: Vec<UnusedServerActionFinding>,
+    unused_load_data_keys: Vec<UnusedLoadDataKeyFinding>,
+    unused_load_data_keys_global_abstain: bool,
+    prop_drilling_chains: Vec<PropDrillingChainFinding>,
+    thin_wrappers: Vec<ThinWrapperFinding>,
+    duplicate_prop_shapes: Vec<DuplicatePropShapeFinding>,
+}
+
+struct AnalysisResultsMetadataMergeParts {
+    suppression_count: usize,
+    active_suppressions: Vec<ActiveSuppression>,
+    feature_flags: Vec<FeatureFlag>,
+    security_findings: Vec<SecurityFinding>,
+    security_unresolved_edge_files: usize,
+    security_unresolved_callee_sites: usize,
+    security_unresolved_callee_diagnostics: Vec<SecurityUnresolvedCalleeDiagnostic>,
+    export_usages: Vec<ExportUsage>,
+    entry_point_summary: Option<EntryPointSummary>,
+    render_fan_in: Option<RenderFanInMetric>,
+}
+
 impl AnalysisResults {
     /// Total number of issues found.
     ///
@@ -612,74 +682,168 @@ impl AnalysisResults {
             render_fan_in,
         } = other;
 
-        self.unused_files.extend(unused_files);
-        self.unused_exports.extend(unused_exports);
-        self.unused_types.extend(unused_types);
-        self.private_type_leaks.extend(private_type_leaks);
-        self.unused_dependencies.extend(unused_dependencies);
-        self.unused_dev_dependencies.extend(unused_dev_dependencies);
-        self.unused_optional_dependencies
-            .extend(unused_optional_dependencies);
-        self.unused_enum_members.extend(unused_enum_members);
-        self.unused_class_members.extend(unused_class_members);
-        self.unused_store_members.extend(unused_store_members);
-        self.unresolved_imports.extend(unresolved_imports);
-        self.unlisted_dependencies.extend(unlisted_dependencies);
-        self.duplicate_exports.extend(duplicate_exports);
-        self.type_only_dependencies.extend(type_only_dependencies);
-        self.test_only_dependencies.extend(test_only_dependencies);
-        self.circular_dependencies.extend(circular_dependencies);
-        self.re_export_cycles.extend(re_export_cycles);
-        self.boundary_violations.extend(boundary_violations);
+        self.merge_core_findings(AnalysisResultsCoreMergeParts {
+            unused_files,
+            unused_exports,
+            unused_types,
+            private_type_leaks,
+            unused_enum_members,
+            unused_class_members,
+            unused_store_members,
+            unresolved_imports,
+            boundary_violations,
+            boundary_coverage_violations,
+            boundary_call_violations,
+            policy_violations,
+            stale_suppressions,
+        });
+        self.merge_dependency_and_graph_findings(AnalysisResultsGraphMergeParts {
+            unused_dependencies,
+            unused_dev_dependencies,
+            unused_optional_dependencies,
+            unlisted_dependencies,
+            duplicate_exports,
+            type_only_dependencies,
+            test_only_dependencies,
+            circular_dependencies,
+            re_export_cycles,
+        });
+        self.merge_workspace_findings(AnalysisResultsWorkspaceMergeParts {
+            unused_catalog_entries,
+            empty_catalog_groups,
+            unresolved_catalog_references,
+            unused_dependency_overrides,
+            misconfigured_dependency_overrides,
+        });
+        self.merge_framework_findings(AnalysisResultsFrameworkMergeParts {
+            invalid_client_exports,
+            mixed_client_server_barrels,
+            misplaced_directives,
+            unprovided_injects,
+            unrendered_components,
+            route_collisions,
+            dynamic_segment_name_conflicts,
+            unused_component_props,
+            unused_component_emits,
+            unused_component_inputs,
+            unused_component_outputs,
+            unused_svelte_events,
+            unused_server_actions,
+            unused_load_data_keys,
+            unused_load_data_keys_global_abstain,
+            prop_drilling_chains,
+            thin_wrappers,
+            duplicate_prop_shapes,
+        });
+        self.merge_metadata_and_security(AnalysisResultsMetadataMergeParts {
+            suppression_count,
+            active_suppressions,
+            feature_flags,
+            security_findings,
+            security_unresolved_edge_files,
+            security_unresolved_callee_sites,
+            security_unresolved_callee_diagnostics,
+            export_usages,
+            entry_point_summary,
+            render_fan_in,
+        });
+    }
+
+    fn merge_core_findings(&mut self, parts: AnalysisResultsCoreMergeParts) {
+        self.unused_files.extend(parts.unused_files);
+        self.unused_exports.extend(parts.unused_exports);
+        self.unused_types.extend(parts.unused_types);
+        self.private_type_leaks.extend(parts.private_type_leaks);
+        self.unused_enum_members.extend(parts.unused_enum_members);
+        self.unused_class_members.extend(parts.unused_class_members);
+        self.unused_store_members.extend(parts.unused_store_members);
+        self.unresolved_imports.extend(parts.unresolved_imports);
+        self.boundary_violations.extend(parts.boundary_violations);
         self.boundary_coverage_violations
-            .extend(boundary_coverage_violations);
+            .extend(parts.boundary_coverage_violations);
         self.boundary_call_violations
-            .extend(boundary_call_violations);
-        self.policy_violations.extend(policy_violations);
-        self.stale_suppressions.extend(stale_suppressions);
-        self.unused_catalog_entries.extend(unused_catalog_entries);
-        self.empty_catalog_groups.extend(empty_catalog_groups);
+            .extend(parts.boundary_call_violations);
+        self.policy_violations.extend(parts.policy_violations);
+        self.stale_suppressions.extend(parts.stale_suppressions);
+    }
+
+    fn merge_dependency_and_graph_findings(&mut self, parts: AnalysisResultsGraphMergeParts) {
+        self.unused_dependencies.extend(parts.unused_dependencies);
+        self.unused_dev_dependencies
+            .extend(parts.unused_dev_dependencies);
+        self.unused_optional_dependencies
+            .extend(parts.unused_optional_dependencies);
+        self.unlisted_dependencies
+            .extend(parts.unlisted_dependencies);
+        self.duplicate_exports.extend(parts.duplicate_exports);
+        self.type_only_dependencies
+            .extend(parts.type_only_dependencies);
+        self.test_only_dependencies
+            .extend(parts.test_only_dependencies);
+        self.circular_dependencies
+            .extend(parts.circular_dependencies);
+        self.re_export_cycles.extend(parts.re_export_cycles);
+    }
+
+    fn merge_workspace_findings(&mut self, parts: AnalysisResultsWorkspaceMergeParts) {
+        self.unused_catalog_entries
+            .extend(parts.unused_catalog_entries);
+        self.empty_catalog_groups.extend(parts.empty_catalog_groups);
         self.unresolved_catalog_references
-            .extend(unresolved_catalog_references);
+            .extend(parts.unresolved_catalog_references);
         self.unused_dependency_overrides
-            .extend(unused_dependency_overrides);
+            .extend(parts.unused_dependency_overrides);
         self.misconfigured_dependency_overrides
-            .extend(misconfigured_dependency_overrides);
-        self.invalid_client_exports.extend(invalid_client_exports);
+            .extend(parts.misconfigured_dependency_overrides);
+    }
+
+    fn merge_framework_findings(&mut self, parts: AnalysisResultsFrameworkMergeParts) {
+        self.invalid_client_exports
+            .extend(parts.invalid_client_exports);
         self.mixed_client_server_barrels
-            .extend(mixed_client_server_barrels);
-        self.misplaced_directives.extend(misplaced_directives);
-        self.unprovided_injects.extend(unprovided_injects);
-        self.unrendered_components.extend(unrendered_components);
-        self.route_collisions.extend(route_collisions);
+            .extend(parts.mixed_client_server_barrels);
+        self.misplaced_directives.extend(parts.misplaced_directives);
+        self.unprovided_injects.extend(parts.unprovided_injects);
+        self.unrendered_components
+            .extend(parts.unrendered_components);
+        self.route_collisions.extend(parts.route_collisions);
         self.dynamic_segment_name_conflicts
-            .extend(dynamic_segment_name_conflicts);
-        self.unused_component_props.extend(unused_component_props);
-        self.unused_component_emits.extend(unused_component_emits);
-        self.unused_component_inputs.extend(unused_component_inputs);
+            .extend(parts.dynamic_segment_name_conflicts);
+        self.unused_component_props
+            .extend(parts.unused_component_props);
+        self.unused_component_emits
+            .extend(parts.unused_component_emits);
+        self.unused_component_inputs
+            .extend(parts.unused_component_inputs);
         self.unused_component_outputs
-            .extend(unused_component_outputs);
-        self.unused_svelte_events.extend(unused_svelte_events);
-        self.unused_server_actions.extend(unused_server_actions);
-        self.unused_load_data_keys.extend(unused_load_data_keys);
-        self.unused_load_data_keys_global_abstain |= unused_load_data_keys_global_abstain;
-        self.prop_drilling_chains.extend(prop_drilling_chains);
-        self.thin_wrappers.extend(thin_wrappers);
-        self.duplicate_prop_shapes.extend(duplicate_prop_shapes);
-        self.feature_flags.extend(feature_flags);
-        self.security_findings.extend(security_findings);
-        self.security_unresolved_edge_files += security_unresolved_edge_files;
-        self.security_unresolved_callee_sites += security_unresolved_callee_sites;
+            .extend(parts.unused_component_outputs);
+        self.unused_svelte_events.extend(parts.unused_svelte_events);
+        self.unused_server_actions
+            .extend(parts.unused_server_actions);
+        self.unused_load_data_keys
+            .extend(parts.unused_load_data_keys);
+        self.unused_load_data_keys_global_abstain |= parts.unused_load_data_keys_global_abstain;
+        self.prop_drilling_chains.extend(parts.prop_drilling_chains);
+        self.thin_wrappers.extend(parts.thin_wrappers);
+        self.duplicate_prop_shapes
+            .extend(parts.duplicate_prop_shapes);
+    }
+
+    fn merge_metadata_and_security(&mut self, parts: AnalysisResultsMetadataMergeParts) {
+        self.feature_flags.extend(parts.feature_flags);
+        self.security_findings.extend(parts.security_findings);
+        self.security_unresolved_edge_files += parts.security_unresolved_edge_files;
+        self.security_unresolved_callee_sites += parts.security_unresolved_callee_sites;
         self.security_unresolved_callee_diagnostics
-            .extend(security_unresolved_callee_diagnostics);
-        self.export_usages.extend(export_usages);
-        self.active_suppressions.extend(active_suppressions);
-        self.suppression_count += suppression_count;
+            .extend(parts.security_unresolved_callee_diagnostics);
+        self.export_usages.extend(parts.export_usages);
+        self.active_suppressions.extend(parts.active_suppressions);
+        self.suppression_count += parts.suppression_count;
         if self.entry_point_summary.is_none() {
-            self.entry_point_summary = entry_point_summary;
+            self.entry_point_summary = parts.entry_point_summary;
         }
         if self.render_fan_in.is_none() {
-            self.render_fan_in = render_fan_in;
+            self.render_fan_in = parts.render_fan_in;
         }
     }
 
@@ -3216,6 +3380,62 @@ mod tests {
             }));
         assert_eq!(results.total_issues(), 1);
         assert!(results.has_issues());
+    }
+
+    #[test]
+    fn merge_into_appends_counts_and_preserves_existing_optional_metadata() {
+        let mut target = AnalysisResults {
+            unused_files: vec![UnusedFileFinding::with_actions(UnusedFile {
+                path: PathBuf::from("a.ts"),
+            })],
+            suppression_count: 2,
+            security_unresolved_edge_files: 1,
+            security_unresolved_callee_sites: 3,
+            entry_point_summary: Some(EntryPointSummary {
+                total: 1,
+                by_source: vec![("existing".to_string(), 1)],
+            }),
+            ..AnalysisResults::default()
+        };
+        let source = AnalysisResults {
+            unused_files: vec![UnusedFileFinding::with_actions(UnusedFile {
+                path: PathBuf::from("b.ts"),
+            })],
+            suppression_count: 4,
+            security_unresolved_edge_files: 5,
+            security_unresolved_callee_sites: 6,
+            unused_load_data_keys_global_abstain: true,
+            entry_point_summary: Some(EntryPointSummary {
+                total: 1,
+                by_source: vec![("incoming".to_string(), 1)],
+            }),
+            render_fan_in: Some(RenderFanInMetric::default()),
+            ..AnalysisResults::default()
+        };
+
+        target.merge_into(source);
+
+        assert_eq!(target.unused_files.len(), 2);
+        assert_eq!(target.suppression_count, 6);
+        assert_eq!(target.security_unresolved_edge_files, 6);
+        assert_eq!(target.security_unresolved_callee_sites, 9);
+        assert!(target.unused_load_data_keys_global_abstain);
+        assert_eq!(
+            target
+                .entry_point_summary
+                .as_ref()
+                .map(|summary| summary.total),
+            Some(1)
+        );
+        assert_eq!(
+            target
+                .entry_point_summary
+                .as_ref()
+                .and_then(|summary| summary.by_source.first())
+                .map(|(name, _)| name.as_str()),
+            Some("existing")
+        );
+        assert!(target.render_fan_in.is_some());
     }
 
     fn test_unused_export(path: &str, export_name: &str, is_type_only: bool) -> UnusedExport {
