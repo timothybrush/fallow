@@ -203,44 +203,7 @@ fn evaluate_inject_site(
     local_to_export_keys: &FxHashMap<&str, Vec<ExportKey>>,
     site: &fallow_types::extract::DiKeySite,
 ) -> Option<UnprovidedInject> {
-    let canonical = match resolve_key(
-        resolved,
-        scan.input.graph,
-        local_to_export_keys,
-        &site.key_local,
-    ) {
-        // External: the provide may live inside the package; abstain.
-        KeyResolution::External => return None,
-        KeyResolution::Internal(keys) | KeyResolution::LocalOnly(keys) => keys,
-    };
-    if canonical.is_empty() {
-        return None;
-    }
-    // Angular InjectionToken FP gate: only a USER `InjectionToken` is in scope. A
-    // class / framework token (`inject(MyService)`) is FP-prone via
-    // `providedIn: 'root'` and third-party `provideX()`, so abstain unless at
-    // least one canonical key is a known InjectionToken (its defining module
-    // lists the export name in `injection_tokens`). Vue / Svelte sites skip it.
-    if site.framework == DiFramework::Angular
-        && !canonical
-            .iter()
-            .any(|key| is_known_injection_token(scan.modules_by_id, key))
-    {
-        return None;
-    }
-    // Matched by a provide somewhere in the project.
-    if canonical.iter().any(|key| scan.provided.contains(key)) {
-        return None;
-    }
-    // Public-API abstain: the consumer of this package provides the key.
-    if canonical.iter().any(|key| {
-        key_is_public_api(
-            scan.input.graph,
-            key,
-            scan.input.public_api_entry_points,
-            scan.entry_star_targets,
-        )
-    }) {
+    if !inject_site_has_unprovided_key(scan, resolved, local_to_export_keys, site) {
         return None;
     }
 
@@ -254,6 +217,56 @@ fn evaluate_inject_site(
     }
     let path = scan.path_by_id.get(&resolved.file_id)?;
     Some(build_unprovided_inject(path, site, line, col))
+}
+
+fn inject_site_has_unprovided_key(
+    scan: &InjectScanContext<'_>,
+    resolved: &ResolvedModule,
+    local_to_export_keys: &FxHashMap<&str, Vec<ExportKey>>,
+    site: &fallow_types::extract::DiKeySite,
+) -> bool {
+    let canonical = match resolve_key(
+        resolved,
+        scan.input.graph,
+        local_to_export_keys,
+        &site.key_local,
+    ) {
+        // External: the provide may live inside the package; abstain.
+        KeyResolution::External => return false,
+        KeyResolution::Internal(keys) | KeyResolution::LocalOnly(keys) => keys,
+    };
+    if canonical.is_empty() {
+        return false;
+    }
+    // Angular InjectionToken FP gate: only a USER `InjectionToken` is in scope. A
+    // class / framework token (`inject(MyService)`) is FP-prone via
+    // `providedIn: 'root'` and third-party `provideX()`, so abstain unless at
+    // least one canonical key is a known InjectionToken (its defining module
+    // lists the export name in `injection_tokens`). Vue / Svelte sites skip it.
+    if site.framework == DiFramework::Angular
+        && !canonical
+            .iter()
+            .any(|key| is_known_injection_token(scan.modules_by_id, key))
+    {
+        return false;
+    }
+    // Matched by a provide somewhere in the project.
+    if canonical.iter().any(|key| scan.provided.contains(key)) {
+        return false;
+    }
+    // Public-API abstain: the consumer of this package provides the key.
+    if canonical.iter().any(|key| {
+        key_is_public_api(
+            scan.input.graph,
+            key,
+            scan.input.public_api_entry_points,
+            scan.entry_star_targets,
+        )
+    }) {
+        return false;
+    }
+
+    true
 }
 
 fn inject_site_suppressed(scan: &InjectScanContext<'_>, file_id: FileId, line: u32) -> bool {
