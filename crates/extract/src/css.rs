@@ -418,7 +418,17 @@ fn collect_theme_declarations(
             _ => {
                 if depth == 0 && expect_decl {
                     expect_decl = false;
-                    i = scan_theme_declaration(source, masked, b, i, end, out, seen);
+                    i = scan_theme_declaration(
+                        &mut ThemeDeclarationScan {
+                            source,
+                            masked,
+                            end,
+                            out,
+                            seen,
+                        },
+                        b,
+                        i,
+                    );
                 } else {
                     i += 1;
                 }
@@ -427,25 +437,25 @@ fn collect_theme_declarations(
     }
 }
 
-/// At a declaration start, harvest a `--ident:` custom-property name (recording
-/// it in `out`/`seen`) and return the cursor advanced past the scanned ident.
-/// Returns `i + 1` for any non-`--` declaration start.
-fn scan_theme_declaration(
-    source: &str,
-    masked: &str,
-    b: u8,
-    i: usize,
+struct ThemeDeclarationScan<'a, 'b> {
+    source: &'a str,
+    masked: &'a str,
     end: usize,
-    out: &mut Vec<ThemeTokenDef>,
-    seen: &mut FxHashSet<String>,
-) -> usize {
-    let bytes = masked.as_bytes();
+    out: &'b mut Vec<ThemeTokenDef>,
+    seen: &'b mut FxHashSet<String>,
+}
+
+/// At a declaration start, harvest a `--ident:` custom-property name and return
+/// the cursor advanced past the scanned ident. Returns `i + 1` for any non-`--`
+/// declaration start.
+fn scan_theme_declaration(scan: &mut ThemeDeclarationScan<'_, '_>, b: u8, i: usize) -> usize {
+    let bytes = scan.masked.as_bytes();
     if !(b == b'-' && bytes.get(i + 1) == Some(&b'-')) {
         return i + 1;
     }
     let id_start = i;
     let mut j = i;
-    while j < end {
+    while j < scan.end {
         let c = bytes[j];
         if c == b'-' || c == b'_' || c.is_ascii_alphanumeric() {
             j += 1;
@@ -454,17 +464,18 @@ fn scan_theme_declaration(
         }
     }
     let mut k = j;
-    while k < end && bytes[k].is_ascii_whitespace() {
+    while k < scan.end && bytes[k].is_ascii_whitespace() {
         k += 1;
     }
     // Only a `--ident:` (no `*` before the colon) is a token.
-    if k < end && bytes[k] == b':' {
-        let name = &masked[id_start + 2..j];
-        if !name.is_empty() && seen.insert(name.to_owned()) {
-            let line = 1 + source
+    if k < scan.end && bytes[k] == b':' {
+        let name = &scan.masked[id_start + 2..j];
+        if !name.is_empty() && scan.seen.insert(name.to_owned()) {
+            let line = 1 + scan
+                .source
                 .get(..id_start)
                 .map_or(0, |s| s.bytes().filter(|&x| x == b'\n').count());
-            out.push(ThemeTokenDef {
+            scan.out.push(ThemeTokenDef {
                 name: name.to_owned(),
                 line: u32::try_from(line).unwrap_or(u32::MAX),
             });
