@@ -75,8 +75,8 @@ use fallow_types::output_dead_code::{
 };
 
 use crate::results::{
-    AnalysisResults, CircularDependency, CircularDependencyEdge, StaleSuppression, UnusedExport,
-    UnusedMember,
+    AnalysisResults, CircularDependency, CircularDependencyEdge, StaleSuppression,
+    UnusedDependency, UnusedExport, UnusedMember,
 };
 use crate::suppress::{IssueKind, SuppressionContext};
 
@@ -2458,10 +2458,7 @@ fn populate_unused_dependency_findings(
     pkg: &PackageJson,
     results: &mut AnalysisResults,
 ) {
-    if input.config.rules.unused_dependencies == Severity::Off
-        && input.config.rules.unused_dev_dependencies == Severity::Off
-        && input.config.rules.unused_optional_dependencies == Severity::Off
-    {
+    if unused_dependency_rules_are_disabled(input.config) {
         return;
     }
 
@@ -2472,24 +2469,57 @@ fn populate_unused_dependency_findings(
         input.plugin_result,
         input.workspaces,
     );
-    if input.config.rules.unused_dependencies != Severity::Off {
-        results.unused_dependencies = deps
-            .into_iter()
-            .map(UnusedDependencyFinding::with_actions)
-            .collect();
+    populate_unused_prod_dependency_findings(results, input.config, deps);
+    populate_unused_dev_dependency_findings(results, input.config, dev_deps);
+    populate_unused_optional_dependency_findings(results, input.config, optional_deps);
+}
+
+fn unused_dependency_rules_are_disabled(config: &ResolvedConfig) -> bool {
+    config.rules.unused_dependencies == Severity::Off
+        && config.rules.unused_dev_dependencies == Severity::Off
+        && config.rules.unused_optional_dependencies == Severity::Off
+}
+
+fn populate_unused_prod_dependency_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    deps: Vec<UnusedDependency>,
+) {
+    if config.rules.unused_dependencies == Severity::Off {
+        return;
     }
-    if input.config.rules.unused_dev_dependencies != Severity::Off {
-        results.unused_dev_dependencies = dev_deps
-            .into_iter()
-            .map(UnusedDevDependencyFinding::with_actions)
-            .collect();
+    results.unused_dependencies = deps
+        .into_iter()
+        .map(UnusedDependencyFinding::with_actions)
+        .collect();
+}
+
+fn populate_unused_dev_dependency_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    dev_deps: Vec<UnusedDependency>,
+) {
+    if config.rules.unused_dev_dependencies == Severity::Off {
+        return;
     }
-    if input.config.rules.unused_optional_dependencies != Severity::Off {
-        results.unused_optional_dependencies = optional_deps
-            .into_iter()
-            .map(UnusedOptionalDependencyFinding::with_actions)
-            .collect();
+    results.unused_dev_dependencies = dev_deps
+        .into_iter()
+        .map(UnusedDevDependencyFinding::with_actions)
+        .collect();
+}
+
+fn populate_unused_optional_dependency_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    optional_deps: Vec<UnusedDependency>,
+) {
+    if config.rules.unused_optional_dependencies == Severity::Off {
+        return;
     }
+    results.unused_optional_dependencies = optional_deps
+        .into_iter()
+        .map(UnusedOptionalDependencyFinding::with_actions)
+        .collect();
 }
 
 #[derive(Clone, Copy)]
