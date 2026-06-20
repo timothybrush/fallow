@@ -870,62 +870,18 @@ impl LanguageServer for FallowLspServer {
             return Ok(None);
         };
 
-        let mut actions = Vec::new();
-
-        let documents = self.documents.read().await;
-        let file_content = documents.get(uri).map_or_else(
-            || std::fs::read_to_string(&file_path).unwrap_or_default(),
-            |state| state.text.clone(),
-        );
-        drop(documents);
+        let file_content = self.code_action_file_content(uri, &file_path).await;
         let file_lines: Vec<&str> = file_content.lines().collect();
-
-        actions.extend(code_actions::build_remove_export_actions(
-            results,
-            &file_path,
-            uri,
-            &params.range,
-            &file_lines,
-        ));
-
-        actions.extend(code_actions::build_delete_file_actions(
-            results,
-            &file_path,
-            uri,
-            &params.range,
-        ));
-
         let root = self.root.read().await.clone();
-        if let Some(root) = root {
-            actions.extend(code_actions::build_remove_catalog_entry_actions(
-                results,
-                &root,
-                uri,
-                &params.range,
-                &file_lines,
-            ));
-            actions.extend(code_actions::build_remove_empty_catalog_group_actions(
-                results,
-                &root,
-                uri,
-                &params.range,
-                &file_lines,
-            ));
-        }
 
-        actions.extend(code_actions::build_suppress_security_actions(
+        Ok(Self::build_code_action_response(
             results,
+            root.as_deref(),
             &file_path,
             uri,
             &params.range,
             &file_lines,
-        ));
-
-        if actions.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(actions))
-        }
+        ))
     }
 
     #[expect(
@@ -1015,6 +971,47 @@ impl FallowLspServer {
             client_pulls: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    async fn code_action_file_content(&self, uri: &Uri, file_path: &Path) -> String {
+        let documents = self.documents.read().await;
+        documents.get(uri).map_or_else(
+            || std::fs::read_to_string(file_path).unwrap_or_default(),
+            |state| state.text.clone(),
+        )
+    }
+
+    fn build_code_action_response(
+        results: &AnalysisResults,
+        root: Option<&Path>,
+        file_path: &Path,
+        uri: &Uri,
+        range: &Range,
+        file_lines: &[&str],
+    ) -> Option<CodeActionResponse> {
+        let mut actions = Vec::new();
+
+        actions.extend(code_actions::build_remove_export_actions(
+            results, file_path, uri, range, file_lines,
+        ));
+        actions.extend(code_actions::build_delete_file_actions(
+            results, file_path, uri, range,
+        ));
+
+        if let Some(root) = root {
+            actions.extend(code_actions::build_remove_catalog_entry_actions(
+                results, root, uri, range, file_lines,
+            ));
+            actions.extend(code_actions::build_remove_empty_catalog_group_actions(
+                results, root, uri, range, file_lines,
+            ));
+        }
+
+        actions.extend(code_actions::build_suppress_security_actions(
+            results, file_path, uri, range, file_lines,
+        ));
+
+        (!actions.is_empty()).then_some(actions)
     }
 
     #[expect(
