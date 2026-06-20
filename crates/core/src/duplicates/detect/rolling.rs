@@ -632,7 +632,7 @@ fn has_same_file_pair_at_or_extending_to_adjacency(
             if checked_pairs > MAX_ADJACENCY_LOOKAHEAD_PAIRS {
                 return false;
             }
-            if pair_extends_to_adjacency(
+            if pair_extends_to_adjacency(AdjacentPairInput {
                 ranked_files,
                 boundary_prefixes,
                 has_boundaries,
@@ -640,7 +640,7 @@ fn has_same_file_pair_at_or_extending_to_adjacency(
                 left,
                 right,
                 length,
-            ) {
+            }) {
                 return true;
             }
         }
@@ -649,15 +649,27 @@ fn has_same_file_pair_at_or_extending_to_adjacency(
     false
 }
 
-fn pair_extends_to_adjacency(
-    ranked_files: &[Vec<u32>],
-    boundary_prefixes: &[Option<Vec<u32>>],
+#[derive(Clone, Copy)]
+struct AdjacentPairInput<'a> {
+    ranked_files: &'a [Vec<u32>],
+    boundary_prefixes: &'a [Option<Vec<u32>>],
     has_boundaries: bool,
     file_id: usize,
     left: usize,
     right: usize,
     length: usize,
-) -> bool {
+}
+
+fn pair_extends_to_adjacency(input: AdjacentPairInput<'_>) -> bool {
+    let AdjacentPairInput {
+        ranked_files,
+        boundary_prefixes,
+        has_boundaries,
+        file_id,
+        left,
+        right,
+        length,
+    } = input;
     let tokens = &ranked_files[file_id];
     let distance = right - left;
     let mut extended = length;
