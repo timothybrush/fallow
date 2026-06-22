@@ -85,6 +85,12 @@ kind: "security-blind-spots"
 kind: "dead-code"
 }) | (CombinedOutput & {
 kind: "combined"
+}) | (ReviewBriefOutput & {
+kind: "audit-brief"
+}) | (WalkthroughGuide & {
+kind: "review-walkthrough-guide"
+}) | (WalkthroughValidation & {
+kind: "review-walkthrough-validation"
 }))
 /**
  * Schema version for this output format (independent of tool version). Bump
@@ -763,6 +769,44 @@ export type SecurityVerifierVerdictStatus = ("survivor" | "dismissed" | "needs-h
  * The `fallow security blind-spots --format json` schema version.
  */
 export type SecurityBlindSpotsSchemaVersion = "1"
+/**
+ * Independently-versioned wire-version newtype for the brief envelope.
+ * Serializes as the integer `REVIEW_BRIEF_SCHEMA_VERSION`.
+ */
+export type ReviewBriefSchemaVersion = number
+/**
+ * Coarse risk classification for a changeset, a pure function of the change
+ * size (file count plus, once threaded, net lines).
+ */
+export type RiskClass = ("low" | "medium" | "high")
+/**
+ * Suggested reviewer effort, a pure function of [`RiskClass`].
+ */
+export type ReviewEffort = ("glance" | "review" | "deep_dive")
+/**
+ * The focus label for a review unit. EXACTLY two variants: `Skip` is NOT
+ * representable, so the type system is the guarantee that free mode never emits
+ * a `skip` label (safe explicit-skip is paid, runtime-backed only). Mirrors
+ * the decision surface's "cut category not representable" structural posture.
+ */
+export type FocusLabel = ("review-here" | "not-prioritized")
+/**
+ * A per-unit confidence flag. The EXACT panel-decided strings: a dynamically-
+ * wired or re-export-heavy unit carries one so its static-reachability signal is
+ * not trusted as complete (the anti-silent-de-prioritization guard). The flag
+ * NEVER lowers the score; it is advisory provenance.
+ */
+export type ConfidenceFlag = ("dynamic-dispatch" | "re-export-indirection")
+/**
+ * The category of a single weakening signal.
+ */
+export type WeakeningKind = ("test-weakened" | "threshold-lowered" | "suppression-added" | "security-check-removed")
+/**
+ * The exactly-three shippable decision categories (the SOLID-3). No cut category
+ * (abstraction / deletion / convention / irreversibility) is representable: this
+ * enum is the structural guarantee that confirmed-noise categories never ship.
+ */
+export type DecisionCategory = ("coupling-boundary" | "public-api-contract" | "dependency")
 /**
  * Discriminator value for [`CodeClimateIssue::kind`].
  */
@@ -6457,6 +6501,14 @@ dead_code: InspectEvidenceSection
 duplication: InspectEvidenceSection
 complexity: InspectEvidenceSection
 security: InspectEvidenceSection
+impact_closure: InspectEvidenceSection
+/**
+ * OPT-IN symbol-level call chain. Present only when `--symbol-chain` was
+ * requested AND the target is a SYMBOL (best-effort, syntactic, OFF the
+ * ranked path). `None` (omitted) by default: symbol-level chains are
+ * best-effort and not part of the trusted ranked evidence.
+ */
+symbol_chain?: (InspectEvidenceSection | null)
 }
 export interface InspectEvidenceSection {
 status: InspectSectionStatus
@@ -8442,6 +8494,580 @@ check?: (Meta | null)
 dupes?: (Meta | null)
 health?: (Meta | null)
 telemetry?: (TelemetryMeta | null)
+}
+/**
+ * The full `fallow audit --brief --format json` envelope. Carries the
+ * informational verdict, the triage and graph-facts orientation stages, plus
+ * the reused "subtract" section (the same dead-code / duplication / complexity
+ * payload `fallow audit --format json` emits).
+ */
+export interface ReviewBriefOutput {
+schema_version: ReviewBriefSchemaVersion
+/**
+ * Fallow CLI version that produced this output.
+ */
+version: string
+/**
+ * Command discriminator singleton: always `"audit-brief"`.
+ */
+command: string
+triage: DiffTriage
+graph_facts: GraphFacts
+partition: PartitionFacts
+impact_closure: ImpactClosureFacts
+focus: FocusMap
+deltas: ReviewDeltas
+/**
+ * 6.F, headline: reviewer-private weakening signals (tests
+ * removed/skipped, thresholds lowered, suppressions added, security steps
+ * removed). Advisory, never gates, never auto-posted.
+ */
+weakening: WeakeningSignal[]
+routing: RoutingFacts
+decisions: DecisionSurface
+}
+/**
+ * Stage 0 of the brief: triage facts derived purely from the diff size.
+ *
+ * `hunks` and `net_lines` are `None` in v1: the file-level audit does not yet
+ * thread a `DiffIndex` (from `report/ci/diff_filter.rs`). They populate later,
+ * on `--diff-file` / `--diff-stdin`, without a schema bump.
+ */
+export interface DiffTriage {
+/**
+ * Number of changed files in the audit scope.
+ */
+files: number
+/**
+ * Number of diff hunks. `None` in v1 (no diff index threaded yet).
+ */
+hunks?: (number | null)
+/**
+ * Net added-minus-removed lines. `None` in v1 (no diff index threaded yet).
+ */
+net_lines?: (number | null)
+risk_class: RiskClass
+review_effort: ReviewEffort
+}
+/**
+ * Stage 1 of the brief: graph-derived orientation facts.
+ *
+ * `boundaries_touched` is derived from the run's boundary-violation zones;
+ * `reachable_from` is populated by the impact closure (the affected-not-shown
+ * set: modules the changed code is reachable from / affects, none in the diff).
+ * `exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the
+ * export-surface delta lands. The fields are present and correctly typed so
+ * values fill in later without a schema bump.
+ */
+export interface GraphFacts {
+/**
+ * Number of exports added by the changeset. Stubbed to `0` in v1.
+ */
+exports_added: number
+/**
+ * Change in public API width (added minus removed exports). Stubbed to `0`
+ * in v1.
+ */
+api_width_delta: number
+/**
+ * Root-relative paths of modules the changed code is reachable from / affects
+ * (the impact closure's affected-but-not-in-diff set), deduped and sorted.
+ * Empty when no graph was retained or nothing depends on the changed files.
+ */
+reachable_from: string[]
+/**
+ * Architecture boundary zones touched by the changeset, deduped and sorted.
+ * Derived from the run's boundary-violation findings.
+ */
+boundaries_touched: string[]
+}
+/**
+ * Stage 2 of the brief: the partition + order. The changed files split into
+ * coherent BY-MODULE units (the only byte-identical-deterministic clustering
+ * definition straight from the graph), plus a dependency-sensible review ORDER
+ * over those units (definitions before consumers, mechanical/leaf units last,
+ * ties broken by the path sort). Stage 2 sits UNDER the decision surface as a
+ * drill-down; it is the backbone the directed-review loop hands the agent.
+ *
+ * Feature-cluster and concern partitioning are deferred (they need scoring
+ * heuristics whose tie-breaks are a fresh nondeterminism surface).
+ */
+export interface PartitionFacts {
+/**
+ * The by-module units, sorted by module directory. Empty when no graph was
+ * retained or no changed file maps to a known module.
+ */
+units: ReviewUnitFact[]
+/**
+ * The dependency-sensible review order: module-directory strings,
+ * definitions before consumers, mechanical/leaf units last. A permutation of
+ * the `units` module directories.
+ */
+order: string[]
+}
+/**
+ * One review unit: a coherent by-module cluster of the changed set.
+ */
+export interface ReviewUnitFact {
+/**
+ * The module directory the unit covers (root-relative, forward-slashed).
+ * The empty string is the repository-root group.
+ */
+module_dir: string
+/**
+ * The changed files in this unit, path-sorted.
+ */
+files: string[]
+}
+/**
+ * Stage 3 of the brief: the impact closure. The transitive
+ * affected-but-not-in-diff set plus the coordination gap. The differentiator a
+ * diff tool fundamentally cannot do, because it has no graph.
+ *
+ * Honest scope (ADR-001, syntactic): the coordination gap is an attention
+ * pointer at the exact inter-module failure mode, NOT a correctness proof.
+ */
+export interface ImpactClosureFacts {
+/**
+ * Root-relative paths transitively affected by the changeset (reverse-deps +
+ * re-export chains) that are NOT in the diff, deduped and sorted.
+ */
+affected_not_shown: string[]
+/**
+ * Coordination gaps: a changed file exports a contract consumed by a module
+ * absent from the diff. One entry per (changed file, consumer) pair.
+ */
+coordination_gap: CoordinationGapFact[]
+}
+/**
+ * One coordination-gap entry: a changed file exports symbols consumed by a
+ * `consumer_file` that is NOT in the diff. Deduped per (changed, consumer) pair
+ * (firing-precision rule R2).
+ */
+export interface CoordinationGapFact {
+/**
+ * Root-relative path of the changed file whose contract is consumed elsewhere.
+ */
+changed_file: string
+/**
+ * Root-relative path of the consumer module that is NOT in the diff.
+ */
+consumer_file: string
+/**
+ * The exported symbol names the consumer references, sorted.
+ */
+consumed_symbols: string[]
+/**
+ * Honest scope note: this is a syntactic attention pointer, not a proof.
+ */
+note: string
+}
+/**
+ * The weighted focus map: the ranked `review-here` units plus the FULL
+ * `deprioritized` escape-hatch list, so nothing is hidden.
+ *
+ * Completeness invariant (the escape-hatch done-condition): the two lists
+ * partition the unit set, so `review_here.len() + deprioritized.len()` equals
+ * the total unit count by construction.
+ */
+export interface FocusMap {
+/**
+ * Units labeled `review-here`, ranked by composite score (descending), ties
+ * broken by path for determinism.
+ */
+review_here: FocusUnit[]
+/**
+ * EVERY `not-prioritized` unit (the escape hatch). Always present and fully
+ * enumerated so a reviewer can always "show me what you de-prioritized"; the
+ * human brief collapses it by default and re-expands under
+ * `--show-deprioritized`.
+ */
+deprioritized: FocusUnit[]
+}
+/**
+ * One review unit on the focus map: its file, composite score, label, human
+ * reason, and any confidence flags.
+ */
+export interface FocusUnit {
+/**
+ * Root-relative path of the changed file this unit covers.
+ */
+file: string
+score: FocusScore
+label: FocusLabel
+/**
+ * A human-readable reason for the label, built from the present signals.
+ */
+reason: string
+/**
+ * Confidence flags (advisory; never lower the score). Sorted, deduped.
+ */
+confidence?: ConfidenceFlag[]
+}
+/**
+ * The composite attention score, with the four deterministic component
+ * sub-scores kept on the wire so the runtime seam can re-weight `total`
+ * without recomputing the signals.
+ */
+export interface FocusScore {
+/**
+ * Fan-in/out blast-radius component.
+ */
+fan_io: number
+/**
+ * Security source -> sink taint-touch component (0 until a security pass is
+ * threaded onto the brief path; the seam is built and tested).
+ */
+security_taint: number
+/**
+ * Risk-zone component (boundary / public-API / security-sensitive).
+ */
+risk_zone: number
+/**
+ * Change-shape component (new/widened export, signature change proxy).
+ */
+change_shape: number
+/**
+ * The summed total. The paid runtime layer multiplies a runtime hot/cold weight in here.
+ */
+total: number
+}
+/**
+ * Diff-aware deterministic deltas (6.A), framed new-vs-pre-existing against
+ * the audit base snapshot. Each entry is a brief summary/verdict line.
+ *
+ * `public_api` is batch-consolidated to ONE decision per change (rule R1):
+ * the `added` list carries the introduced public-export keys as evidence, but a
+ * reviewer reads "the public surface widened by N", never one decision per
+ * symbol.
+ */
+export interface ReviewDeltas {
+/**
+ * Cross-zone boundary EDGES introduced vs base (R2 first-edge-only: one per
+ * `<from_zone>-><to_zone>` pair, never per import). New-vs-pre-existing.
+ */
+boundary_introduced: string[]
+/**
+ * Circular dependencies introduced vs base (canonical file-set keys).
+ */
+cycle_introduced: string[]
+/**
+ * Exports-aware public-API surface delta: the public-export keys
+ * (`<rel_path>::<name>`) added vs base, resolved through `package.json`
+ * `exports` + re-export reachability. A symbol re-exported only through an
+ * internal barrel NOT in `exports` is absent here (zero delta); one
+ * reachable through an `exports` path is present (exactly one).
+ */
+public_api_added: string[]
+}
+/**
+ * One weakening signal: a category, the file it was detected in, and a short
+ * human-readable evidence string. Reviewer-private; never gates.
+ */
+export interface WeakeningSignal {
+kind: WeakeningKind
+/**
+ * Root-relative path of the changed file the signal was detected in.
+ */
+file: string
+/**
+ * Short evidence string (e.g. the offending token or the threshold delta).
+ */
+evidence: string
+}
+/**
+ * The full routing section: one unit per changed source file with a routable
+ * signal. Files with no ownership signal are omitted (no noise).
+ */
+export interface RoutingFacts {
+/**
+ * Per-changed-file routing units, sorted by file path.
+ */
+units: RoutingUnit[]
+}
+/**
+ * One routed unit (a changed file) with its experts and bus-factor flag.
+ */
+export interface RoutingUnit {
+/**
+ * Root-relative path of the changed file.
+ */
+file: string
+/**
+ * The routed expert(s): the CODEOWNERS declared owner when present, else the
+ * top git-blame / recency contributor; empty when no signal is available.
+ */
+expert: string[]
+/**
+ * Whether the only qualified owner is a single contributor (bus-factor-1):
+ * a knowledge-concentration risk worth a second reviewer.
+ */
+bus_factor_one?: boolean
+}
+/**
+ * The ranked, capped decision surface plus the set of signal_ids the
+ * deterministic layer emitted (the anti-hallucination allowlist).
+ */
+export interface DecisionSurface {
+/**
+ * Up to `cap` ranked decisions, highest consequence first.
+ */
+decisions: Decision[]
+/**
+ * Present when more than `cap` decisions were extracted.
+ */
+truncated?: (TruncationNote | null)
+/**
+ * Every signal_id the deterministic layer emitted, INCLUDING those whose
+ * decision was collapsed below the cap or suppressed. The anti-hallucination
+ * allowlist: an agent decision whose id is absent is rejected.
+ */
+emitted_signal_ids: string[]
+}
+/**
+ * One consequential structural decision, framed as a judgment question for a
+ * human with taste, anchored to a fallow-emitted signal.
+ */
+export interface Decision {
+/**
+ * Deterministic anchor to the fallow-emitted candidate this decision frames.
+ * `accept_signal_id` rejects any id not in the emitted set.
+ */
+signal_id: string
+category: DecisionCategory
+/**
+ * The decision framed as a judgment question for the human.
+ */
+question: string
+/**
+ * Root-relative file the decision is anchored at (for suppression + routing).
+ */
+anchor_file: string
+/**
+ * 1-based anchor line, when the underlying signal carries one (0 = file head).
+ */
+anchor_line: number
+/**
+ * The raw fallow-emitted candidate key the `signal_id` hashes (the evidence).
+ */
+signal_key: string
+/**
+ * The `signal_id` this decision WOULD have had before any rename in this
+ * change (the anchor file's pre-rename path). Present only when the anchor was
+ * renamed. A review-memory layer carries a dismissal across a `git mv`: if
+ * `previous_signal_id` was dismissed in an earlier PR, treat this decision as
+ * dismissed too. Keeps `signal_id` itself exact + deterministic.
+ */
+previous_signal_id?: (string | null)
+/**
+ * Blast radius: count of modules affected beyond the diff by this decision.
+ */
+blast: number
+/**
+ * `blast * reversibility_weight`: the rank key (sorted descending).
+ */
+consequence: number
+/**
+ * The routed expert(s) to ask, from ownership routing. Empty when no
+ * ownership signal is available for the anchor file.
+ */
+expert: string[]
+/**
+ * Whether the anchor file's only qualified owner is one person (bus-factor-1).
+ */
+bus_factor_one?: boolean
+}
+/**
+ * A note for the decisions collapsed below the cap.
+ */
+export interface TruncationNote {
+/**
+ * How many decisions were collapsed below the cap.
+ */
+collapsed: number
+/**
+ * Human-readable collapse reason.
+ */
+reason: string
+}
+/**
+ * The `fallow review --walkthrough-guide` envelope: the current digest + schema
+ * the agent fetches. The tool owns this; the skill stays thin (it fetches this
+ * rather than embedding a frozen copy). Always emitted with exit 0.
+ */
+export interface WalkthroughGuide {
+schema_version: ReviewBriefSchemaVersion
+/**
+ * Fallow CLI version that produced this guide.
+ */
+version: string
+/**
+ * Command discriminator singleton: always `"review-walkthrough-guide"`.
+ */
+command: string
+/**
+ * The deterministic graph-snapshot hash pinned into the digest. The agent
+ * echoes it back; a mismatch on reentry refuses the payload as stale.
+ */
+graph_snapshot_hash: string
+digest: ReviewBriefOutput
+direction: ReviewDirection
+agent_schema: AgentSchema
+/**
+ * The injection-resistance note (digest is graph-only; PR prose untrusted).
+ */
+injection_note: string
+}
+/**
+ * The review direction artifact: the order to review in, the coherent units,
+ * and per-unit concern lens + out-of-diff + expert. A minimal projection of the
+ * EXISTING graph facts (routing units + impact closure); the full weighted-focus
+ * engine is a later epic. Graph-derived only (injection-resistant).
+ */
+export interface ReviewDirection {
+/**
+ * The dependency-sensible review order: unit file paths, units carrying
+ * out-of-diff consumers first (review the load-bearing definitions before
+ * the mechanical units).
+ */
+order: string[]
+/**
+ * The coherent review units, in `order`.
+ */
+units: DirectionUnit[]
+}
+/**
+ * One directed review unit projected from the graph: a file the change touches,
+ * the concern to check, the out-of-diff consumers it must account for, and the
+ * routed expert. Graph-derived only (routing + impact closure), NEVER from prose.
+ */
+export interface DirectionUnit {
+/**
+ * Root-relative path of the unit to review.
+ */
+file: string
+/**
+ * The concern lens the agent should check for this unit, derived from the
+ * unit's risk signals (impact-closure consumers vs a plain touched file).
+ */
+concern_lens: string
+/**
+ * Per-unit review-effort budget: the weighted-focus composite score for
+ * this file. A cloud fan-out spends AI passes/verifiers PROPORTIONAL to this
+ * (higher = review harder); a local single-agent loop can ignore it.
+ */
+scoring_budget: number
+/**
+ * Root-relative paths of modules affected by this unit but NOT in the diff
+ * (the out-of-diff context the agent must reason about).
+ */
+out_of_diff: string[]
+/**
+ * The routed expert(s) to ask, from ownership routing.
+ */
+expert: string[]
+}
+/**
+ * The shape the agent must return, embedded in the guide so a thin skill needs
+ * no frozen copy. Documents the anchoring + staleness contract in the wire.
+ */
+export interface AgentSchema {
+/**
+ * How the agent must structure each judgment: cite an emitted `signal_id`,
+ * add free-text `framing` (non-deterministic, fenced), an optional `concern`.
+ */
+judgment_shape: string
+/**
+ * The agent MUST echo this `graph_snapshot_hash` back in its JSON; a
+ * mismatch on reentry REFUSES the payload as stale.
+ */
+echo_field: string
+/**
+ * The constant naming the anti-hallucination rule.
+ */
+anchoring_rule: string
+}
+/**
+ * The `fallow review --walkthrough-file` validation envelope: the result of
+ * post-validating the agent's judgment against the live graph. Always exit 0.
+ */
+export interface WalkthroughValidation {
+schema_version: ReviewBriefSchemaVersion
+/**
+ * Fallow CLI version that produced this validation.
+ */
+version: string
+/**
+ * Command discriminator singleton: always `"review-walkthrough-validation"`.
+ */
+command: string
+/**
+ * The current run's deterministic graph-snapshot hash.
+ */
+graph_snapshot_hash: string
+/**
+ * `true` when the agent's echoed hash != the current hash (the tree moved):
+ * the WHOLE payload is refused, `accepted` is empty.
+ */
+stale: boolean
+/**
+ * Judgments that cite a real fallow-emitted signal, framing fenced.
+ */
+accepted: AcceptedJudgment[]
+/**
+ * Judgments rejected (unanchored signal id, or all-rejected when stale).
+ */
+rejected: RejectedJudgment[]
+/**
+ * Count of accepted judgments.
+ */
+accepted_count: number
+/**
+ * Count of rejected judgments.
+ */
+rejected_count: number
+/**
+ * Count of accepted judgments whose `signal_id` resolved against the live
+ * allowlist. Zero unanchored when this equals `accepted_count` and there are
+ * no rejections (the clean done-condition).
+ */
+unanchored_count: number
+}
+/**
+ * One accepted judgment: the real anchored signal passed through with the
+ * agent's framing FENCED as non-deterministic.
+ */
+export interface AcceptedJudgment {
+/**
+ * The fallow-emitted `signal_id` (verified against the allowlist).
+ */
+signal_id: string
+/**
+ * The agent's framing, FENCED: this is non-deterministic agent prose.
+ */
+agent_framing: string
+/**
+ * The agent's optional concern category (advisory).
+ */
+concern?: (string | null)
+/**
+ * Hard fence: always `false`. The framing is agent prose, never a
+ * deterministic fallow result, so it never gates or auto-posts.
+ */
+deterministic: boolean
+}
+/**
+ * One rejected judgment plus the reason it was rejected.
+ */
+export interface RejectedJudgment {
+/**
+ * The `signal_id` the agent cited (fallow never emitted it).
+ */
+signal_id: string
+/**
+ * The rejection reason (e.g. `unanchored-signal-id`).
+ */
+reason: string
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].

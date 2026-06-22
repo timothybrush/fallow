@@ -1225,3 +1225,52 @@ fn issue_895_default_off_emits_nothing() {
         "security-tls-validation-disabled-895"
     )));
 }
+
+// ── llm-call-injection (CWE-1427), taint-gated (E11) ─────────────────────────
+// Untrusted request input flowing into an LLM-call prompt is a prompt-injection
+// candidate. Every row is `requires_source = true`, so a constant prompt and the
+// deliberately-excluded `*.invoke` callee stay quiet.
+
+#[test]
+fn llm_call_injection_tainted_prompts_fire() {
+    let results = analyze_with_security_sink("security-llm-sink");
+    // OpenAI / Anthropic embed the tainted local in a nested
+    // `messages: [{ content: x }]` array-of-objects (the canonical chat shape);
+    // Google / Vercel pass a bare tainted identifier as the prompt.
+    assert_candidate(&results, "src/openai.ts", "llm-call-injection", 1427);
+    assert_candidate(&results, "src/anthropic.ts", "llm-call-injection", 1427);
+    assert_candidate(&results, "src/google-genai.ts", "llm-call-injection", 1427);
+    assert_candidate(&results, "src/vercel-ai.ts", "llm-call-injection", 1427);
+    assert_eq!(
+        category_count(&results, "llm-call-injection"),
+        4,
+        "fixture should cover OpenAI, Anthropic, Google GenAI, and Vercel AI SDK taint paths"
+    );
+}
+
+#[test]
+fn llm_call_injection_constant_prompt_does_not_fire() {
+    // A hardcoded constant prompt with no untrusted source flowing in must NOT
+    // fire (the taint gate keeps it quiet).
+    let results = analyze_with_security_sink("security-llm-sink");
+    assert!(
+        !anchored_on(&results, "src/safe.ts"),
+        "a constant-prompt LLM call must not be flagged"
+    );
+}
+
+#[test]
+fn llm_call_injection_langchain_invoke_does_not_fire() {
+    // `*.invoke` is deliberately EXCLUDED (too generic a member name), so even
+    // with untrusted input flowing in it must not fire.
+    let results = analyze_with_security_sink("security-llm-sink");
+    assert!(
+        !anchored_on(&results, "src/langchain.ts"),
+        "the excluded LangChain .invoke callee must not be flagged"
+    );
+}
+
+#[test]
+fn llm_call_injection_default_off_emits_nothing() {
+    assert!(no_tainted_sinks(&analyze_default_off("security-llm-sink")));
+}

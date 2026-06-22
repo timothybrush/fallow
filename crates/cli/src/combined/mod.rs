@@ -100,6 +100,7 @@ pub fn run_combined(opts: &CombinedOptions<'_>) -> ExitCode {
         trace_export: None,
         trace_file: None,
         trace_dependency: None,
+        impact_closure: None,
         performance: opts.performance,
     };
     let check_opts = build_combined_check_options(opts, &filters, &trace_opts);

@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildHealthArgs,
-  countHealthItems,
   escapeHealthMarkdown,
   formatComplexityOffense,
   formatHealthStatusPart,
@@ -228,18 +227,6 @@ describe("topPenalties", () => {
     expect(topPenalties(undefined)).toEqual([]);
     const penalties = { complexity: 5, unit_size: 10, coupling: 3 } as HealthScorePenalties;
     expect(topPenalties(penalties, 2).map((p) => p.key)).toEqual(["Unit size", "Complexity"]);
-  });
-});
-
-describe("countHealthItems", () => {
-  it("sums findings, hotspots, and targets across sparse sections", () => {
-    expect(countHealthItems(null)).toBe(0);
-    const report = {
-      findings: [{}, {}],
-      hotspots: undefined,
-      targets: [{}],
-    } as unknown as HealthReport;
-    expect(countHealthItems(report)).toBe(3);
   });
 });
 

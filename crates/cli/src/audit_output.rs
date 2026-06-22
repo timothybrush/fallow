@@ -102,7 +102,7 @@ fn print_audit_human(result: &AuditResult, quiet: bool, explain: bool, output: O
 
 /// Print the per-analysis findings sections (dead code, duplication, complexity)
 /// plus the explain tip and vital signs, with section headers when enabled.
-fn print_audit_findings(result: &AuditResult, quiet: bool, explain: bool, show_headers: bool) {
+pub fn print_audit_findings(result: &AuditResult, quiet: bool, explain: bool, show_headers: bool) {
     print_audit_explain_tip(show_headers);
 
     if result.verdict != AuditVerdict::Fail && !quiet {
@@ -364,7 +364,7 @@ fn print_audit_json(result: &AuditResult) -> ExitCode {
     clippy::cast_possible_truncation,
     reason = "elapsed milliseconds won't exceed u64::MAX"
 )]
-fn insert_audit_json_header(
+pub fn insert_audit_json_header(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     result: &AuditResult,
 ) {
@@ -420,7 +420,7 @@ fn insert_audit_json_header(
     }
 }
 
-fn insert_audit_dead_code_json(
+pub fn insert_audit_dead_code_json(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     result: &AuditResult,
     check: &crate::check::CheckResult,
@@ -451,7 +451,7 @@ fn insert_audit_dead_code_json(
     }
 }
 
-fn insert_audit_duplication_json(
+pub fn insert_audit_duplication_json(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     result: &AuditResult,
     dupes: &crate::dupes::DupesResult,
@@ -475,7 +475,7 @@ fn insert_audit_duplication_json(
     }
 }
 
-fn insert_audit_health_json(
+pub fn insert_audit_health_json(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     result: &AuditResult,
     health: &crate::health::HealthResult,
@@ -643,6 +643,11 @@ mod tests {
             dupes: None,
             health: None,
             elapsed: Duration::ZERO,
+            review_deltas: None,
+            weakening_signals: Vec::new(),
+            routing: None,
+            decision_surface: None,
+            graph_snapshot_hash: None,
         }
     }
 

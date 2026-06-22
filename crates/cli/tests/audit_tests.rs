@@ -2151,3 +2151,227 @@ fn audit_annotates_newly_added_misplaced_directive_as_introduced() {
         "the newly-misplaced directive must be annotated introduced: true"
     );
 }
+
+// ----------------------------------------------------------------------------
+// E5 agent-contract loop (walkthrough guide + walkthrough-file post-validation)
+// ----------------------------------------------------------------------------
+
+/// A fixture with two boundary zones (`ui`, `db`) where the diff introduces a
+/// new cross-zone edge (ui -> db), so the decision surface emits exactly one
+/// real, anchored coupling/boundary decision. The base has no such edge.
+fn create_boundary_walkthrough_fixture() -> TempDir {
+    let tmp = TempDir::new().expect("temp dir");
+    let dir = tmp.path();
+    fs::create_dir_all(dir.join("src/ui")).unwrap();
+    fs::create_dir_all(dir.join("src/db")).unwrap();
+
+    fs::write(
+        dir.join("package.json"),
+        r#"{"name": "wt-test", "main": "src/ui/page.ts"}"#,
+    )
+    .unwrap();
+    // Boundary config: ui may import only itself (so importing db is a
+    // disallowed cross-zone edge).
+    fs::write(
+        dir.join(".fallowrc.json"),
+        r#"{
+  "entry": ["src/ui/page.ts"],
+  "boundaries": {
+    "zones": [
+      { "name": "ui", "patterns": ["src/ui/**"] },
+      { "name": "db", "patterns": ["src/db/**"] }
+    ],
+    "rules": [
+      { "from": "ui", "allow": [] }
+    ]
+  }
+}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("src/db/conn.ts"), "export const conn = () => 1;\n").unwrap();
+    // Base page.ts does NOT import db.
+    fs::write(
+        dir.join("src/ui/page.ts"),
+        "export const render = () => 'hi';\n",
+    )
+    .unwrap();
+
+    git(dir, &["init", "-b", "main"]);
+    commit_all(dir, "initial");
+
+    // HEAD: page.ts now imports db -> a new cross-zone edge ui->db.
+    fs::write(
+        dir.join("src/ui/page.ts"),
+        "import { conn } from '../db/conn';\nexport const render = () => conn();\n",
+    )
+    .unwrap();
+    commit_all(dir, "ui imports db");
+
+    tmp
+}
+
+fn run_walkthrough_guide(root: &Path) -> serde_json::Value {
+    let output = run_fallow_raw(&[
+        "review",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "main~1",
+        "--walkthrough-guide",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        output.code, 0,
+        "walkthrough-guide always exits 0. stderr: {}",
+        output.stderr
+    );
+    parse_json(&output)
+}
+
+fn run_walkthrough_file(root: &Path, file: &Path) -> serde_json::Value {
+    let output = run_fallow_raw(&[
+        "review",
+        "--root",
+        root.to_str().unwrap(),
+        "--base",
+        "main~1",
+        "--walkthrough-file",
+        file.to_str().unwrap(),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        output.code, 0,
+        "walkthrough-file always exits 0. stderr: {}",
+        output.stderr
+    );
+    parse_json(&output)
+}
+
+#[test]
+fn e5_walkthrough_guide_pins_a_deterministic_snapshot_hash() {
+    let tmp = create_boundary_walkthrough_fixture();
+    let guide = run_walkthrough_guide(tmp.path());
+    assert_eq!(guide["kind"], "review-walkthrough-guide");
+    assert_eq!(guide["command"], "review-walkthrough-guide");
+    let hash = guide["graph_snapshot_hash"]
+        .as_str()
+        .expect("guide pins a graph_snapshot_hash");
+    assert!(hash.starts_with("graph:"), "hash is namespaced: {hash}");
+    // The digest is graph-derived; the injection note states PR prose is untrusted.
+    assert!(
+        guide["injection_note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("untrusted"),
+        "injection note documents untrusted PR prose"
+    );
+    // Re-run on the same tree: the hash is byte-stable (deterministic).
+    let again = run_walkthrough_guide(tmp.path());
+    assert_eq!(again["graph_snapshot_hash"], guide["graph_snapshot_hash"]);
+}
+
+/// Done-condition (a): a clean agent JSON citing only emitted signal_ids with
+/// the correct snapshot hash is ACCEPTED with zero unanchored findings.
+#[test]
+fn e5_clean_agent_json_is_accepted_zero_unanchored() {
+    let tmp = create_boundary_walkthrough_fixture();
+    let guide = run_walkthrough_guide(tmp.path());
+    let hash = guide["graph_snapshot_hash"].as_str().unwrap().to_string();
+    let emitted = guide["digest"]["decisions"]["emitted_signal_ids"]
+        .as_array()
+        .expect("digest carries the emitted signal_id allowlist");
+    assert!(
+        !emitted.is_empty(),
+        "the boundary change must emit at least one anchored signal. guide: {}",
+        serde_json::to_string_pretty(&guide).unwrap_or_default()
+    );
+    let real_id = emitted[0].as_str().unwrap().to_string();
+
+    let agent = serde_json::json!({
+        "graph_snapshot_hash": hash,
+        "judgments": [
+            { "signal_id": real_id, "framing": "Intended coupling.", "concern": "coupling" }
+        ]
+    });
+    let agent_path = tmp.path().join("agent.json");
+    fs::write(&agent_path, serde_json::to_string(&agent).unwrap()).unwrap();
+
+    let validation = run_walkthrough_file(tmp.path(), &agent_path);
+    assert_eq!(validation["kind"], "review-walkthrough-validation");
+    assert_eq!(validation["stale"], false, "matching hash is not stale");
+    assert_eq!(
+        validation["accepted_count"], 1,
+        "the anchored judgment accepts"
+    );
+    assert_eq!(validation["rejected_count"], 0, "no rejections");
+    assert_eq!(
+        validation["unanchored_count"], 0,
+        "zero unanchored findings"
+    );
+    // The framing is fenced as non-deterministic.
+    assert_eq!(validation["accepted"][0]["deterministic"], false);
+}
+
+/// Done-condition (b): an injected unanchored finding is REJECTED.
+#[test]
+fn e5_injected_unanchored_signal_is_rejected() {
+    let tmp = create_boundary_walkthrough_fixture();
+    let guide = run_walkthrough_guide(tmp.path());
+    let hash = guide["graph_snapshot_hash"].as_str().unwrap().to_string();
+
+    let agent = serde_json::json!({
+        "graph_snapshot_hash": hash,
+        "judgments": [
+            { "signal_id": "sig:deadbeefdeadbeef", "framing": "hallucinated, no graph anchor" }
+        ]
+    });
+    let agent_path = tmp.path().join("agent.json");
+    fs::write(&agent_path, serde_json::to_string(&agent).unwrap()).unwrap();
+
+    let validation = run_walkthrough_file(tmp.path(), &agent_path);
+    assert_eq!(validation["stale"], false);
+    assert_eq!(
+        validation["accepted_count"], 0,
+        "the fabricated id never accepts"
+    );
+    assert_eq!(validation["rejected_count"], 1, "it is rejected");
+    assert_eq!(validation["rejected"][0]["reason"], "unanchored-signal-id");
+}
+
+/// Done-condition (c): stale JSON (old snapshot hash, e.g. the tree moved) is
+/// REFUSED.
+#[test]
+fn e5_stale_snapshot_hash_is_refused() {
+    let tmp = create_boundary_walkthrough_fixture();
+    let guide = run_walkthrough_guide(tmp.path());
+    let emitted = guide["digest"]["decisions"]["emitted_signal_ids"]
+        .as_array()
+        .unwrap();
+    let real_id = emitted[0].as_str().unwrap().to_string();
+
+    // The agent echoes a STALE hash (the tree moved since the guide was emitted),
+    // even though it cites a real signal id.
+    let agent = serde_json::json!({
+        "graph_snapshot_hash": "graph:0000000000000000",
+        "judgments": [
+            { "signal_id": real_id, "framing": "would be valid, but the snapshot moved" }
+        ]
+    });
+    let agent_path = tmp.path().join("agent.json");
+    fs::write(&agent_path, serde_json::to_string(&agent).unwrap()).unwrap();
+
+    let validation = run_walkthrough_file(tmp.path(), &agent_path);
+    assert_eq!(
+        validation["stale"], true,
+        "the old hash is refused as stale"
+    );
+    assert_eq!(
+        validation["accepted_count"], 0,
+        "nothing accepts when stale"
+    );
+    assert_eq!(validation["rejected"][0]["reason"], "stale-snapshot");
+}

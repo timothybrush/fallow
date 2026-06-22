@@ -6547,6 +6547,24 @@ fn collect_source_paths_into(expr: &Expression<'_>, out: &mut Vec<String>) {
                 }
             }
         }
+        Expression::ObjectExpression(obj) => {
+            // A direct source read nested in an object literal value
+            // (`{ content: req.body.text }`) still carries taint.
+            for prop in &obj.properties {
+                if let ObjectPropertyKind::ObjectProperty(prop) = prop {
+                    collect_source_paths_into(&prop.value, out);
+                }
+            }
+        }
+        Expression::ArrayExpression(array) => {
+            // A direct source read nested in an array element, including an object
+            // in an array (`messages: [{ content: req.body.text }]`).
+            for element in &array.elements {
+                if let Some(element_expr) = element.as_expression() {
+                    collect_source_paths_into(element_expr, out);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -6608,6 +6626,16 @@ fn collect_idents_into(expr: &Expression<'_>, out: &mut Vec<String>) {
             for prop in &obj.properties {
                 if let ObjectPropertyKind::ObjectProperty(prop) = prop {
                     collect_idents_into(&prop.value, out);
+                }
+            }
+        }
+        Expression::ArrayExpression(array) => {
+            // Taint can ride an array element, including an object nested in an
+            // array (`messages: [{ content: userInput }]`, the canonical OpenAI /
+            // Anthropic chat shape). Recurse into each element expression.
+            for element in &array.elements {
+                if let Some(element_expr) = element.as_expression() {
+                    collect_idents_into(element_expr, out);
                 }
             }
         }

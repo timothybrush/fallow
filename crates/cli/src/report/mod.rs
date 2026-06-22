@@ -619,6 +619,32 @@ pub fn print_clone_trace(trace: &CloneTrace, root: &Path, format: OutputFormat) 
     }
 }
 
+/// Print impact-closure trace results. JSON only emits the structured
+/// closure; human renders a short summary.
+pub fn print_impact_closure_trace(
+    trace: &fallow_core::trace::ImpactClosureTrace,
+    format: OutputFormat,
+) {
+    match format {
+        OutputFormat::Json => json::print_trace_json(trace),
+        _ => {
+            outln!("Impact closure for {}", trace.seed);
+            outln!(
+                "  affected beyond the diff: {} file{}",
+                trace.affected_not_shown.len(),
+                plural(trace.affected_not_shown.len())
+            );
+            for gap in &trace.coordination_gap {
+                outln!(
+                    "  coordination gap: {} consumes {}",
+                    gap.consumer_file,
+                    gap.consumed_symbols.join(", ")
+                );
+            }
+        }
+    }
+}
+
 /// Print pipeline performance timings.
 /// In JSON mode, outputs to stderr to avoid polluting the JSON analysis output on stdout.
 pub fn print_performance(timings: &PipelineTimings, format: OutputFormat) {

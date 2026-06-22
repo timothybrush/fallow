@@ -250,6 +250,11 @@ pub struct TraceOptions {
     pub trace_export: Option<String>,
     pub trace_file: Option<String>,
     pub trace_dependency: Option<String>,
+    /// Impact closure for a single file as the seed: walk `reverse_deps` +
+    /// re-export chains to the transitive affected set and report the
+    /// coordination gap. Powers the `inspect_target` MCP tool's `impact_closure`
+    /// evidence section.
+    pub impact_closure: Option<String>,
     pub performance: bool,
 }
 
@@ -258,6 +263,7 @@ impl TraceOptions {
         self.trace_export.is_some()
             || self.trace_file.is_some()
             || self.trace_dependency.is_some()
+            || self.impact_closure.is_some()
             || self.performance
     }
 }
@@ -315,6 +321,39 @@ pub struct CheckResult {
     pub timings: Option<fallow_core::trace::PipelineTimings>,
     /// Retained parse data for sharing with health (only populated when retain_modules_for_health=true).
     pub shared_parse: Option<crate::health::SharedParseData>,
+    /// Impact closure for the review brief: the transitive
+    /// affected-but-not-in-diff set plus coordination gaps. Populated by the
+    /// audit brief path from the retained graph against the changed-file set;
+    /// `None` outside the brief path. Holds root-relative paths so it survives
+    /// the graph drop and serializes directly.
+    pub impact_closure: Option<fallow_core::graph::ImpactClosurePaths>,
+    /// Exports-aware public-export key set for the review brief: the
+    /// `<rel_path>::<name>` keys reachable through `package.json` `exports` +
+    /// re-export reachability. Computed from the retained graph on the brief
+    /// path before the graph is dropped; `None` outside the brief path. Diffed
+    /// against the base snapshot's `public_api` set to produce the public-API
+    /// surface delta.
+    pub public_api_keys: Option<rustc_hash::FxHashSet<String>>,
+    /// Partition + order for the review brief's stage 2: the by-module
+    /// units the changed files cluster into, plus a dependency-sensible review
+    /// order. Computed from the retained graph on the brief path against the
+    /// changed-file set, before the graph is dropped; `None` outside the brief
+    /// path. Holds root-relative paths so it survives the graph drop and
+    /// serializes directly.
+    pub partition_order: Option<fallow_core::graph::PartitionOrderPaths>,
+    /// Per-changed-file graph facts for the review brief's stage 4 weighted
+    /// focus map: fan-in/out (blast radius) plus the dynamic-dispatch and
+    /// re-export-indirection confidence-flag signals. Computed from the retained
+    /// graph on the brief path against the changed-file set, before the graph is
+    /// dropped; `None` outside the brief path. Holds root-relative paths so it
+    /// survives the graph drop.
+    pub focus_facts: Option<Vec<fallow_core::graph::FocusFileFactsPaths>>,
+    /// Per-changed-file `rel_path -> [(exported-symbol, 1-based declaration line)]`
+    /// map for the decision surface, so a coordination / public-API decision can
+    /// anchor an inline comment to the exact export line. Computed from the
+    /// retained graph on the brief path BEFORE the graph is dropped; `None`
+    /// otherwise. Internal (CheckResult is not serialized).
+    pub export_lines: Option<rustc_hash::FxHashMap<String, Vec<(String, u32)>>>,
 }
 
 struct CheckAnalysisData {
@@ -633,6 +672,11 @@ fn complete_check_execution(
         baseline_matched,
         timings: trace_timings,
         shared_parse,
+        impact_closure: None,
+        public_api_keys: None,
+        partition_order: None,
+        focus_facts: None,
+        export_lines: None,
     }
 }
 
@@ -1269,6 +1313,7 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(!t.any_active());
@@ -1280,6 +1325,7 @@ mod tests {
             trace_export: Some("src/foo.ts:bar".into()),
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(t.any_active());
@@ -1291,6 +1337,7 @@ mod tests {
             trace_export: None,
             trace_file: Some("src/foo.ts".into()),
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(t.any_active());
@@ -1302,6 +1349,16 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: Some("lodash".into()),
+            impact_closure: None,
+            performance: false,
+        };
+        assert!(t.any_active());
+
+        let t = TraceOptions {
+            trace_export: None,
+            trace_file: None,
+            trace_dependency: None,
+            impact_closure: Some("src/foo.ts".into()),
             performance: false,
         };
         assert!(t.any_active());
@@ -1313,6 +1370,7 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: true,
         };
         assert!(t.any_active());

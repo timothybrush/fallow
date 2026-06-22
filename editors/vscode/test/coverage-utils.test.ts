@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildCoverageArgs,
   buildCoverageGateMessage,
-  countCoverageItems,
   COVERAGE_ANALYZE_MIN_VERSION,
   coverageWatermarkMessage,
   formatConfidence,
@@ -182,26 +181,6 @@ describe("sortHotPaths", () => {
   it("yields [] for null or undefined hot paths", () => {
     expect(sortHotPaths(null)).toEqual([]);
     expect(sortHotPaths(report({}))).toEqual([]);
-  });
-});
-
-describe("countCoverageItems", () => {
-  it("sums hot paths plus both cleanup buckets", () => {
-    const r = report({
-      hot_paths: [hotPath({}), hotPath({})],
-      findings: [
-        finding("safe_to_delete"),
-        finding("review_required"),
-        finding("review_required"),
-        finding("active"),
-      ],
-    });
-    // 2 hot paths + 1 safe + 2 review (active excluded) = 5
-    expect(countCoverageItems(r)).toBe(5);
-  });
-
-  it("returns 0 for a null report", () => {
-    expect(countCoverageItems(null)).toBe(0);
   });
 });
 

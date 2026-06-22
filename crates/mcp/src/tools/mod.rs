@@ -3,6 +3,7 @@ mod audit;
 mod check_changed;
 mod check_runtime_coverage;
 mod code_mode;
+mod decision_surface;
 mod dupes;
 mod explain;
 mod fix;
@@ -23,6 +24,7 @@ pub use check_runtime_coverage::{
     build_get_cleanup_candidates_args, build_get_hot_paths_args, build_get_importance_args,
 };
 pub use code_mode::execute_code_mode;
+pub use decision_surface::build_decision_surface_args;
 pub use dupes::build_find_dupes_args;
 pub use explain::build_explain_args;
 pub use fix::{build_fix_apply_args, build_fix_preview_args};

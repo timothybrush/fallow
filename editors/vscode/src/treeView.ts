@@ -4,7 +4,7 @@ import * as path from "node:path";
 // VS Code injects this module into the extension host at runtime.
 // fallow-ignore-next-line unlisted-dependency
 import * as vscode from "vscode";
-import { countCheckIssues } from "./analysis-utils.js";
+import { countDiagnosticErrorIssues } from "./analysis-utils.js";
 import {
   middleElidePath,
   resolveFilePath as resolveFilePathPure,
@@ -213,10 +213,10 @@ export class DeadCodeTreeProvider implements vscode.TreeDataProvider<DeadCodeIte
       this.view.badge = undefined;
       return;
     }
-    const count = countCheckIssues(this.result);
+    const count = countDiagnosticErrorIssues(this.result);
 
     this.view.badge =
-      count > 0 ? { value: count, tooltip: `${count} issue${count === 1 ? "" : "s"}` } : undefined;
+      count > 0 ? { value: count, tooltip: `${count} error${count === 1 ? "" : "s"}` } : undefined;
   }
 
   getTreeItem(element: DeadCodeItem): vscode.TreeItem {

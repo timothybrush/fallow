@@ -62,6 +62,22 @@ pub(super) fn handle_trace_output(
         return Some(ExitCode::SUCCESS);
     }
 
+    if let Some(ref file_path) = trace_opts.impact_closure {
+        match fallow_core::trace::trace_impact_closure(graph, root, file_path) {
+            Some(trace) => {
+                report::print_impact_closure_trace(&trace, output);
+                return Some(ExitCode::SUCCESS);
+            }
+            None => {
+                return Some(emit_error(
+                    &format!("file '{file_path}' not found in module graph"),
+                    2,
+                    output,
+                ));
+            }
+        }
+    }
+
     None
 }
 
@@ -182,6 +198,7 @@ mod tests {
             trace_export: None,
             trace_file: None,
             trace_dependency: None,
+            impact_closure: None,
             performance: false,
         };
         assert!(!trace_opts.any_active());

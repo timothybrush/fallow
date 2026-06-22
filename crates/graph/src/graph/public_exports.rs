@@ -1,0 +1,353 @@
+//! Exports-aware public-export-key computation (the hard 80% of 6.A).
+//!
+//! Given the set of *public-API entry points* (the `package.json` `exports`-mapped
+//! modules plus the no-`exports` source-index fallback; computed in core's
+//! `public_api_package_entry_points`, which already encodes rule R4), this
+//! resolves the set of export symbols reachable through that public surface and
+//! returns one stable `"<rel_path>::<name>"` key per public export.
+//!
+//! An export `(file, name)` is PUBLIC when its DECLARING module is part of the
+//! public surface, which is:
+//! - a public-API entry point module itself (its own exports, INCLUDING the
+//!   synthetic re-export stubs the graph materializes on a barrel for every
+//!   `export { x } from './impl'` and `export * from './impl'` it forwards), OR
+//! - a module in the `export *` closure rooted at public-API entries (a target
+//!   whose names are flattened straight into the public surface by `export *`).
+//!
+//! Keying on the surface AS EXPOSED (the entry's own name, e.g. `index.js::pub`),
+//! not the origin's internal name (`src/impl.ts::pub`), is what makes the delta
+//! exports-aware and avoids double-counting one symbol on both the barrel and
+//! the origin. A symbol re-exported only through an INTERNAL barrel that is not
+//! in `exports` never lands on a public entry or a star-target, so it produces
+//! ZERO public-API delta (the Aisha repro); one re-exported through the
+//! `exports`-mapped entry lands on that entry once (exactly one). This mirrors
+//! the exports-aware reachability the `unprovided-inject` and
+//! `unrendered-component` detectors use, kept in the graph crate so the review
+//! brief (cli) can call it directly off the retained graph.
+
+use std::path::{Path, PathBuf};
+
+use fallow_types::discover::FileId;
+use rustc_hash::FxHashSet;
+
+use super::ModuleGraph;
+
+impl ModuleGraph {
+    /// Compute the set of public-export keys reachable through the given
+    /// `public_api_entry_points` (an exports-aware set; see module docs).
+    ///
+    /// Keys are `"<root-relative forward-slashed path>::<export name>"`.
+    /// Type-only exports are skipped: a type erased at build carries no runtime
+    /// contract, so it never widens the public *value* surface that 6.A tracks.
+    #[must_use]
+    pub fn public_export_keys(
+        &self,
+        public_api_entry_points: &FxHashSet<FileId>,
+        root: &Path,
+    ) -> FxHashSet<String> {
+        let star_targets = self.public_star_re_export_targets(public_api_entry_points);
+        let mut keys: FxHashSet<String> = FxHashSet::default();
+
+        for module in &self.modules {
+            // The public surface is the exports DECLARED ON a public entry (its
+            // own + the synthetic re-export stubs the graph put there) plus the
+            // exports of any `export *` target reached from a public entry. The
+            // origin module of a NAMED re-export is internal, so its own copy of
+            // the symbol is intentionally NOT keyed (avoids double-counting and
+            // keeps an internal-barrel-only symbol out of the surface).
+            let module_is_public = public_api_entry_points.contains(&module.file_id)
+                || star_targets.contains(&module.file_id);
+            if !module_is_public {
+                continue;
+            }
+            let rel = relativize(&module.path, root);
+            for export in &module.exports {
+                if export.is_type_only {
+                    continue;
+                }
+                keys.insert(format!("{rel}::{}", export.name));
+            }
+        }
+        keys
+    }
+
+    /// The `export *` closure rooted at the public-API entry points: every module
+    /// reachable through a chain of `export * from './x'` edges starting from a
+    /// public entry. Such modules' exports are part of the public surface even
+    /// though the entry never names them.
+    fn public_star_re_export_targets(
+        &self,
+        public_api_entry_points: &FxHashSet<FileId>,
+    ) -> FxHashSet<FileId> {
+        let mut targets: FxHashSet<FileId> = public_api_entry_points
+            .iter()
+            .filter_map(|id| self.modules.get(id.0 as usize))
+            .flat_map(|module| {
+                module
+                    .re_exports
+                    .iter()
+                    .filter(|re| re.exported_name == "*")
+                    .map(|re| re.source_file)
+            })
+            .collect();
+
+        let mut stack: Vec<FileId> = targets.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            let Some(module) = self.modules.get(id.0 as usize) else {
+                continue;
+            };
+            for re in module
+                .re_exports
+                .iter()
+                .filter(|re| re.exported_name == "*")
+            {
+                if targets.insert(re.source_file) {
+                    stack.push(re.source_file);
+                }
+            }
+        }
+        targets
+    }
+}
+
+/// Strip `root` and forward-slash-normalize a module path (mirrors
+/// `impact_closure::relativize` for cross-platform key parity).
+fn relativize(path: &Path, root: &Path) -> String {
+    let rel: PathBuf = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolve::{ResolveResult, ResolvedImport, ResolvedModule, ResolvedReExport};
+    use fallow_types::discover::{DiscoveredFile, EntryPoint, EntryPointSource};
+    use fallow_types::extract::{
+        ExportInfo, ExportName, ImportInfo, ImportedName, ReExportInfo, VisibilityTag,
+    };
+    use std::path::PathBuf;
+
+    fn file(id: u32, path: &str) -> DiscoveredFile {
+        DiscoveredFile {
+            id: FileId(id),
+            path: PathBuf::from(path),
+            size_bytes: 10,
+        }
+    }
+
+    fn named_export(name: &str) -> ExportInfo {
+        ExportInfo {
+            name: ExportName::Named(name.to_string()),
+            local_name: Some(name.to_string()),
+            is_type_only: false,
+            visibility: VisibilityTag::None,
+            expected_unused_reason: None,
+            span: oxc_span::Span::new(0, 20),
+            members: vec![],
+            is_side_effect_used: false,
+            super_class: None,
+        }
+    }
+
+    fn re_export(imported: &str, exported: &str, target: FileId) -> ResolvedReExport {
+        ResolvedReExport {
+            info: ReExportInfo {
+                source: "./impl".to_string(),
+                imported_name: imported.to_string(),
+                exported_name: exported.to_string(),
+                is_type_only: false,
+                span: oxc_span::Span::new(0, 10),
+            },
+            target: ResolveResult::InternalModule(target),
+        }
+    }
+
+    fn named_import(name: &str, target: FileId) -> ResolvedImport {
+        ResolvedImport {
+            info: ImportInfo {
+                source: "./x".to_string(),
+                imported_name: ImportedName::Named(name.to_string()),
+                local_name: name.to_string(),
+                is_type_only: false,
+                from_style: false,
+                span: oxc_span::Span::new(0, 10),
+                source_span: oxc_span::Span::default(),
+            },
+            target: ResolveResult::InternalModule(target),
+        }
+    }
+
+    /// index (0, the exports entry) re-exports `pub` from impl (1, NOT public);
+    /// internal-barrel (2) re-exports `priv` from impl. consumer (3) imports both.
+    fn build_graph() -> (ModuleGraph, FxHashSet<FileId>) {
+        let files = vec![
+            file(0, "/p/index.js"),
+            file(1, "/p/src/impl.ts"),
+            file(2, "/p/src/internal.ts"),
+            file(3, "/p/src/consumer.ts"),
+        ];
+        let entry_points = vec![EntryPoint {
+            path: PathBuf::from("/p/index.js"),
+            source: EntryPointSource::PackageJsonExports,
+        }];
+        let resolved = vec![
+            ResolvedModule {
+                file_id: FileId(0),
+                path: PathBuf::from("/p/index.js"),
+                re_exports: vec![re_export("pub", "pub", FileId(1))],
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(1),
+                path: PathBuf::from("/p/src/impl.ts"),
+                exports: vec![named_export("pub"), named_export("priv")],
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(2),
+                path: PathBuf::from("/p/src/internal.ts"),
+                re_exports: vec![re_export("priv", "priv", FileId(1))],
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(3),
+                path: PathBuf::from("/p/src/consumer.ts"),
+                resolved_imports: vec![
+                    named_import("pub", FileId(0)),
+                    named_import("priv", FileId(2)),
+                ],
+                ..Default::default()
+            },
+        ];
+        let graph = ModuleGraph::build(&resolved, &entry_points, &files);
+        // The exports-mapped entry set: only index.js (PackageJsonExports).
+        let public_entries: FxHashSet<FileId> = std::iter::once(FileId(0)).collect();
+        (graph, public_entries)
+    }
+
+    #[test]
+    fn export_reexported_through_exports_path_is_public() {
+        let (graph, public_entries) = build_graph();
+        let keys = graph.public_export_keys(&public_entries, Path::new("/p"));
+        // `pub` is re-exported through the exports-mapped index.js, so it appears
+        // on the public surface keyed at the entry (the exposed name), not the
+        // internal origin.
+        assert!(
+            keys.contains("index.js::pub"),
+            "exports-reachable symbol must be public: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn export_reexported_only_through_internal_barrel_is_not_public() {
+        let (graph, public_entries) = build_graph();
+        let keys = graph.public_export_keys(&public_entries, Path::new("/p"));
+        // `priv` reaches a consumer ONLY through the internal (non-exports)
+        // barrel, so it is on no public-surface key (neither the entry nor a
+        // star-target).
+        assert!(
+            !keys.iter().any(|k| k.ends_with("::priv")),
+            "internal-barrel-only symbol must NOT be public: {keys:?}"
+        );
+    }
+
+    /// Build the Aisha-repro graph parameterized by which impl symbols exist and
+    /// which is re-exported through the exports-mapped `index.js`. `internal`
+    /// (if present) is re-exported only through the non-exports internal barrel.
+    fn build_aisha_graph(
+        impl_exports: &[&str],
+        exports_reexported: &[&str],
+        internal_reexported: &[&str],
+    ) -> (ModuleGraph, FxHashSet<FileId>) {
+        let files = vec![
+            file(0, "/p/index.js"),
+            file(1, "/p/src/impl.ts"),
+            file(2, "/p/src/internal.ts"),
+        ];
+        let entry_points = vec![EntryPoint {
+            path: PathBuf::from("/p/index.js"),
+            source: EntryPointSource::PackageJsonExports,
+        }];
+        let resolved = vec![
+            ResolvedModule {
+                file_id: FileId(0),
+                path: PathBuf::from("/p/index.js"),
+                re_exports: exports_reexported
+                    .iter()
+                    .map(|n| re_export(n, n, FileId(1)))
+                    .collect(),
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(1),
+                path: PathBuf::from("/p/src/impl.ts"),
+                exports: impl_exports.iter().map(|n| named_export(n)).collect(),
+                ..Default::default()
+            },
+            ResolvedModule {
+                file_id: FileId(2),
+                path: PathBuf::from("/p/src/internal.ts"),
+                re_exports: internal_reexported
+                    .iter()
+                    .map(|n| re_export(n, n, FileId(1)))
+                    .collect(),
+                ..Default::default()
+            },
+        ];
+        let graph = ModuleGraph::build(&resolved, &entry_points, &files);
+        let public_entries: FxHashSet<FileId> = std::iter::once(FileId(0)).collect();
+        (graph, public_entries)
+    }
+
+    #[test]
+    fn done_condition_internal_zero_exports_one() {
+        let root = Path::new("/p");
+        // Base: impl exports `pub`, re-exported through the exports-mapped index.
+        let (base_graph, base_entries) = build_aisha_graph(&["pub"], &["pub"], &[]);
+        let base = base_graph.public_export_keys(&base_entries, root);
+
+        // Head A: add an internal-barrel symbol NOT in exports -> 0 public deltas.
+        let (head_a_graph, head_a_entries) =
+            build_aisha_graph(&["pub", "internalOnly"], &["pub"], &["internalOnly"]);
+        let head_a = head_a_graph.public_export_keys(&head_a_entries, root);
+        let internal_delta: Vec<_> = head_a.difference(&base).collect();
+        assert!(
+            internal_delta.is_empty(),
+            "internal-barrel symbol must yield ZERO public-API delta: {internal_delta:?}"
+        );
+
+        // Head B: add a symbol reachable through the exports path -> exactly 1.
+        let (head_b_graph, head_b_entries) =
+            build_aisha_graph(&["pub", "widget"], &["pub", "widget"], &[]);
+        let head_b = head_b_graph.public_export_keys(&head_b_entries, root);
+        let exports_delta: Vec<_> = head_b.difference(&base).collect();
+        assert_eq!(
+            exports_delta.len(),
+            1,
+            "exports-reachable symbol must yield EXACTLY ONE public-API delta: {exports_delta:?}"
+        );
+        assert_eq!(exports_delta[0], "index.js::widget");
+    }
+
+    #[test]
+    fn type_only_exports_are_skipped() {
+        let files = vec![file(0, "/p/index.ts")];
+        let entry_points = vec![EntryPoint {
+            path: PathBuf::from("/p/index.ts"),
+            source: EntryPointSource::PackageJsonExports,
+        }];
+        let mut type_export = named_export("T");
+        type_export.is_type_only = true;
+        let resolved = vec![ResolvedModule {
+            file_id: FileId(0),
+            path: PathBuf::from("/p/index.ts"),
+            exports: vec![type_export, named_export("v")],
+            ..Default::default()
+        }];
+        let graph = ModuleGraph::build(&resolved, &entry_points, &files);
+        let public_entries: FxHashSet<FileId> = std::iter::once(FileId(0)).collect();
+        let keys = graph.public_export_keys(&public_entries, Path::new("/p"));
+        assert!(keys.contains("index.ts::v"));
+        assert!(!keys.contains("index.ts::T"), "type-only export skipped");
+    }
+}

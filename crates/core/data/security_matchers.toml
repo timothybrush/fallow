@@ -1541,6 +1541,62 @@ callee_patterns = ["xpath.select", "xpath.select1"]
 arg_index = 0
 evidence_template = "Non-literal XPath expression passed to {callee}(). Candidate for verification: confirm user input cannot alter the query (bind variables / validate the expression)."
 
+# ── CWE-1427: Prompt injection into an LLM call (E11) ────────────────────────
+# HONEST SCOPE: this is ONE syntactic taint-gated matcher class, not a coverage
+# headline. It fires only when an UNTRUSTED SOURCE flows into the prompt/messages
+# argument of a known LLM-call sink (a taint PATH into the call, NOT every LLM
+# call), so the false-positive rate stays near zero. It inherits the existing
+# syntactic-taint limits (intra-module, name-based, never a taint proof; ADR-001):
+# inter-procedural flow, aliasing, and source paths the extractor cannot see are
+# blind spots. A candidate means "untrusted input may reach this prompt", which is
+# the CWE-1427 prompt-injection class made live by CVE-2025-59145 (CVSS 9.6: PR
+# prose steered review agents into leaking their own keys). It is NOT a verified
+# injection; the downstream agent confirms the input is attacker-controlled and
+# unsanitized.
+#
+# Every row is `requires_source = true` and `arg_index = 0` (the prompt / messages
+# argument). The callee patterns pin to the distinctive LLM SDK call shapes so the
+# taint gate does the FP control, no per-SDK `enabler` is needed for the first cut
+# (adding one later is pure-additive precision). LangChain's `*.invoke` / `*.call`
+# are DELIBERATELY EXCLUDED: `.invoke` / `.call` are generic member names (RxJS,
+# validators, `Function.prototype.call`, countless libraries) and would over-fire
+# even taint-gated, the same reasoning that excludes `*.find` from nosql-injection
+# and xpath-injection. A LangChain chain/model invoke is a documented blind spot
+# rather than a source of cross-library false positives.
+[[matcher]]
+id = "llm-call-injection"
+cwe = 1427
+title = "Untrusted input reaches an LLM call"
+effect = "network"
+sink_shape = "member-call"
+callee_patterns = [
+  # OpenAI SDK
+  "*.chat.completions.create",
+  "*.completions.create",
+  "*.responses.create",
+  # Anthropic SDK
+  "*.messages.create",
+  # Google GenAI SDK
+  "*.generateContent",
+  "*.generateContentStream",
+]
+arg_index = 0
+requires_source = true
+evidence_template = "Untrusted input reaches the prompt/messages of {callee}() (an LLM call). Candidate for verification: confirm attacker-controlled input cannot inject instructions into the prompt (prompt injection); validate / fence the untrusted segment before it reaches the model."
+
+# Vercel AI SDK top-level helpers are bare calls (`generateText({ prompt })`),
+# not member calls. Same taint gate, same arg index.
+[[matcher]]
+id = "llm-call-injection"
+cwe = 1427
+title = "Untrusted input reaches an LLM call"
+effect = "network"
+sink_shape = "call"
+callee_patterns = ["generateText", "streamText", "generateObject", "streamObject"]
+arg_index = 0
+requires_source = true
+evidence_template = "Untrusted input reaches the prompt/messages of {callee}() (an LLM call). Candidate for verification: confirm attacker-controlled input cannot inject instructions into the prompt (prompt injection); validate / fence the untrusted segment before it reaches the model."
+
 # DEFERRED (needs structural capture or a tighter predicate):
 #   - ReDoS: risky regex LITERAL structure (nested quantifiers); RegExpLiteral is
 #     a literal and never captured. Needs a regex-structural capture hook.

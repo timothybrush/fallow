@@ -543,20 +543,31 @@ use crate::MemberKind;
 /// caches from 180 can miss those synthetic `member_accesses` and surface false
 /// `unused-store-member` findings.
 ///
-/// Bumped to 183 for the Astro/Lit framework-health parity wave: Astro
-/// frontmatter now runs the `oxc_semantic` unused-binding pass (template-used
-/// names credited), so `.astro` modules carry populated `unused_import_bindings`
-/// / `value_referenced_import_bindings` instead of an empty (all-referenced) set;
-/// plus the Lit registered-tag / used-tag and Astro `<template>` complexity
-/// extraction fields. Warm caches from 182 lack these and would mask the new
-/// `unused-export` / `unrendered-component` arms.
+/// Bumped (LLM-call sinks): the security sink argument collectors
+/// (`collect_arg_idents` / `collect_arg_source_paths`) now recurse into array
+/// elements (and the source-path collector into object properties), so taint
+/// riding an object-in-array argument (`messages: [{ content: userInput }]`, the
+/// canonical OpenAI / Anthropic chat shape) surfaces on `SinkSite.arg_idents` /
+/// `arg_source_paths`. Warm caches lack those captured identifiers and would
+/// miss source-backed candidates on the array-nested prompt shape.
 ///
-/// Bumped to 184 for the post-smoke-test FP fixes: standalone `.html` modules now
+/// Bumped for the Astro/Lit framework-health parity wave: Astro frontmatter now
+/// runs the `oxc_semantic` unused-binding pass (template-used names credited), so
+/// `.astro` modules carry populated `unused_import_bindings` /
+/// `value_referenced_import_bindings` instead of an empty (all-referenced) set;
+/// plus the Lit registered-tag / used-tag and Astro `<template>` complexity
+/// extraction fields. Warm caches mask the new `unused-export` /
+/// `unrendered-component` arms.
+///
+/// Bumped for the post-smoke-test FP fixes: standalone `.html` modules now
 /// populate `used_custom_element_tags` (a root `<my-app>` rendered only in
 /// `index.html` no longer false-flags), and imperative `createElement` capture
-/// widened to any receiver (`opts.document.createElement(...)`). Warm 183 caches
-/// carry the narrower tag sets.
-pub(super) const CACHE_VERSION: u32 = 184;
+/// widened to any receiver (`opts.document.createElement(...)`).
+///
+/// Bumped to 185 on merging the agentic-review branch into main: the LLM-call
+/// sink array recursion and the Astro/Lit parity wave land together, so warm
+/// caches from either side (183 or 184) must invalidate.
+pub(super) const CACHE_VERSION: u32 = 185;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.

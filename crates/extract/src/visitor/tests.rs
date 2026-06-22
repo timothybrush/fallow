@@ -639,6 +639,31 @@ fn security_redos_regex_capture_records_literal_regex_application() {
 }
 
 #[test]
+fn security_sink_arg_idents_recurse_into_array_nested_object() {
+    // taint riding an object-in-array argument (the canonical OpenAI /
+    // Anthropic `messages: [{ content: x }]` chat shape) must surface on
+    // `arg_idents`. `openai.chat.completions.create` is a member-call sink with
+    // arg-index 0 carrying the nested array-of-objects.
+    let info = parse(
+        "const prompt = req.body.prompt; \
+         openai.chat.completions.create({ messages: [{ role: \"user\", content: prompt }] });",
+    );
+    let sink = info
+        .security_sinks
+        .iter()
+        .find(|sink| sink.callee_path == "openai.chat.completions.create")
+        .expect("LLM-call sink captured");
+
+    assert_eq!(sink.sink_shape, SinkShape::MemberCall);
+    assert_eq!(sink.arg_index, 0);
+    assert!(
+        sink.arg_idents.iter().any(|n| n == "prompt"),
+        "array-nested object property identifier must surface, got: {:?}",
+        sink.arg_idents
+    );
+}
+
+#[test]
 fn security_redos_regex_capture_records_const_regexp_application() {
     let sink = redos_regex_sink(r#"const re = new RegExp("^(a+)+$"); re.test(req.body.value);"#);
 

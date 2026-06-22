@@ -50,6 +50,11 @@ fn build_inspect_args(params: &InspectTargetParams) -> Result<Vec<String>, Strin
             require_non_empty("target.file", file)?;
             require_non_empty("target.export_name", export_name)?;
             args.extend(["--symbol".to_string(), format!("{file}:{export_name}")]);
+            // OPT-IN: the symbol-level call chain is only meaningful for a
+            // symbol target, and only attached when explicitly requested.
+            if params.symbol_chain == Some(true) {
+                args.push("--symbol-chain".to_string());
+            }
         }
     }
 
@@ -79,6 +84,7 @@ mod tests {
             target: InspectTarget::File {
                 file: "src/api.ts".to_string(),
             },
+            symbol_chain: None,
         };
 
         let args = build_inspect_args(&params).unwrap();
@@ -86,5 +92,69 @@ mod tests {
         assert!(args.contains(&"--no-production".to_string()));
         assert!(args.windows(2).any(|pair| pair == ["--workspace", "pkg-a"]));
         assert!(!args.contains(&"--production".to_string()));
+    }
+
+    #[test]
+    fn symbol_chain_opt_in_forwards_flag_only_for_symbol_target() {
+        let params = InspectTargetParams {
+            root: None,
+            config: None,
+            no_cache: None,
+            threads: None,
+            production: None,
+            workspace: None,
+            target: InspectTarget::Symbol {
+                file: "src/api.ts".to_string(),
+                export_name: "handler".to_string(),
+            },
+            symbol_chain: Some(true),
+        };
+
+        let args = build_inspect_args(&params).unwrap();
+        assert!(args.contains(&"--symbol-chain".to_string()));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--symbol", "src/api.ts:handler"])
+        );
+    }
+
+    #[test]
+    fn symbol_chain_default_off_omits_flag() {
+        let params = InspectTargetParams {
+            root: None,
+            config: None,
+            no_cache: None,
+            threads: None,
+            production: None,
+            workspace: None,
+            target: InspectTarget::Symbol {
+                file: "src/api.ts".to_string(),
+                export_name: "handler".to_string(),
+            },
+            symbol_chain: None,
+        };
+
+        let args = build_inspect_args(&params).unwrap();
+        assert!(!args.contains(&"--symbol-chain".to_string()));
+    }
+
+    #[test]
+    fn symbol_chain_ignored_for_file_target() {
+        let params = InspectTargetParams {
+            root: None,
+            config: None,
+            no_cache: None,
+            threads: None,
+            production: None,
+            workspace: None,
+            target: InspectTarget::File {
+                file: "src/api.ts".to_string(),
+            },
+            symbol_chain: Some(true),
+        };
+
+        let args = build_inspect_args(&params).unwrap();
+        // A file target carries no symbol, so the chain flag is never forwarded.
+        assert!(!args.contains(&"--symbol-chain".to_string()));
     }
 }

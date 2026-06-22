@@ -24,6 +24,42 @@ mod api;
     reason = "shared CLI library compiles bin-oriented support modules for reuse"
 )]
 pub mod audit;
+/// `fallow audit --brief` (alias `fallow review`): deterministic, always-exit-0
+/// rendering mode layered over the audit analysis. Public so the schema-emit
+/// binary can derive the `ReviewBriefOutput` envelope.
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "shared CLI library compiles bin-oriented support modules for reuse"
+)]
+pub mod audit_brief;
+/// Decision-surface extractor (stage 6 / 6.G): the apex of the review brief.
+/// Public so the schema-emit binary can derive the `DecisionSurface` types.
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "shared CLI library compiles bin-oriented support modules for reuse"
+)]
+pub mod audit_decision_surface;
+/// Weighted focus map (stage 4): the composite attention score per review unit
+/// plus the no-skip labels, confidence flags, and escape hatch. Public so the
+/// schema-emit binary can derive the `FocusMap` types.
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "shared CLI library compiles bin-oriented support modules for reuse"
+)]
+pub mod audit_focus;
+/// Agent-contract loop (the codiff pattern, graph-extended): the walkthrough
+/// guide (digest + schema + graph-snapshot pin) and the `--walkthrough-file`
+/// post-validation against the live graph. Public so the schema-emit binary can
+/// derive the guide + validation envelopes.
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "shared CLI library compiles bin-oriented support modules for reuse"
+)]
+pub mod audit_walkthrough;
 #[allow(
     dead_code,
     unused_imports,

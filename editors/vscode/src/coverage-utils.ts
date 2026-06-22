@@ -106,18 +106,6 @@ export const sortHotPaths = (
   return hotPaths.toSorted((a, b) => b.invocations - a.invocations);
 };
 
-/**
- * Total renderable items across the hot-paths group and both cleanup buckets,
- * used for the view badge.
- */
-export const countCoverageItems = (report: RuntimeCoverageReport | null): number => {
-  if (!report) {
-    return 0;
-  }
-  const { safeToDelete, reviewRequired } = splitCleanupCandidates(report);
-  return (report.hot_paths?.length ?? 0) + safeToDelete.length + reviewRequired.length;
-};
-
 /** Exit code the CLI emits when the runtime-coverage license gate rejects. */
 const COVERAGE_EXIT_LICENSE = 3;
 /** Exit code the CLI emits when sidecar discovery fails. */

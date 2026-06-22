@@ -558,6 +558,15 @@ pub struct InspectEvidence {
     pub duplication: InspectEvidenceSection,
     pub complexity: InspectEvidenceSection,
     pub security: InspectEvidenceSection,
+    /// Impact closure scoped to the inspected file as the seed: the transitive
+    /// affected-but-not-in-diff set + coordination gap.
+    pub impact_closure: InspectEvidenceSection,
+    /// OPT-IN symbol-level call chain. Present only when `--symbol-chain` was
+    /// requested AND the target is a SYMBOL (best-effort, syntactic, OFF the
+    /// ranked path). `None` (omitted) by default: symbol-level chains are
+    /// best-effort and not part of the trusted ranked evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_chain: Option<InspectEvidenceSection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1142,6 +1151,13 @@ pub enum FallowOutput {
     /// `evidence`, and `warnings`; no `schema_version`.
     #[serde(rename = "inspect_target")]
     Inspect(InspectOutput),
+    /// `fallow trace <symbol> --format json` (symbol-level call chains).
+    /// Required `file`, `symbol`, `symbol_found`, `depth`, `best_effort`,
+    /// `reason`; optional `callers`, `callees`, `unresolved_callees`. Its OWN
+    /// surface, best-effort and EXPLICITLY OFF the ranked path: NEVER folded
+    /// into the ranked brief and NEVER a focus-map input.
+    #[serde(rename = "trace")]
+    Trace(fallow_core::trace_chain::SymbolChainTrace),
     /// `fallow --format review-github` / `--format review-gitlab`. Required
     /// `body`, `comments`, `meta`; no `schema_version`.
     #[serde(rename = "review-envelope")]
@@ -1218,6 +1234,30 @@ pub enum FallowOutput {
     /// `check`, `dupes`, and `health` subreports.
     #[serde(rename = "combined")]
     Combined(CombinedOutput),
+    /// `fallow audit --brief --format json` (alias `fallow review`). Required
+    /// `schema_version`, `version`, `command: "audit-brief"`, `triage`, and
+    /// `graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;
+    /// always emitted with exit 0.
+    #[serde(rename = "audit-brief")]
+    AuditBrief(crate::audit_brief::ReviewBriefOutput),
+    /// `fallow decision-surface --format json` (the `decision_surface` MCP tool's
+    /// output). The separable, cheap apex: a ranked, capped, signal_id-anchored
+    /// set of consequential structural decisions framed as judgment questions,
+    /// each with structured `actions[]`. Independently versioned; always exit 0.
+    #[serde(rename = "decision-surface")]
+    DecisionSurface(crate::audit_decision_surface::DecisionSurfaceOutput),
+    /// `fallow review --walkthrough-guide --format json`. The digest +
+    /// schema the agent fetches: the brief + decision surface, the review
+    /// direction, the graph-snapshot pin, and the embedded agent schema. The
+    /// digest is graph-derived only (injection-resistant). Always exit 0.
+    #[serde(rename = "review-walkthrough-guide")]
+    WalkthroughGuide(crate::audit_walkthrough::WalkthroughGuide),
+    /// `fallow review --walkthrough-file --format json`. The post-validation
+    /// of an agent's judgment JSON against the live graph: accepted (anchored,
+    /// framing fenced), rejected (unanchored), and a stale flag (the tree moved).
+    /// The verifier is the graph, never a second model. Always exit 0.
+    #[serde(rename = "review-walkthrough-validation")]
+    WalkthroughValidation(crate::audit_walkthrough::WalkthroughValidation),
 }
 
 #[cfg(test)]

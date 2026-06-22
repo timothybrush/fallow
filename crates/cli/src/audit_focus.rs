@@ -1,0 +1,695 @@
+//! Weighted focus map (stage 4): a COMPOSITE attention score per review unit
+//! that ranks where scarce reviewer attention goes.
+//!
+//! A 40-file diff becomes a handful of `review-here` pieces plus an enumerable
+//! `not-prioritized` remainder. The free tier RANKS but NEVER says "skip" (safe
+//! explicit-skip is paid, runtime-backed only); each unit carries a human
+//! reason; a per-unit confidence flag protects dynamically-wired / re-export-heavy
+//! code from a silent static-reachability de-prioritization; and the
+//! `deprioritized` escape-hatch list makes EVERY de-prioritized piece reachable.
+//!
+//! ## The composite score (deterministic, no runtime input)
+//!
+//! `score = fan_io + security_taint + risk_zone + change_shape`, an integer sum
+//! (no floats, matching the partition + order engine's determinism posture) of four deterministic signals,
+//! each derived from data the brief already retains:
+//!
+//! 1. **fan-in / fan-out** (graph blast): from `ModuleGraph::focus_file_facts`.
+//! 2. **security taint touch**: a source -> sink taint trace touches the unit
+//!    (reuse `SecurityFinding.trace`). Built as a pure function of a security-
+//!    finding slice; the brief path carries an EMPTY slice today (security is the
+//!    opt-in `fallow security` command, not the bare dead-code analysis), so this
+//!    contributes 0 until a future epic threads a security pass. The seam is wired
+//!    and tested; no taint engine runs here.
+//! 3. **risk zone**: boundary / public-API / security-sensitive.
+//! 4. **change shape**: new export / widened visibility / signature change (the
+//!    coordination-gap proxy, ADR-001 syntactic).
+//!
+//! ## The runtime seam (documented, NOT built)
+//!
+//! `FocusScore` keeps the four component sub-scores on the wire so the paid
+//! runtime layer can multiply a runtime hot/cold weight into `total` WITHOUT recomputing the
+//! deterministic signals. The single `// runtime seam` marker sits at the point the
+//! components are summed. No runtime field, no runtime read, no runtime gate here:
+//! free mode is the complete surface.
+
+use serde::Serialize;
+
+use fallow_core::graph::FocusFileFactsPaths;
+
+/// A unit's score at or above this threshold is labeled [`FocusLabel::ReviewHere`];
+/// below it, [`FocusLabel::NotPrioritized`]. Tuned so a unit with any non-trivial
+/// blast or a single risk-zone / change-shape signal lands above the line, while a
+/// fully isolated change (no fan-in, no zone, no change-shape) lands below it.
+const REVIEW_HERE_THRESHOLD: u32 = 3;
+
+/// Fan-in (blast radius) is the stage-4 priority signal; weight it higher than
+/// fan-out. Each is capped at [`FAN_CAP`] so one extreme-fan-in file does not
+/// swamp the bounded zone / change-shape signals.
+const FAN_IN_WEIGHT: u32 = 2;
+/// Fan-out weight (forward-dependency breadth), lower than fan-in.
+const FAN_OUT_WEIGHT: u32 = 1;
+/// Cap on the raw fan-in / fan-out count before weighting, so the blast signal
+/// stays bounded relative to the other three.
+const FAN_CAP: u32 = 5;
+/// Points added per present risk zone (boundary / public-API / security-sensitive).
+const RISK_ZONE_WEIGHT: u32 = 2;
+/// Points added per present change-shape signal (new/widened export, sig change).
+const CHANGE_SHAPE_WEIGHT: u32 = 2;
+/// Points added when a unit sits on a security source -> sink taint trace.
+const SECURITY_TAINT_WEIGHT: u32 = 3;
+
+/// The focus label for a review unit. EXACTLY two variants: `Skip` is NOT
+/// representable, so the type system is the guarantee that free mode never emits
+/// a `skip` label (safe explicit-skip is paid, runtime-backed only). Mirrors
+/// the decision surface's "cut category not representable" structural posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum FocusLabel {
+    /// Review this unit: its composite attention score is at or above the line.
+    ReviewHere,
+    /// Not prioritized: below the line. NEVER "skip" (the reviewer is free to
+    /// review it anyway; the escape hatch enumerates every such unit).
+    NotPrioritized,
+}
+
+impl FocusLabel {
+    /// The wire token. The no-skip done-condition test asserts no label's token
+    /// is ever `"skip"`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::ReviewHere => "review-here",
+            Self::NotPrioritized => "not-prioritized",
+        }
+    }
+}
+
+/// A per-unit confidence flag. The EXACT panel-decided strings: a dynamically-
+/// wired or re-export-heavy unit carries one so its static-reachability signal is
+/// not trusted as complete (the anti-silent-de-prioritization guard). The flag
+/// NEVER lowers the score; it is advisory provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfidenceFlag {
+    /// The unit is dynamically wired (DI / decorators / plugin-loader / lazy
+    /// patterns the static graph cannot fully resolve).
+    DynamicDispatch,
+    /// The unit's reachability runs through re-export barrels.
+    ReExportIndirection,
+}
+
+impl ConfidenceFlag {
+    /// The EXACT panel-decided wire string for this flag.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::DynamicDispatch => "low: dynamic dispatch detected",
+            Self::ReExportIndirection => "low: re-export indirection",
+        }
+    }
+}
+
+/// The composite attention score, with the four deterministic component
+/// sub-scores kept on the wire so the runtime seam can re-weight `total`
+/// without recomputing the signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FocusScore {
+    /// Fan-in/out blast-radius component.
+    pub fan_io: u32,
+    /// Security source -> sink taint-touch component (0 until a security pass is
+    /// threaded onto the brief path; the seam is built and tested).
+    pub security_taint: u32,
+    /// Risk-zone component (boundary / public-API / security-sensitive).
+    pub risk_zone: u32,
+    /// Change-shape component (new/widened export, signature change proxy).
+    pub change_shape: u32,
+    /// The summed total. The paid runtime layer multiplies a runtime hot/cold weight in here.
+    pub total: u32,
+}
+
+/// One review unit on the focus map: its file, composite score, label, human
+/// reason, and any confidence flags.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FocusUnit {
+    /// Root-relative path of the changed file this unit covers.
+    pub file: String,
+    /// The composite attention score and its component breakdown.
+    pub score: FocusScore,
+    /// The focus label (`review-here` / `not-prioritized`; NEVER `skip`).
+    pub label: FocusLabel,
+    /// A human-readable reason for the label, built from the present signals.
+    pub reason: String,
+    /// Confidence flags (advisory; never lower the score). Sorted, deduped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confidence: Vec<ConfidenceFlag>,
+}
+
+/// The weighted focus map: the ranked `review-here` units plus the FULL
+/// `deprioritized` escape-hatch list, so nothing is hidden.
+///
+/// Completeness invariant (the escape-hatch done-condition): the two lists
+/// partition the unit set, so `review_here.len() + deprioritized.len()` equals
+/// the total unit count by construction.
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FocusMap {
+    /// Units labeled `review-here`, ranked by composite score (descending), ties
+    /// broken by path for determinism.
+    pub review_here: Vec<FocusUnit>,
+    /// EVERY `not-prioritized` unit (the escape hatch). Always present and fully
+    /// enumerated so a reviewer can always "show me what you de-prioritized"; the
+    /// human brief collapses it by default and re-expands under
+    /// `--show-deprioritized`.
+    pub deprioritized: Vec<FocusUnit>,
+}
+
+impl FocusMap {
+    /// Total number of units (review-here + deprioritized). The escape-hatch
+    /// completeness invariant: this equals the input unit count.
+    #[must_use]
+    pub fn total_units(&self) -> usize {
+        self.review_here.len() + self.deprioritized.len()
+    }
+}
+
+/// A boundary-zone signal for a unit: the unit's file introduced a new cross-zone
+/// edge (it is the `from_file` of an introduced boundary edge).
+#[derive(Debug, Clone)]
+pub struct BoundaryZoneFile {
+    /// Root-relative path of the importing file that introduced the edge.
+    pub from_file: String,
+}
+
+/// Everything the focus extractor needs, gathered from the assembled brief data.
+/// All path-spaces are root-relative + forward-slashed (the brief's canonical
+/// space), so signal joins are byte-exact.
+pub struct FocusInputs<'a> {
+    /// Per-file graph facts (fan-in/out + confidence-flag signals) from
+    /// `ModuleGraph::focus_file_facts`, path-resolved. The unit spine.
+    pub graph_facts: &'a [FocusFileFactsPaths],
+    /// Root-relative `from_file`s of introduced boundary edges. A unit file
+    /// in this set carries the boundary risk-zone signal.
+    pub boundary_files: &'a [BoundaryZoneFile],
+    /// The exports-aware public-API surface delta keys (`<rel_path>::<name>`).
+    /// A unit file that is the `<rel_path>` prefix of any key carries the
+    /// public-API risk-zone AND new/widened-export change-shape signals.
+    pub public_api_added: &'a [String],
+    /// Root-relative changed-file paths that changed a contract consumed outside
+    /// the diff (coordination-gap `changed_file`s). A unit file here carries
+    /// the signature-change change-shape signal (syntactic proxy, ADR-001).
+    pub coordination_changed_files: &'a [String],
+    /// Root-relative file paths a security source -> sink taint trace touches
+    /// (reuse `SecurityFinding.trace`). EMPTY on the brief path today (the taint
+    /// engine is the opt-in `fallow security` command); the seam lights up the
+    /// moment a security pass is threaded, with no focus-map code change.
+    pub taint_touched_files: &'a [String],
+}
+
+/// Whether a unit `file` is the `<rel_path>` prefix of any public-API delta key
+/// (`<rel_path>::<name>`).
+fn file_in_public_api(file: &str, public_api_added: &[String]) -> bool {
+    public_api_added
+        .iter()
+        .any(|key| key.split("::").next() == Some(file))
+}
+
+/// Compute one unit's composite score from the present signals.
+fn score_unit(facts: &FocusFileFactsPaths, inputs: &FocusInputs<'_>) -> FocusScore {
+    let fan_io =
+        facts.fan_in.min(FAN_CAP) * FAN_IN_WEIGHT + facts.fan_out.min(FAN_CAP) * FAN_OUT_WEIGHT;
+
+    let taint_touched = inputs.taint_touched_files.iter().any(|f| f == &facts.file);
+    let security_taint = if taint_touched {
+        SECURITY_TAINT_WEIGHT
+    } else {
+        0
+    };
+
+    let in_boundary = inputs
+        .boundary_files
+        .iter()
+        .any(|b| b.from_file == facts.file);
+    let in_public_api = file_in_public_api(&facts.file, inputs.public_api_added);
+    // SECURITY-SENSITIVE risk zone reuses the taint-touch signal.
+    let zones = u32::from(in_boundary) + u32::from(in_public_api) + u32::from(taint_touched);
+    let risk_zone = zones * RISK_ZONE_WEIGHT;
+
+    // NEW/WIDENED EXPORT (public-API delta) + SIGNATURE CHANGE (coordination-gap
+    // proxy). DELETED SYMBOL is deferred (no per-symbol deletion delta on the
+    // brief path); it is a future change-shape multiply-in, scores 0 today.
+    let new_export = in_public_api;
+    let sig_change = inputs
+        .coordination_changed_files
+        .iter()
+        .any(|f| f == &facts.file);
+    let shapes = u32::from(new_export) + u32::from(sig_change);
+    let change_shape = shapes * CHANGE_SHAPE_WEIGHT;
+
+    // runtime seam: the paid runtime layer multiplies a runtime hot/cold weight into `total` here,
+    // reading the per-unit runtime coverage and scaling the deterministic sum so a
+    // hot path amplifies the blast. The four component sub-scores stay on the wire
+    // so it re-weights WITHOUT recomputing the signals. Free mode is the
+    // complete surface; the paid layer degrades cleanly to it when no runtime data.
+    let total = fan_io + security_taint + risk_zone + change_shape;
+
+    FocusScore {
+        fan_io,
+        security_taint,
+        risk_zone,
+        change_shape,
+        total,
+    }
+}
+
+/// Build the human reason for a unit from the present signals.
+fn build_reason(
+    facts: &FocusFileFactsPaths,
+    score: &FocusScore,
+    inputs: &FocusInputs<'_>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if facts.fan_in > 0 {
+        parts.push(format!(
+            "high fan-in ({} importer{})",
+            facts.fan_in,
+            if facts.fan_in == 1 { "" } else { "s" }
+        ));
+    }
+    if facts.fan_out > 0 {
+        parts.push(format!("fan-out {}", facts.fan_out));
+    }
+    if score.security_taint > 0 {
+        parts.push("on a security taint path".to_string());
+    }
+    if inputs
+        .boundary_files
+        .iter()
+        .any(|b| b.from_file == facts.file)
+    {
+        parts.push("introduces a cross-zone edge".to_string());
+    }
+    if file_in_public_api(&facts.file, inputs.public_api_added) {
+        parts.push("widens the public API".to_string());
+    }
+    if inputs
+        .coordination_changed_files
+        .iter()
+        .any(|f| f == &facts.file)
+    {
+        parts.push("changes a contract consumed outside the diff".to_string());
+    }
+    if parts.is_empty() {
+        "isolated change, no blast beyond the diff".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// Collect a unit's confidence flags from its graph facts (sorted, deduped).
+fn confidence_flags(facts: &FocusFileFactsPaths) -> Vec<ConfidenceFlag> {
+    let mut flags: Vec<ConfidenceFlag> = Vec::new();
+    if facts.dynamic_dispatch {
+        flags.push(ConfidenceFlag::DynamicDispatch);
+    }
+    if facts.re_export_indirection {
+        flags.push(ConfidenceFlag::ReExportIndirection);
+    }
+    flags
+}
+
+/// Build the weighted focus map from the assembled brief inputs: score each unit,
+/// label it (`review-here` / `not-prioritized`, NEVER `skip`), attach the reason
+/// and confidence flags, then partition into the ranked `review_here` list and
+/// the FULL `deprioritized` escape-hatch list.
+///
+/// Pure + deterministic: no timestamps, no randomness, integer arithmetic only,
+/// so two runs over the same tree produce a byte-identical focus map. The two
+/// output lists partition the unit set, so the escape-hatch completeness invariant
+/// (`review_here.len() + deprioritized.len() == graph_facts.len()`) holds by
+/// construction.
+#[must_use]
+pub fn build_focus_map(inputs: &FocusInputs<'_>) -> FocusMap {
+    let mut units: Vec<FocusUnit> = inputs
+        .graph_facts
+        .iter()
+        .map(|facts| {
+            let score = score_unit(facts, inputs);
+            let label = if score.total >= REVIEW_HERE_THRESHOLD {
+                FocusLabel::ReviewHere
+            } else {
+                FocusLabel::NotPrioritized
+            };
+            let reason = build_reason(facts, &score, inputs);
+            FocusUnit {
+                file: facts.file.clone(),
+                score,
+                label,
+                reason,
+                confidence: confidence_flags(facts),
+            }
+        })
+        .collect();
+
+    // Rank by score descending, ties broken by path for determinism.
+    units.sort_by(|a, b| {
+        b.score
+            .total
+            .cmp(&a.score.total)
+            .then_with(|| a.file.cmp(&b.file))
+    });
+
+    let mut review_here: Vec<FocusUnit> = Vec::new();
+    let mut deprioritized: Vec<FocusUnit> = Vec::new();
+    for unit in units {
+        match unit.label {
+            FocusLabel::ReviewHere => review_here.push(unit),
+            FocusLabel::NotPrioritized => deprioritized.push(unit),
+        }
+    }
+    // The deprioritized escape hatch is path-sorted (stable enumeration order).
+    deprioritized.sort_by(|a, b| a.file.cmp(&b.file));
+
+    FocusMap {
+        review_here,
+        deprioritized,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts(
+        file: &str,
+        fan_in: u32,
+        fan_out: u32,
+        dynamic: bool,
+        re_export: bool,
+    ) -> FocusFileFactsPaths {
+        FocusFileFactsPaths {
+            file: file.to_string(),
+            fan_in,
+            fan_out,
+            dynamic_dispatch: dynamic,
+            re_export_indirection: re_export,
+        }
+    }
+
+    fn inputs<'a>(
+        graph_facts: &'a [FocusFileFactsPaths],
+        boundary_files: &'a [BoundaryZoneFile],
+        public_api_added: &'a [String],
+        coordination_changed_files: &'a [String],
+        taint_touched_files: &'a [String],
+    ) -> FocusInputs<'a> {
+        FocusInputs {
+            graph_facts,
+            boundary_files,
+            public_api_added,
+            coordination_changed_files,
+            taint_touched_files,
+        }
+    }
+
+    // (a) NO `skip` label is ever emitted in free mode. The enum has no Skip
+    // variant; the test pins the serialized strings of every produced label.
+    #[test]
+    fn no_skip_label_ever_emitted_in_free_mode() {
+        let gf = vec![
+            facts("src/hot.ts", 12, 3, false, false), // review-here
+            facts("src/iso.ts", 0, 0, false, false),  // not-prioritized
+        ];
+        let map = build_focus_map(&inputs(&gf, &[], &[], &[], &[]));
+        let all_units: Vec<&FocusUnit> = map
+            .review_here
+            .iter()
+            .chain(map.deprioritized.iter())
+            .collect();
+        assert!(!all_units.is_empty());
+        for unit in all_units {
+            let token = unit.label.token();
+            assert_ne!(token, "skip", "free mode must never emit a skip label");
+            assert!(
+                token == "review-here" || token == "not-prioritized",
+                "unexpected label token {token}"
+            );
+        }
+        // Serialized JSON must not carry the token "skip" anywhere either.
+        let json = serde_json::to_string(&map).expect("serialize");
+        assert!(
+            !json.contains("\"skip\""),
+            "serialized focus map leaked a skip label: {json}"
+        );
+    }
+
+    // (b) Every de-prioritized unit is enumerable via the escape hatch:
+    // count(review_here) + count(deprioritized) == count(all).
+    #[test]
+    fn escape_hatch_enumerates_every_deprioritized_unit() {
+        let gf = vec![
+            facts("src/a.ts", 12, 4, false, false), // review-here
+            facts("src/b.ts", 0, 0, false, false),  // not-prioritized
+            facts("src/c.ts", 1, 0, false, false),  // not-prioritized (score 2 < 3)
+            facts("src/d.ts", 8, 0, false, false),  // review-here
+        ];
+        let map = build_focus_map(&inputs(&gf, &[], &[], &[], &[]));
+        assert_eq!(
+            map.total_units(),
+            gf.len(),
+            "every unit must be reachable via review-here OR deprioritized"
+        );
+        // The deprioritized list is the escape hatch: nothing is hidden.
+        assert!(!map.deprioritized.is_empty());
+        // No file appears in both lists (a strict partition).
+        for d in &map.deprioritized {
+            assert!(
+                !map.review_here.iter().any(|r| r.file == d.file),
+                "{} is in both lists",
+                d.file
+            );
+        }
+    }
+
+    // (c) A dynamically-wired unit carries the `low: dynamic dispatch detected`
+    // flag; a re-export-indirection unit carries `low: re-export indirection`.
+    #[test]
+    fn dynamic_and_re_export_units_carry_low_confidence_flags() {
+        let gf = vec![
+            facts("src/dyn.ts", 0, 0, true, false),
+            facts("src/barrel.ts", 0, 0, false, true),
+            facts("src/both.ts", 0, 0, true, true),
+        ];
+        let map = build_focus_map(&inputs(&gf, &[], &[], &[], &[]));
+        let all: Vec<&FocusUnit> = map
+            .review_here
+            .iter()
+            .chain(map.deprioritized.iter())
+            .collect();
+        let find = |file: &str| all.iter().find(|u| u.file == file).expect("unit present");
+
+        let dyn_unit = find("src/dyn.ts");
+        assert!(
+            dyn_unit
+                .confidence
+                .contains(&ConfidenceFlag::DynamicDispatch),
+            "dynamic unit must carry the dynamic-dispatch flag"
+        );
+        assert_eq!(
+            ConfidenceFlag::DynamicDispatch.message(),
+            "low: dynamic dispatch detected"
+        );
+
+        let barrel = find("src/barrel.ts");
+        assert!(
+            barrel
+                .confidence
+                .contains(&ConfidenceFlag::ReExportIndirection),
+            "barrel unit must carry the re-export-indirection flag"
+        );
+        assert_eq!(
+            ConfidenceFlag::ReExportIndirection.message(),
+            "low: re-export indirection"
+        );
+
+        let both = find("src/both.ts");
+        assert_eq!(both.confidence.len(), 2, "both flags present");
+    }
+
+    #[test]
+    fn confidence_flag_never_lowers_the_score() {
+        // Two identical-signal units, one with confidence flags: same total.
+        let plain = facts("src/plain.ts", 5, 0, false, false);
+        let flagged = facts("src/flagged.ts", 5, 0, true, true);
+        let plain_map = build_focus_map(&inputs(&[plain], &[], &[], &[], &[]));
+        let flagged_map = build_focus_map(&inputs(&[flagged], &[], &[], &[], &[]));
+        let plain_total = plain_map
+            .review_here
+            .iter()
+            .chain(plain_map.deprioritized.iter())
+            .next()
+            .unwrap()
+            .score
+            .total;
+        let flagged_total = flagged_map
+            .review_here
+            .iter()
+            .chain(flagged_map.deprioritized.iter())
+            .next()
+            .unwrap()
+            .score
+            .total;
+        assert_eq!(
+            plain_total, flagged_total,
+            "flags are advisory, not a penalty"
+        );
+    }
+
+    #[test]
+    fn risk_zone_and_change_shape_signals_raise_the_score() {
+        let gf = vec![facts("src/api.ts", 0, 0, false, false)];
+        let public_api = vec!["src/api.ts::Widget".to_string()];
+        let map = build_focus_map(&inputs(&gf, &[], &public_api, &[], &[]));
+        let unit = map
+            .review_here
+            .iter()
+            .chain(map.deprioritized.iter())
+            .next()
+            .unwrap();
+        // public-API delta -> risk_zone (+2) AND change_shape new-export (+2) = 4.
+        assert_eq!(unit.score.risk_zone, RISK_ZONE_WEIGHT);
+        assert_eq!(unit.score.change_shape, CHANGE_SHAPE_WEIGHT);
+        assert_eq!(unit.label, FocusLabel::ReviewHere);
+        assert!(unit.reason.contains("public API"));
+    }
+
+    #[test]
+    fn security_taint_seam_is_zero_with_empty_findings_and_lights_up_with_a_touch() {
+        let gf = vec![facts("src/sink.ts", 0, 0, false, false)];
+        // Empty taint slice (the brief-path reality today): seam contributes 0.
+        let no_taint = build_focus_map(&inputs(&gf, &[], &[], &[], &[]));
+        let no_taint_unit = no_taint
+            .review_here
+            .iter()
+            .chain(no_taint.deprioritized.iter())
+            .next()
+            .unwrap();
+        assert_eq!(no_taint_unit.score.security_taint, 0);
+        assert_eq!(no_taint_unit.label, FocusLabel::NotPrioritized);
+
+        // A future security pass threads the touched file: the seam lights up.
+        let touched = vec!["src/sink.ts".to_string()];
+        let with_taint = build_focus_map(&inputs(&gf, &[], &[], &[], &touched));
+        let taint_unit = with_taint
+            .review_here
+            .iter()
+            .chain(with_taint.deprioritized.iter())
+            .next()
+            .unwrap();
+        assert_eq!(taint_unit.score.security_taint, SECURITY_TAINT_WEIGHT);
+        // taint -> also a security-sensitive risk zone (+2).
+        assert_eq!(taint_unit.score.risk_zone, RISK_ZONE_WEIGHT);
+        assert_eq!(taint_unit.label, FocusLabel::ReviewHere);
+    }
+
+    #[test]
+    fn coordination_gap_drives_signature_change_shape() {
+        let gf = vec![facts("src/core.ts", 0, 0, false, false)];
+        let coordination = vec!["src/core.ts".to_string()];
+        let map = build_focus_map(&inputs(&gf, &[], &[], &coordination, &[]));
+        let unit = map
+            .review_here
+            .iter()
+            .chain(map.deprioritized.iter())
+            .next()
+            .unwrap();
+        assert_eq!(unit.score.change_shape, CHANGE_SHAPE_WEIGHT);
+        assert!(unit.reason.contains("contract consumed outside the diff"));
+    }
+
+    #[test]
+    fn focus_map_is_byte_identical_across_runs() {
+        let gf = vec![
+            facts("src/a.ts", 5, 2, true, false),
+            facts("src/b.ts", 0, 0, false, true),
+            facts("src/c.ts", 3, 1, false, false),
+        ];
+        let boundary = vec![BoundaryZoneFile {
+            from_file: "src/a.ts".to_string(),
+        }];
+        let public_api = vec!["src/c.ts::Thing".to_string()];
+        let first = build_focus_map(&inputs(&gf, &boundary, &public_api, &[], &[]));
+        let second = build_focus_map(&inputs(&gf, &boundary, &public_api, &[], &[]));
+        let s1 = serde_json::to_string_pretty(&first).unwrap();
+        let s2 = serde_json::to_string_pretty(&second).unwrap();
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn review_here_is_ranked_by_score_descending() {
+        let gf = vec![
+            facts("src/low.ts", 2, 0, false, false),   // score 4
+            facts("src/high.ts", 12, 5, false, false), // score capped high
+        ];
+        let public_api = vec!["src/low.ts::X".to_string()];
+        let map = build_focus_map(&inputs(&gf, &[], &public_api, &[], &[]));
+        // Both should be review-here; high.ts ranks first.
+        assert_eq!(map.review_here.len(), 2);
+        assert!(map.review_here[0].score.total >= map.review_here[1].score.total);
+        assert_eq!(map.review_here[0].file, "src/high.ts");
+    }
+
+    // done-condition (c): the symbol-level call chain (`fallow trace`) is
+    // EXPLICITLY OFF the ranked path. The focus-map ranking inputs
+    // (`FocusInputs`) carry NO trace / symbol-chain field, and the composite
+    // `FocusScore.total` is the sum of EXACTLY the four documented components
+    // (no symbol-chain term). This pins the trace as never feeding
+    // de-prioritization.
+    #[test]
+    fn focus_map_inputs_have_no_symbol_chain_or_trace_field() {
+        // FocusInputs is the complete input surface to the focus map. Naming
+        // every field here is exhaustive (the struct is `pub` with no `..`), so
+        // adding a trace/symbol-chain field would force this destructure to be
+        // updated -- a compile-time guard that the trace stays out of the ranking
+        // inputs.
+        let empty_facts: &[FocusFileFactsPaths] = &[];
+        let empty_boundary: &[BoundaryZoneFile] = &[];
+        let empty_strings: &[String] = &[];
+        let FocusInputs {
+            graph_facts: _,
+            boundary_files: _,
+            public_api_added: _,
+            coordination_changed_files: _,
+            taint_touched_files: _,
+            // NOTE: no `symbol_chain` / `trace` field exists. If the trace ever wired
+            // one in, this destructure would fail to compile.
+        } = inputs(
+            empty_facts,
+            empty_boundary,
+            empty_strings,
+            empty_strings,
+            empty_strings,
+        );
+
+        // The composite total is the sum of exactly the four documented
+        // components. A symbol-chain term would break this invariant.
+        let gf = vec![facts("src/x.ts", 4, 2, false, false)];
+        let map = build_focus_map(&inputs(&gf, &[], &[], &[], &[]));
+        let unit = map
+            .review_here
+            .iter()
+            .chain(map.deprioritized.iter())
+            .next()
+            .unwrap();
+        let score = &unit.score;
+        assert_eq!(
+            score.total,
+            score.fan_io + score.security_taint + score.risk_zone + score.change_shape,
+            "the focus total must be the four documented components only -- no symbol-chain term"
+        );
+    }
+}

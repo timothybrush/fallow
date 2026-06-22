@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use fallow_config::{AuditGate, OutputFormat};
 use fallow_core::git_env::clear_ambient_git_env;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::base_worktree::{
@@ -16,7 +16,7 @@ use crate::dupes::{DupesMode, DupesOptions, DupesResult};
 use crate::error::emit_error;
 use crate::health::{HealthOptions, HealthResult, SortBy};
 
-const AUDIT_BASE_SNAPSHOT_CACHE_VERSION: u8 = 2;
+const AUDIT_BASE_SNAPSHOT_CACHE_VERSION: u8 = 3;
 const MAX_AUDIT_BASE_SNAPSHOT_CACHE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Verdict for the audit command.
@@ -61,7 +61,11 @@ pub struct AuditResult {
     pub verdict: AuditVerdict,
     pub summary: AuditSummary,
     pub attribution: AuditAttribution,
-    base_snapshot: Option<AuditKeySnapshot>,
+    /// Key snapshot of the base ref for new-vs-inherited attribution. `None`
+    /// when the base pass was skipped (`--gate all`) or unavailable. Exposed at
+    /// crate scope so test fixtures in sibling modules can construct an
+    /// `AuditResult` with `base_snapshot: None`.
+    pub base_snapshot: Option<AuditKeySnapshot>,
     pub base_snapshot_skipped: bool,
     pub changed_files_count: usize,
     /// Absolute paths of the files this run re-analyzed. Threaded into the
@@ -81,6 +85,23 @@ pub struct AuditResult {
     pub dupes: Option<DupesResult>,
     pub health: Option<HealthResult>,
     pub elapsed: Duration,
+    /// Review-brief data, populated only on the brief path. The deltas are
+    /// computed from the head sets vs the base snapshot; weakening + routing are
+    /// computed from git over the changed files. `None` off the brief path.
+    pub review_deltas: Option<crate::audit_brief::ReviewDeltas>,
+    pub weakening_signals: Vec<weakening::WeakeningSignal>,
+    pub routing: Option<routing::RoutingFacts>,
+    /// Decision surface (the apex): the ranked, capped, signal_id-anchored set
+    /// of consequential structural decisions, each framed as a judgment question.
+    /// Populated only on the brief path; `None` otherwise.
+    pub decision_surface: Option<crate::audit_decision_surface::DecisionSurface>,
+    /// Deterministic graph-snapshot hash: a stable hash of the relevant HEAD
+    /// graph + diff state (the six key sets plus the resolved base ref + head
+    /// sha). Pinned into the walkthrough guide digest so a stale agent JSON
+    /// (whose echoed hash != this) is REFUSED on reentry. The verifier is the
+    /// graph: a mutated tree changes a key set, changes this hash, refuses the
+    /// stale payload. Populated only on the brief path; `None` otherwise.
+    pub graph_snapshot_hash: Option<String>,
 }
 
 pub struct AuditOptions<'a> {
@@ -126,6 +147,26 @@ pub struct AuditOptions<'a> {
     pub runtime_coverage: Option<&'a std::path::Path>,
     /// Threshold for hot-path classification, forwarded to the sidecar.
     pub min_invocations_hot: u64,
+    /// Render the deterministic, always-exit-0 review brief (`fallow audit
+    /// --brief` / `fallow review`) instead of the gating audit report. The
+    /// audit analysis still runs and the verdict is still computed and carried
+    /// informationally; it just never drives the exit code on this path.
+    pub brief: bool,
+    /// Decision-surface cap (the working-memory limit). Default 4; clamped to
+    /// [3, 5] (4 plus or minus 1) by the extractor. Only consulted on the brief
+    /// path.
+    pub max_decisions: usize,
+    /// Emit the agent-contract walkthrough GUIDE (digest + schema + graph-
+    /// snapshot pin) instead of the brief body. Implies `brief`. Always exit 0.
+    pub walkthrough_guide: bool,
+    /// Path to an agent's judgment JSON to POST-VALIDATE against the live
+    /// graph. Implies `brief`. Always exit 0. `None` off the walkthrough path.
+    pub walkthrough_file: Option<&'a std::path::Path>,
+    /// Expand the de-prioritized units in the human focus map ("show me what
+    /// you de-prioritized"). The `deprioritized` list is ALWAYS in the JSON
+    /// regardless; this only re-expands the human render (collapse-by-default).
+    /// Only consulted on the brief path.
+    pub show_deprioritized: bool,
 }
 
 /// A base ref resolved by auto-detection: the git ref to diff against plus a
@@ -467,10 +508,19 @@ fn introduced_dupes_verdict(result: &DupesResult, base: Option<&AuditKeySnapshot
     }
 }
 
-struct AuditKeySnapshot {
+pub struct AuditKeySnapshot {
     dead_code: FxHashSet<String>,
     health: FxHashSet<String>,
     dupes: FxHashSet<String>,
+    /// Review-brief delta substrate (populated only on the brief path; empty
+    /// otherwise). Cross-zone boundary EDGE keys (`<from_zone>->-<to_zone>`),
+    /// one per distinct zone pair (R2 first-edge-only framing).
+    boundary_edges: FxHashSet<String>,
+    /// Canonical circular-dependency keys (rotation-independent file set).
+    cycles: FxHashSet<String>,
+    /// Exports-aware public-export keys (`<rel_path>::<name>`), the surface
+    /// reachable through `package.json` `exports` + re-export reachability.
+    public_api: FxHashSet<String>,
 }
 
 struct AuditBaseSnapshotCacheKey {
@@ -487,6 +537,9 @@ struct CachedAuditKeySnapshot {
     dead_code: Vec<String>,
     health: Vec<String>,
     dupes: Vec<String>,
+    boundary_edges: Vec<String>,
+    cycles: Vec<String>,
+    public_api: Vec<String>,
 }
 
 fn count_introduced(keys: &FxHashSet<String>, base: Option<&FxHashSet<String>>) -> (usize, usize) {
@@ -513,6 +566,9 @@ fn snapshot_from_cached(cached: CachedAuditKeySnapshot) -> AuditKeySnapshot {
         dead_code: cached.dead_code.into_iter().collect(),
         health: cached.health.into_iter().collect(),
         dupes: cached.dupes.into_iter().collect(),
+        boundary_edges: cached.boundary_edges.into_iter().collect(),
+        cycles: cached.cycles.into_iter().collect(),
+        public_api: cached.public_api.into_iter().collect(),
     }
 }
 
@@ -528,6 +584,9 @@ fn cached_from_snapshot(
         dead_code: sorted_keys(&snapshot.dead_code),
         health: sorted_keys(&snapshot.health),
         dupes: sorted_keys(&snapshot.dupes),
+        boundary_edges: sorted_keys(&snapshot.boundary_edges),
+        cycles: sorted_keys(&snapshot.cycles),
+        public_api: sorted_keys(&snapshot.public_api),
     }
 }
 
@@ -766,6 +825,14 @@ fn compute_base_snapshot(
     );
     let mut check = check_res?;
     let dupes = dupes_res?;
+    // Compute the exports-aware public-export set against the BASE graph while it
+    // is still retained on the check result, BEFORE health consumes it. The
+    // public_api delta is brief-only, so this only runs on the brief path.
+    let base_public_api = if opts.brief {
+        public_api_keys_from_check(check.as_ref(), &base_root)
+    } else {
+        FxHashSet::default()
+    };
     let shared_parse = if share_dead_code_parse_with_health {
         check.as_mut().and_then(|r| r.shared_parse.take())
     } else {
@@ -780,15 +847,30 @@ fn compute_base_snapshot(
         check.as_ref(),
         dupes.as_ref(),
         health.as_ref(),
+        base_public_api,
     ))
 }
 
-/// Build an `AuditKeySnapshot` of dead-code/health/dupes keys from analysis results.
+/// Build an `AuditKeySnapshot` of dead-code/health/dupes keys from analysis
+/// results. `public_api` is the exports-aware public-export key set, computed by
+/// the caller from the retained graph BEFORE it is dropped (empty off the brief
+/// path). Boundary-edge and cycle delta keys are derived directly from the
+/// dead-code results, so they are always available.
 fn snapshot_from_results(
     check: Option<&CheckResult>,
     dupes: Option<&DupesResult>,
     health: Option<&HealthResult>,
+    public_api: FxHashSet<String>,
 ) -> AuditKeySnapshot {
+    let (boundary_edges, cycles) = check.map_or_else(
+        || (FxHashSet::default(), FxHashSet::default()),
+        |r| {
+            (
+                review_deltas::boundary_edge_keys(&r.results.boundary_violations),
+                review_deltas::cycle_keys(&r.results.circular_dependencies, &r.config.root),
+            )
+        },
+    );
     AuditKeySnapshot {
         dead_code: check.map_or_else(FxHashSet::default, |r| {
             dead_code_keys(&r.results, &r.config.root)
@@ -799,7 +881,37 @@ fn snapshot_from_results(
         dupes: dupes.map_or_else(FxHashSet::default, |r| {
             dupes_keys(&r.report, &r.config.root)
         }),
+        boundary_edges,
+        cycles,
+        public_api,
     }
+}
+
+/// Compute the exports-aware public-export key set from a check result's retained
+/// graph. Returns an empty set when the graph was not retained (off the brief
+/// path) so non-brief base snapshots stay cheap. Loads the root `package.json`
+/// and discovers workspaces so the exports-aware entry resolution (R4) can run.
+fn public_api_keys_from_check(check: Option<&CheckResult>, root: &Path) -> FxHashSet<String> {
+    let Some(check) = check else {
+        return FxHashSet::default();
+    };
+    let Some(graph) = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())
+    else {
+        return FxHashSet::default();
+    };
+    let root_pkg = fallow_config::PackageJson::load(&check.config.root.join("package.json")).ok();
+    let workspaces = fallow_config::discover_workspaces(&check.config.root);
+    review_deltas::public_export_keys_for(
+        graph,
+        &check.config,
+        root_pkg.as_ref(),
+        &workspaces,
+        root,
+    )
 }
 
 /// Build the `AuditOptions` for the isolated base-worktree analysis pass.
@@ -842,6 +954,11 @@ fn build_base_audit_options<'a>(
         include_entry_exports: opts.include_entry_exports,
         runtime_coverage: None,
         min_invocations_hot: opts.min_invocations_hot,
+        brief: false,
+        max_decisions: 4,
+        walkthrough_guide: false,
+        walkthrough_file: None,
+        show_deprioritized: false,
     }
 }
 
@@ -870,17 +987,14 @@ fn current_keys_as_base_keys(
     dupes: Option<&DupesResult>,
     health: Option<&HealthResult>,
 ) -> AuditKeySnapshot {
-    AuditKeySnapshot {
-        dead_code: check.as_ref().map_or_else(FxHashSet::default, |r| {
-            dead_code_keys(&r.results, &r.config.root)
-        }),
-        health: health.as_ref().map_or_else(FxHashSet::default, |r| {
-            health_keys(&r.report, &r.config.root)
-        }),
-        dupes: dupes.as_ref().map_or_else(FxHashSet::default, |r| {
-            dupes_keys(&r.report, &r.config.root)
-        }),
-    }
+    // Reuse path (no behavioral change vs base): head IS base, so the delta
+    // sets are the head's own keys, which makes every head-minus-base delta
+    // empty. `public_api_keys` is the head set already computed on the brief
+    // path; the boundary/cycle keys come from the head results.
+    let public_api = check
+        .and_then(|r| r.public_api_keys.clone())
+        .unwrap_or_default();
+    snapshot_from_results(check, dupes, health, public_api)
 }
 
 fn can_reuse_current_as_base(
@@ -1135,7 +1249,16 @@ use crate::base_worktree::{
 };
 
 #[path = "audit_keys.rs"]
-mod keys;
+pub mod keys;
+
+#[path = "audit_review_deltas.rs"]
+pub mod review_deltas;
+
+#[path = "audit_weakening.rs"]
+pub mod weakening;
+
+#[path = "audit_routing.rs"]
+pub mod routing;
 
 use keys::{
     dead_code_keys, dupe_group_key, dupes_keys, health_finding_key, health_keys,
@@ -1197,6 +1320,11 @@ struct AuditResultParts {
     dupes: Option<DupesResult>,
     health: Option<HealthResult>,
     elapsed: Duration,
+    review_deltas: Option<crate::audit_brief::ReviewDeltas>,
+    weakening_signals: Vec<weakening::WeakeningSignal>,
+    routing: Option<routing::RoutingFacts>,
+    decision_surface: Option<crate::audit_decision_surface::DecisionSurface>,
+    graph_snapshot_hash: Option<String>,
 }
 
 /// Run the three HEAD-side analyses with intra-pipeline sharing intact:
@@ -1226,6 +1354,19 @@ fn run_audit_head_analyses(
         None
     };
     let dupes = run_audit_dupes(opts, changed_since, Some(changed_files), dupes_files)?;
+    // Compute the impact closure AND the exports-aware public-export key
+    // set for the review brief BEFORE health consumes the shared parse (which
+    // owns the retained graph). Both are stored on the check result so they
+    // survive the graph drop.
+    if opts.brief
+        && let Some(ref mut check) = check
+    {
+        check.impact_closure = compute_brief_impact_closure(opts.root, check, changed_files);
+        check.public_api_keys = Some(public_api_keys_from_check(Some(check), opts.root));
+        check.partition_order = compute_brief_partition_order(opts.root, check, changed_files);
+        check.focus_facts = compute_brief_focus_facts(opts.root, check, changed_files);
+        check.export_lines = compute_brief_export_lines(opts.root, check, changed_files);
+    }
     let shared_parse = if share_dead_code_parse_with_health {
         check.as_mut().and_then(|r| r.shared_parse.take())
     } else {
@@ -1237,6 +1378,176 @@ fn run_audit_head_analyses(
         dupes,
         health,
     })
+}
+
+/// Compute the impact closure for the review brief from the check result's
+/// retained graph against the changed-file set.
+///
+/// Maps each changed absolute path to its graph `FileId`, walks `reverse_deps` +
+/// re-export chains to the transitive affected set, and partitions into
+/// `{ in_diff, affected_not_shown, coordination_gap }`. Returns `None` when the
+/// graph was not retained (off the brief path) or no changed file maps to a
+/// known module (e.g. every changed file is non-source / outside the graph).
+fn compute_brief_impact_closure(
+    root: &std::path::Path,
+    check: &CheckResult,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Option<fallow_core::graph::ImpactClosurePaths> {
+    let graph = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())?;
+
+    // Build an absolute-path -> FileId index from the graph's modules, normalizing
+    // separators so the git-diff changed set (which can carry either separator on
+    // Windows) matches the canonical module paths.
+    let path_to_id: FxHashMap<String, fallow_types::discover::FileId> = graph
+        .modules
+        .iter()
+        .map(|m| (m.path.to_string_lossy().replace('\\', "/"), m.file_id))
+        .collect();
+
+    let changed_ids: Vec<fallow_types::discover::FileId> = changed_files
+        .iter()
+        .filter_map(|p| {
+            let key = p.to_string_lossy().replace('\\', "/");
+            path_to_id.get(&key).copied()
+        })
+        .collect();
+
+    if changed_ids.is_empty() {
+        return None;
+    }
+
+    let closure = graph.impact_closure(&changed_ids);
+    Some(graph.closure_with_paths(&closure, root))
+}
+
+/// Compute the partition + order for the review brief's stage 2 from the
+/// check result's retained graph against the changed-file set.
+///
+/// Maps each changed absolute path to its graph `FileId`, groups the changed
+/// files into by-module units, and computes a dependency-sensible review order
+/// over those units. Returns `None` when the graph was not retained (off the
+/// brief path) or no changed file maps to a known module.
+fn compute_brief_partition_order(
+    root: &std::path::Path,
+    check: &CheckResult,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Option<fallow_core::graph::PartitionOrderPaths> {
+    let graph = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())?;
+
+    let path_to_id: FxHashMap<String, fallow_types::discover::FileId> = graph
+        .modules
+        .iter()
+        .map(|m| (m.path.to_string_lossy().replace('\\', "/"), m.file_id))
+        .collect();
+
+    let changed_ids: Vec<fallow_types::discover::FileId> = changed_files
+        .iter()
+        .filter_map(|p| {
+            let key = p.to_string_lossy().replace('\\', "/");
+            path_to_id.get(&key).copied()
+        })
+        .collect();
+
+    if changed_ids.is_empty() {
+        return None;
+    }
+
+    let partition = graph.partition_order(&changed_ids);
+    Some(graph.partition_order_with_paths(&partition, root))
+}
+
+/// Precompute the per-changed-file `rel_path -> [(export-name, 1-based line)]` map
+/// for the decision surface, from the retained graph's export spans + each file's
+/// line offsets, BEFORE health drops the graph. Lets a coordination / public-API
+/// decision anchor to the exact export line. `None` when the graph is not retained.
+fn compute_brief_export_lines(
+    root: &std::path::Path,
+    check: &CheckResult,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Option<FxHashMap<String, Vec<(String, u32)>>> {
+    let graph = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())?;
+
+    let changed_norm: FxHashSet<String> = changed_files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    let mut map: FxHashMap<String, Vec<(String, u32)>> = FxHashMap::default();
+    for module in &graph.modules {
+        let abs = module.path.to_string_lossy().replace('\\', "/");
+        if !changed_norm.contains(&abs) || module.exports.is_empty() {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&module.path) else {
+            continue;
+        };
+        let offsets = fallow_types::extract::compute_line_offsets(&content);
+        let exports: Vec<(String, u32)> = module
+            .exports
+            .iter()
+            .map(|export| {
+                let (line, _) =
+                    fallow_types::extract::byte_offset_to_line_col(&offsets, export.span.start);
+                (export.name.to_string(), line)
+            })
+            .collect();
+        map.insert(keys::relative_key_path(&module.path, root), exports);
+    }
+    Some(map)
+}
+
+/// Compute the per-file focus graph facts (fan-in/out + the dynamic-dispatch /
+/// re-export-indirection confidence-flag signals) for the review brief's stage 4
+/// weighted focus map, from the check result's retained graph against the
+/// changed-file set.
+///
+/// Maps each changed absolute path to its graph `FileId`, computes the per-file
+/// blast + confidence signals, and path-resolves them. Returns `None` when the
+/// graph was not retained (off the brief path) or no changed file maps to a known
+/// module.
+fn compute_brief_focus_facts(
+    root: &std::path::Path,
+    check: &CheckResult,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Option<Vec<fallow_core::graph::FocusFileFactsPaths>> {
+    let graph = check
+        .shared_parse
+        .as_ref()
+        .and_then(|sp| sp.analysis_output.as_ref())
+        .and_then(|out| out.graph.as_ref())?;
+
+    let path_to_id: FxHashMap<String, fallow_types::discover::FileId> = graph
+        .modules
+        .iter()
+        .map(|m| (m.path.to_string_lossy().replace('\\', "/"), m.file_id))
+        .collect();
+
+    let changed_ids: Vec<fallow_types::discover::FileId> = changed_files
+        .iter()
+        .filter_map(|p| {
+            let key = p.to_string_lossy().replace('\\', "/");
+            path_to_id.get(&key).copied()
+        })
+        .collect();
+
+    if changed_ids.is_empty() {
+        return None;
+    }
+
+    let facts = graph.focus_file_facts(&changed_ids);
+    Some(graph.focus_facts_with_paths(&facts, root))
 }
 
 /// Run the audit pipeline: resolve base ref, run analyses, compute verdict.
@@ -1355,6 +1666,51 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         base_snapshot.as_ref(),
     );
 
+    // Review-brief data: deltas (head-vs-base sets), weakening (base-vs-head
+    // diff scan over the changed files), and ownership routing. Brief-path only.
+    let (review_deltas, weakening_signals, routing) = if opts.brief {
+        compute_brief_e3_data(
+            opts,
+            check_result.as_ref(),
+            base_snapshot.as_ref(),
+            &input.changed_files,
+            &input.base_ref,
+        )
+    } else {
+        (None, Vec::new(), None)
+    };
+
+    // Decision surface (the apex): classify the SOLID-3 candidates from the
+    // deltas + coordination gaps, anchor each `signal_id`, rank, cap, and pair
+    // the routed expert. Brief-path only.
+    let decision_surface = if opts.brief {
+        Some(compute_decision_surface(
+            opts,
+            check_result.as_ref(),
+            review_deltas.as_ref(),
+            routing.as_ref(),
+        ))
+    } else {
+        None
+    };
+
+    // Graph-snapshot hash (the staleness pin): a deterministic hash of the
+    // HEAD-side key sets plus the resolved base ref + head sha. Brief-path only.
+    // The verifier is the graph: a mutated tree changes a key set, changes this
+    // hash, and refuses a stale agent walkthrough on reentry.
+    let head_sha = get_head_sha(opts.root);
+    let graph_snapshot_hash = if opts.brief {
+        Some(compute_graph_snapshot_hash(
+            check_result.as_ref(),
+            dupes_result.as_ref(),
+            health_result.as_ref(),
+            &input.base_ref,
+            head_sha.as_deref(),
+        ))
+    } else {
+        None
+    };
+
     Ok(build_audit_result(AuditResultParts {
         verdict,
         summary,
@@ -1365,14 +1721,322 @@ fn assemble_audit_result(input: AuditAssemblyInput<'_>) -> Result<AuditResult, E
         changed_files: input.changed_files,
         base_ref: input.base_ref,
         base_description: input.base_description,
-        head_sha: get_head_sha(opts.root),
+        head_sha,
         output: opts.output,
         performance: opts.performance,
         check: check_result,
         dupes: dupes_result,
         health: health_result,
         elapsed: input.start.elapsed(),
+        review_deltas,
+        weakening_signals,
+        routing,
+        decision_surface,
+        graph_snapshot_hash,
     }))
+}
+
+/// Compute the deterministic graph-snapshot hash from the HEAD-side analysis
+/// results plus the resolved base ref + head sha. Reuses [`snapshot_from_results`]
+/// for the six key sets (dead_code / health / dupes / boundary_edges / cycles /
+/// public_api), each sorted, then folds in the base ref and head sha so the same
+/// tree compared against the same base always yields the same hash.
+///
+/// The verifier is the graph: any structural change (a new finding, a new edge,
+/// a new export) shifts a key set and changes this hash, so a stale agent
+/// walkthrough whose echoed hash no longer matches is REFUSED on reentry.
+fn compute_graph_snapshot_hash(
+    check: Option<&CheckResult>,
+    dupes: Option<&DupesResult>,
+    health: Option<&HealthResult>,
+    base_ref: &str,
+    head_sha: Option<&str>,
+) -> String {
+    // The HEAD public-export set was computed on the brief path and retained on
+    // the check result (`public_api_keys`); reuse it so the hash is exports-aware
+    // without re-walking the graph.
+    let public_api = check
+        .and_then(|c| c.public_api_keys.clone())
+        .unwrap_or_default();
+    let snapshot = snapshot_from_results(check, dupes, health, public_api);
+    let mut bytes: Vec<u8> = Vec::new();
+    // Sorted key sets, each length-prefixed, so the byte stream is unambiguous.
+    for set in [
+        &snapshot.dead_code,
+        &snapshot.health,
+        &snapshot.dupes,
+        &snapshot.boundary_edges,
+        &snapshot.cycles,
+        &snapshot.public_api,
+    ] {
+        for key in sorted_keys(set) {
+            bytes.extend_from_slice(key.as_bytes());
+            bytes.push(0);
+        }
+        bytes.push(1);
+    }
+    bytes.extend_from_slice(base_ref.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(head_sha.unwrap_or("").as_bytes());
+    format!("graph:{:016x}", xxh3_64(&bytes))
+}
+
+/// Compute the decision surface from the assembled brief inputs: gather the
+/// boundary anchors (one representative per introduced zone-pair), the
+/// coordination gaps, and the impact-closure blast magnitude, then run the
+/// extractor. The cap is taken from the audit options (clamped to [3, 5] by the
+/// extractor). Returns an empty surface when no check result is available.
+fn compute_decision_surface(
+    opts: &AuditOptions<'_>,
+    check: Option<&CheckResult>,
+    review_deltas: Option<&crate::audit_brief::ReviewDeltas>,
+    routing: Option<&routing::RoutingFacts>,
+) -> crate::audit_decision_surface::DecisionSurface {
+    use crate::audit_decision_surface::{
+        BoundaryAnchor, CoordinationAnchor, DecisionInputs, extract_decision_surface,
+    };
+
+    let (Some(check), Some(deltas)) = (check, review_deltas) else {
+        return crate::audit_decision_surface::DecisionSurface::default();
+    };
+    let root = &check.config.root;
+
+    // One representative boundary anchor per introduced zone-pair: pick the first
+    // violation whose zone-pair key matches an introduced edge, for the file +
+    // line suppression/routing anchor.
+    let mut boundary_anchors: Vec<BoundaryAnchor> = Vec::new();
+    let mut seen_pairs: FxHashSet<String> = FxHashSet::default();
+    for finding in &check.results.boundary_violations {
+        let key = review_deltas::boundary_edge_key(finding);
+        if !deltas.boundary_introduced.contains(&key) || !seen_pairs.insert(key.clone()) {
+            continue;
+        }
+        boundary_anchors.push(BoundaryAnchor {
+            zone_pair_key: key,
+            from_file: keys::relative_key_path(&finding.violation.from_path, root),
+            from_zone: finding.violation.from_zone.clone(),
+            to_zone: finding.violation.to_zone.clone(),
+            line: finding.violation.line,
+        });
+    }
+
+    // Coordination gaps projected to the public-API/contract decision shape.
+    // Aggregate per changed file: ONE contract decision per changed file (R1
+    // batch-consolidate), counting its distinct non-diff consumers as the blast.
+    let closure = check.impact_closure.as_ref();
+    let mut coordination: Vec<CoordinationAnchor> = closure
+        .map(|c| aggregate_coordination_gaps(&c.coordination_gap))
+        .unwrap_or_default();
+    let affected_not_shown = closure.map_or(0, |c| c.affected_not_shown.len() as u64);
+
+    let empty_routing = routing::RoutingFacts::default();
+    let routing = routing.unwrap_or(&empty_routing);
+
+    // Head-source reader for suppression checks AND for resolving a contract
+    // symbol's declaration line: read the on-disk (head) content of an anchor file
+    // by its root-relative path. Best-effort; an unreadable file is not suppressed.
+    let root_owned = root.clone();
+    let head_source = move |rel: &str| std::fs::read_to_string(root_owned.join(rel)).ok();
+
+    // Resolve a contract symbol's 1-based declaration line from the per-file
+    // export-line map precomputed on the brief path (the graph is already dropped
+    // by health here, so we cannot re-derive it now). Lets coordination /
+    // public-API decisions deep-link to the exact export instead of the file head.
+    let export_lines = check.export_lines.as_ref();
+    let resolve_line = |rel: &str, symbols: &[String]| -> u32 {
+        let Some(exports) = export_lines.and_then(|map| map.get(rel)) else {
+            return 0;
+        };
+        exports
+            .iter()
+            .find(|(name, _)| symbols.iter().any(|s| name == s))
+            .or_else(|| exports.first())
+            .map_or(0, |(_, line)| *line)
+    };
+    for anchor in &mut coordination {
+        anchor.line = resolve_line(&anchor.changed_file, &anchor.consumed_symbols);
+    }
+    let public_api_anchor_line = deltas.public_api_added.first().map_or(0, |key| {
+        let mut parts = key.splitn(2, "::");
+        let path = parts.next().unwrap_or_default();
+        let name = parts.next().unwrap_or_default();
+        resolve_line(path, &[name.to_string()])
+    });
+
+    // Rename resolver: a head (post-rename) root-relative path -> its pre-rename
+    // path, from the diff's rename pairs. Best-effort (empty without a shared diff
+    // or renames); lets each decision carry a rename-durable `previous_signal_id`.
+    let rename_old_path = |rel: &str| -> Option<String> {
+        crate::report::ci::diff_filter::shared_diff_index()
+            .and_then(|idx| idx.old_path_for(rel))
+            .map(str::to_string)
+    };
+
+    extract_decision_surface(&DecisionInputs {
+        deltas,
+        boundary_anchors: &boundary_anchors,
+        coordination: &coordination,
+        public_api_anchor_line,
+        affected_not_shown,
+        routing,
+        head_source: &head_source,
+        rename_old_path: &rename_old_path,
+        cap: opts.max_decisions,
+    })
+}
+
+/// Aggregate per-(changed, consumer) coordination gaps into ONE contract anchor
+/// per changed file (R1 batch-consolidate), with the distinct-consumer count as
+/// the blast and the union of consumed symbols as the contract. Sorted by changed
+/// file for deterministic output.
+fn aggregate_coordination_gaps(
+    gaps: &[fallow_core::graph::CoordinationGapPaths],
+) -> Vec<crate::audit_decision_surface::CoordinationAnchor> {
+    use crate::audit_decision_surface::CoordinationAnchor;
+    let mut by_file: FxHashMap<String, (u64, FxHashSet<String>)> = FxHashMap::default();
+    for gap in gaps {
+        let entry = by_file
+            .entry(gap.changed_file.clone())
+            .or_insert_with(|| (0, FxHashSet::default()));
+        entry.0 += 1;
+        for symbol in &gap.consumed_symbols {
+            entry.1.insert(symbol.clone());
+        }
+    }
+    let mut anchors: Vec<CoordinationAnchor> = by_file
+        .into_iter()
+        .map(|(changed_file, (consumer_count, symbols))| {
+            let mut consumed_symbols: Vec<String> = symbols.into_iter().collect();
+            consumed_symbols.sort_unstable();
+            CoordinationAnchor {
+                changed_file,
+                consumed_symbols,
+                consumer_count,
+                line: 0,
+            }
+        })
+        .collect();
+    anchors.sort_by(|a, b| a.changed_file.cmp(&b.changed_file));
+    anchors
+}
+
+/// Compute the review-brief data: the diff-aware deltas (head sets vs base
+/// snapshot), the weakening-signal pass (base-vs-head diff over the changed
+/// files), and ownership routing. Pure-ish: weakening + routing shell out to git
+/// (via [`BaseFileReader`] / churn), so this runs only on the brief path.
+fn compute_brief_e3_data(
+    opts: &AuditOptions<'_>,
+    check: Option<&CheckResult>,
+    base_snapshot: Option<&AuditKeySnapshot>,
+    changed_files: &FxHashSet<PathBuf>,
+    base_ref: &str,
+) -> (
+    Option<crate::audit_brief::ReviewDeltas>,
+    Vec<weakening::WeakeningSignal>,
+    Option<routing::RoutingFacts>,
+) {
+    let deltas = check.map(|check| {
+        let head_boundary = review_deltas::boundary_edge_keys(&check.results.boundary_violations);
+        let head_cycles =
+            review_deltas::cycle_keys(&check.results.circular_dependencies, &check.config.root);
+        let head_public_api = check.public_api_keys.clone().unwrap_or_default();
+        let empty = FxHashSet::default();
+        let (base_boundary, base_cycles, base_public_api) = base_snapshot
+            .map_or((&empty, &empty, &empty), |b| {
+                (&b.boundary_edges, &b.cycles, &b.public_api)
+            });
+        crate::audit_brief::build_review_deltas(
+            &head_boundary,
+            base_boundary,
+            &head_cycles,
+            base_cycles,
+            &head_public_api,
+            base_public_api,
+        )
+    });
+
+    let weakening_signals = compute_weakening_signals(opts.root, base_ref, changed_files);
+
+    let routing =
+        check.map(|check| routing::compute_routing(opts.root, &check.config, changed_files));
+
+    (deltas, weakening_signals, routing)
+}
+
+/// Run the weakening-signal pass over the changed files: read each file's base
+/// content via [`BaseFileReader`], diff it against the on-disk head content, and
+/// emit a [`weakening::WeakeningSignal`] per detected weakening. Best-effort: a
+/// file whose base or head cannot be read is skipped silently.
+fn compute_weakening_signals(
+    root: &Path,
+    base_ref: &str,
+    changed_files: &FxHashSet<PathBuf>,
+) -> Vec<weakening::WeakeningSignal> {
+    use weakening::{WeakeningKind, WeakeningSignal};
+
+    let Some(git_root) = git_toplevel(root) else {
+        return Vec::new();
+    };
+    let Some(mut reader) = BaseFileReader::spawn(root) else {
+        return Vec::new();
+    };
+
+    let mut signals: Vec<WeakeningSignal> = Vec::new();
+    // Sort the changed files for deterministic signal ordering.
+    let mut files: Vec<&PathBuf> = changed_files.iter().collect();
+    files.sort();
+
+    for abs in files {
+        let Ok(relative) = abs.strip_prefix(&git_root) else {
+            continue;
+        };
+        let rel_str = relative.to_string_lossy().replace('\\', "/");
+        let head = std::fs::read_to_string(abs).unwrap_or_default();
+        let base = reader.read(base_ref, relative).unwrap_or_default();
+        // A net-new file (no base) or a non-source file still gets the scan; the
+        // detectors are no-ops on irrelevant content.
+
+        if weakening::is_test_file(&rel_str) {
+            for token in weakening::detect_test_weakening(&base, &head) {
+                signals.push(WeakeningSignal {
+                    kind: WeakeningKind::TestWeakened,
+                    file: rel_str.clone(),
+                    evidence: format!("{token} added"),
+                });
+            }
+            for ev in weakening::detect_removed_tests(&base, &head) {
+                signals.push(WeakeningSignal {
+                    kind: WeakeningKind::TestWeakened,
+                    file: rel_str.clone(),
+                    evidence: ev,
+                });
+            }
+        }
+        for ev in weakening::detect_added_suppressions(&base, &head) {
+            signals.push(WeakeningSignal {
+                kind: WeakeningKind::SuppressionAdded,
+                file: rel_str.clone(),
+                evidence: ev,
+            });
+        }
+        for ev in weakening::detect_lowered_thresholds(&base, &head) {
+            signals.push(WeakeningSignal {
+                kind: WeakeningKind::ThresholdLowered,
+                file: rel_str.clone(),
+                evidence: ev,
+            });
+        }
+        if weakening::is_ci_file(&rel_str) {
+            for ev in weakening::detect_removed_security_steps(&base, &head) {
+                signals.push(WeakeningSignal {
+                    kind: WeakeningKind::SecurityCheckRemoved,
+                    file: rel_str.clone(),
+                    evidence: ev,
+                });
+            }
+        }
+    }
+    signals
 }
 
 /// Attribution, verdict, and summary computed together from the HEAD analyses and
@@ -1468,6 +2132,11 @@ fn build_audit_result(parts: AuditResultParts) -> AuditResult {
         dupes: parts.dupes,
         health: parts.health,
         elapsed: parts.elapsed,
+        review_deltas: parts.review_deltas,
+        weakening_signals: parts.weakening_signals,
+        routing: parts.routing,
+        decision_surface: parts.decision_surface,
+        graph_snapshot_hash: parts.graph_snapshot_hash,
     }
 }
 
@@ -1536,6 +2205,22 @@ fn empty_audit_result(
 ) -> AuditResult {
     crate::telemetry::note_final_result_count(0);
 
+    let head_sha = get_head_sha(opts.root);
+    // An empty changeset is a valid graph state: pin a hash on the brief path so
+    // the walkthrough guide still carries a stable snapshot pin (no findings, so
+    // the hash folds only the base ref + head sha).
+    let graph_snapshot_hash = if opts.brief {
+        Some(compute_graph_snapshot_hash(
+            None,
+            None,
+            None,
+            &base_ref,
+            head_sha.as_deref(),
+        ))
+    } else {
+        None
+    };
+
     AuditResult {
         verdict: AuditVerdict::Pass,
         summary: AuditSummary {
@@ -1555,13 +2240,18 @@ fn empty_audit_result(
         changed_files: Vec::new(),
         base_ref,
         base_description,
-        head_sha: get_head_sha(opts.root),
+        head_sha,
         output: opts.output,
         performance: opts.performance,
         check: None,
         dupes: None,
         health: None,
         elapsed,
+        review_deltas: None,
+        weakening_signals: Vec::new(),
+        routing: None,
+        decision_surface: None,
+        graph_snapshot_hash,
     }
 }
 
@@ -1572,10 +2262,16 @@ fn run_audit_check<'a>(
     retain_modules_for_health: bool,
 ) -> Result<Option<CheckResult>, ExitCode> {
     let filters = IssueFilters::default();
+    // The review brief needs the module graph for the impact closure, which
+    // rides the retained-modules path. Force retention on the brief path even
+    // when health does not share the dead-code parse (mismatched production
+    // modes), so the graph is available before health consumes the shared parse.
+    let retain_modules_for_health = retain_modules_for_health || opts.brief;
     let trace_opts = TraceOptions {
         trace_export: None,
         trace_file: None,
         trace_dependency: None,
+        impact_closure: None,
         performance: opts.performance,
     };
     match crate::check::execute_check(&CheckOptions {
@@ -1800,7 +2496,10 @@ fn build_audit_health_options<'a>(
 #[path = "audit_output.rs"]
 mod output;
 
-pub use output::print_audit_result;
+pub use output::{
+    insert_audit_dead_code_json, insert_audit_duplication_json, insert_audit_health_json,
+    insert_audit_json_header, print_audit_findings, print_audit_result,
+};
 
 /// Run the full audit command: execute analyses, print results, return exit code.
 /// Run audit, optionally tagged with a gate marker (e.g. `"pre-commit"`) so
@@ -1860,8 +2559,47 @@ pub fn run_audit(opts: &AuditOptions<'_>, gate_marker: Option<&str>) -> ExitCode
                     attribution: Some(&attribution),
                 },
             );
-            print_audit_result(&result, opts.quiet, opts.explain)
+            // Walkthrough surfaces take priority over the brief body when
+            // requested. Both always exit 0.
+            if opts.walkthrough_guide {
+                crate::audit_brief::print_walkthrough_guide_result(&result)
+            } else if let Some(path) = opts.walkthrough_file {
+                crate::audit_brief::print_walkthrough_file_result(&result, path)
+            } else if opts.brief {
+                // Exit-0 seam: the brief renders the same analysis but never
+                // gates on the verdict. `print_brief_result` always returns
+                // SUCCESS.
+                crate::audit_brief::print_brief_result(
+                    &result,
+                    opts.quiet,
+                    opts.explain,
+                    opts.show_deprioritized,
+                )
+            } else {
+                print_audit_result(&result, opts.quiet, opts.explain)
+            }
         }
+        Err(code) => code,
+    }
+}
+
+/// Run the standalone `fallow decision-surface` command: the separable, cheap
+/// apex. Executes the SAME changed-code analysis the review brief runs (it is
+/// the brief path, NOT the full project pipeline), then emits ONLY the decision
+/// surface envelope. Always exit 0 (the surface is advisory, never a gate).
+///
+/// The MCP `decision_surface` tool wraps this command. It is callable without the
+/// full pipeline because it reuses `execute_audit` in brief mode (changed-code
+/// scope), not bare `fallow`.
+#[must_use]
+pub fn run_decision_surface(opts: &AuditOptions<'_>) -> ExitCode {
+    // Force brief mode: the decision surface is only computed on the brief path.
+    let brief_opts = AuditOptions {
+        brief: true,
+        ..*opts
+    };
+    match execute_audit(&brief_opts) {
+        Ok(result) => crate::audit_brief::print_decision_surface_result(&result, opts.quiet),
         Err(code) => code,
     }
 }
@@ -2987,6 +3725,9 @@ mod tests {
             dupes: ["dupe:a".to_string(), "dupe:b".to_string()]
                 .into_iter()
                 .collect(),
+            boundary_edges: std::iter::once("ui->-db".to_string()).collect(),
+            cycles: std::iter::once("a.ts|b.ts".to_string()).collect(),
+            public_api: std::iter::once("src/index.ts::foo".to_string()).collect(),
         };
 
         let cached = cached_from_snapshot(&key, &snapshot);
@@ -2999,6 +3740,9 @@ mod tests {
         assert_eq!(decoded.dead_code, snapshot.dead_code);
         assert_eq!(decoded.health, snapshot.health);
         assert_eq!(decoded.dupes, snapshot.dupes);
+        assert_eq!(decoded.boundary_edges, snapshot.boundary_edges);
+        assert_eq!(decoded.cycles, snapshot.cycles);
+        assert_eq!(decoded.public_api, snapshot.public_api);
     }
 
     #[test]
@@ -3049,6 +3793,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xfeed,
@@ -3058,6 +3807,9 @@ mod tests {
             dead_code: std::iter::once("dead:a".to_string()).collect(),
             health: std::iter::once("health:a".to_string()).collect(),
             dupes: std::iter::once("dupe:a".to_string()).collect(),
+            boundary_edges: FxHashSet::default(),
+            cycles: FxHashSet::default(),
+            public_api: FxHashSet::default(),
         };
 
         save_cached_base_snapshot(&opts, &key, &snapshot);
@@ -3106,6 +3858,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
         let key = AuditBaseSnapshotCacheKey {
             hash: 0xbeef,
@@ -3119,6 +3876,9 @@ mod tests {
             dead_code: vec!["dead:a".to_string()],
             health: vec![],
             dupes: vec![],
+            boundary_edges: vec![],
+            cycles: vec![],
+            public_api: vec![],
         };
         let cache_dir = audit_base_snapshot_cache_dir(&cache_root);
         ensure_audit_base_snapshot_cache_dir(&cache_dir).expect("cache dir should be created");
@@ -3177,6 +3937,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let first = config_file_fingerprint(&opts).expect("fingerprint should be computed");
@@ -3249,6 +4014,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3326,6 +4096,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3419,6 +4194,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3496,6 +4276,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3652,6 +4437,11 @@ mod tests {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3786,6 +4576,11 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -3927,6 +4722,11 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4009,6 +4809,11 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute with a new explicit config");
@@ -4085,6 +4890,11 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");
@@ -4167,6 +4977,11 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let first = execute_audit(&opts).expect("first audit should execute");
@@ -4272,6 +5087,11 @@ export function App() {
             include_entry_exports: false,
             runtime_coverage: None,
             min_invocations_hot: 100,
+            brief: false,
+            max_decisions: 4,
+            walkthrough_guide: false,
+            walkthrough_file: None,
+            show_deprioritized: false,
         };
 
         let result = execute_audit(&opts).expect("audit should execute");

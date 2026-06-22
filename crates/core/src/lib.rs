@@ -39,6 +39,7 @@ pub(crate) mod scripts;
 pub(crate) mod spawn;
 pub mod suppress;
 pub mod trace;
+pub mod trace_chain;
 
 pub use fallow_graph::graph;
 pub use fallow_graph::project;

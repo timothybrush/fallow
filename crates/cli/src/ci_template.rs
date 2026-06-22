@@ -125,6 +125,8 @@ mod tests {
         assert!(dir.path().join("ci/gitlab-ci.yml").is_file());
         assert!(dir.path().join("ci/scripts/comment.sh").is_file());
         assert!(dir.path().join("ci/scripts/review.sh").is_file());
+        // comment.sh and review.sh both `source` gitlab_common.sh, so a vendored
+        // pipeline that omits it breaks at runtime.
         assert!(dir.path().join("ci/scripts/gitlab_common.sh").is_file());
     }
 

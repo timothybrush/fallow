@@ -4,7 +4,7 @@ use std::path::Path;
 
 use rustc_hash::FxHashSet;
 
-fn relative_key_path(path: &Path, root: &Path) -> String {
+pub fn relative_key_path(path: &Path, root: &Path) -> String {
     let simple_path = dunce::simplified(path);
     let simple_root = dunce::simplified(root);
     simple_path

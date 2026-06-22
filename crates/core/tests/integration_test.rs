@@ -37,6 +37,8 @@ mod duplicates;
 mod dynamic_import_then;
 #[path = "integration_test/dynamic_imports.rs"]
 mod dynamic_imports;
+#[path = "integration_test/e8_symbol_chain.rs"]
+mod e8_symbol_chain;
 #[path = "integration_test/external_plugins.rs"]
 mod external_plugins;
 #[path = "integration_test/extraction.rs"]

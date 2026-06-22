@@ -20,6 +20,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 mod api;
 mod audit;
+mod audit_brief;
+mod audit_decision_surface;
+mod audit_focus;
+mod audit_walkthrough;
 mod base_worktree;
 mod baseline;
 mod cache_notice;
@@ -56,6 +60,7 @@ mod setup_hooks;
 mod signal;
 mod task_matrix;
 mod telemetry;
+mod trace_chain;
 mod update_check;
 mod validate;
 mod vital_signs;
@@ -582,6 +587,12 @@ enum Command {
         #[arg(long, value_name = "PACKAGE")]
         trace_dependency: Option<String>,
 
+        /// Compute the impact closure for a file (the transitive
+        /// affected-but-not-in-diff set + coordination gap). Walks reverse-deps
+        /// and re-export chains; powers the `inspect_target` MCP tool.
+        #[arg(long, value_name = "PATH")]
+        impact_closure: Option<String>,
+
         /// Show only the top N items per category
         #[arg(long)]
         top: Option<usize>,
@@ -614,6 +625,42 @@ enum Command {
         /// Exported symbol to inspect, formatted as FILE:EXPORT.
         #[arg(long, value_name = "FILE:EXPORT", conflicts_with = "file")]
         symbol: Option<String>,
+
+        /// OPT-IN: also attach the best-effort symbol-level call chain
+        /// (`fallow trace`) as the `symbol_chain` evidence section. Only
+        /// meaningful for a `--symbol` target. Default off (best-effort,
+        /// syntactic, OFF the ranked path).
+        #[arg(long)]
+        symbol_chain: bool,
+    },
+
+    /// Trace a symbol's call chain (best-effort, syntactic; OFF the ranked path)
+    ///
+    /// Walks callers UP (modules that import the symbol) and callees DOWN
+    /// (import-symbol edges + intra-module call sites) via the module graph,
+    /// bounded by `--depth`. Symbol-level chains are labeled best-effort per
+    /// ADR-001: resolved-vs-unresolved callees are reported honestly, never
+    /// silently dropped. The result is its OWN surface, NOT folded into the
+    /// ranked brief and NEVER an input to the focus map / ranking.
+    Trace {
+        /// Target symbol, formatted as FILE:SYMBOL (e.g. src/utils.ts:formatDate).
+        #[arg(value_name = "FILE:SYMBOL")]
+        symbol: String,
+
+        /// Walk UP to callers (modules that import the symbol). When neither
+        /// `--callers` nor `--callees` is set, both directions are walked.
+        #[arg(long)]
+        callers: bool,
+
+        /// Walk DOWN to callees (the symbol's module's import-symbol edges plus
+        /// unresolved call sites). When neither flag is set, both are walked.
+        #[arg(long)]
+        callees: bool,
+
+        /// Chain depth bound for both directions (default 2). Symbol-level is
+        /// best-effort, so a shallow bound keeps the trace legible.
+        #[arg(long, value_name = "N")]
+        depth: Option<u32>,
     },
 
     /// Auto-fix issues: remove unused exports, dependencies, and enum
@@ -1035,6 +1082,12 @@ enum Command {
     /// Purpose-built for reviewing AI-generated code and PR quality gates.
     /// Combines dead-code + complexity + duplication scoped to changed files
     /// and returns a verdict (pass/warn/fail).
+    ///
+    /// `fallow audit` answers "will CI block this?": it gates (exit 1 on a
+    /// fail verdict). The `review` alias plus `--brief` answer "where do I
+    /// look?": the same analysis rendered as a deterministic orientation brief
+    /// that ALWAYS exits 0, so a reviewer or agent can read it regardless of
+    /// the verdict. `--format` is orthogonal to `--brief`.
     /// When `--changed-since`/`--base` is unset, the base is the git merge-base
     /// against the branch's upstream or the remote default (`origin/HEAD`,
     /// `origin/main`, `origin/master`); set `FALLOW_AUDIT_BASE` to pin it.
@@ -1048,6 +1101,7 @@ enum Command {
     /// Use --dead-code-baseline, --health-baseline, and --dupes-baseline
     /// (or their config equivalents) because each sub-analysis uses a
     /// different baseline format.
+    #[command(visible_alias = "review")]
     Audit {
         /// Run dead-code analysis in production mode for this audit.
         #[arg(long = "production-dead-code")]
@@ -1123,6 +1177,75 @@ enum Command {
         /// verdict, exit code, or output.
         #[arg(long, value_name = "MARKER", hide = true)]
         gate_marker: Option<String>,
+
+        /// Render the deterministic review brief instead of the gating audit
+        /// report. The brief answers "where do I look?" rather than "will CI
+        /// block this?", runs the same analysis, and ALWAYS exits 0 (the
+        /// verdict is carried informationally). Implied by `fallow review`.
+        /// Orthogonal to `--format`.
+        #[arg(long)]
+        brief: bool,
+
+        /// Cap on the number of consequential structural decisions surfaced in
+        /// the review brief's decision surface (the working-memory limit).
+        /// Default 4; clamped to the 3-5 band (4 plus or minus 1). Only
+        /// consulted on the brief path.
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = audit_decision_surface::DEFAULT_DECISION_CAP
+        )]
+        max_decisions: usize,
+
+        /// Emit the agent-contract WALKTHROUGH GUIDE: the current digest
+        /// (brief + decision surface), the review direction, the JSON schema the
+        /// agent must return, and a deterministic graph-snapshot hash pinned into
+        /// the digest. The digest is built from the graph only (PR prose is never
+        /// folded in, so it is injection-resistant). Implies the brief; always
+        /// exits 0. A thin agent skill calls this to fetch the current guide,
+        /// produces judgment JSON, then reopens with `--walkthrough-file`.
+        #[arg(long, conflicts_with = "walkthrough_file")]
+        walkthrough_guide: bool,
+
+        /// Ingest an agent's judgment JSON and POST-VALIDATE it against the
+        /// LIVE graph. Rejects any judgment whose `signal_id` fallow did not emit
+        /// (anti-hallucination); refuses the whole payload as stale when the
+        /// echoed graph-snapshot hash no longer matches (the tree moved). The
+        /// verifier is the graph, not a second model. Implies the brief; always
+        /// exits 0. The agent's free-text framing is fenced as non-deterministic
+        /// and never gates or auto-posts.
+        #[arg(long, value_name = "PATH")]
+        walkthrough_file: Option<PathBuf>,
+
+        /// Expand the de-prioritized units in the review brief's weighted
+        /// focus map ("show me what you de-prioritized"). The `deprioritized`
+        /// escape-hatch list is ALWAYS present in `--format json` regardless; this
+        /// flag only re-expands the collapse-by-default human focus render. Only
+        /// consulted on the brief path.
+        #[arg(long)]
+        show_deprioritized: bool,
+    },
+
+    /// Surface the consequential structural DECISIONS a change embeds (the apex
+    /// of the review brief), each framed as a judgment question with the routed
+    /// expert to ask.
+    ///
+    /// The product's decision surface: a ranked, capped (4 plus or minus 1),
+    /// signal_id-anchored set of the SOLID-3 decisions (coupling/boundary,
+    /// exports-aware public-API/contract, dependency). Runs the same changed-code
+    /// analysis as `fallow review` but emits ONLY the decisions, separable and
+    /// cheap. Every decision is suppressible with `// fallow-ignore`. Always
+    /// exits 0 (advisory, never a gate). Use `--base` / `--changed-since` to pick
+    /// the comparison point, exactly like `fallow audit`.
+    DecisionSurface {
+        /// Cap on the number of surfaced decisions (the working-memory limit).
+        /// Default 4; clamped to the 3-5 band (4 plus or minus 1).
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = audit_decision_surface::DEFAULT_DECISION_CAP
+        )]
+        max_decisions: usize,
     },
 
     /// Show what fallow has done for you: how many issues it is surfacing, the
@@ -2531,7 +2654,11 @@ fn install_signal_handlers() {
     }
 }
 
-fn args_use_legacy_check_alias<I>(args: I) -> bool
+/// Find the first positional (non-flag) token in argv, which is the invoked
+/// subcommand name. Skips global flags and their values so `fallow --root /p
+/// review` still resolves to `review`. Returns `None` when there is no
+/// positional token (bare `fallow`, or only flags).
+fn first_subcommand_token<I>(args: I) -> Option<String>
 where
     I: IntoIterator<Item = String>,
 {
@@ -2587,13 +2714,35 @@ where
             }
             continue;
         }
-        return arg == "check";
+        return Some(arg);
     }
-    false
+    None
+}
+
+fn args_use_legacy_check_alias<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = String>,
+{
+    first_subcommand_token(args).as_deref() == Some("check")
+}
+
+/// Whether argv invoked the `review` alias of the audit command. The clap
+/// `visible_alias` routes `review` to `Command::Audit` but does NOT set
+/// `--brief`; the alias implies the brief, so we detect it from raw argv and
+/// force `brief = true` post-parse.
+fn args_invoked_review_alias<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = String>,
+{
+    first_subcommand_token(args).as_deref() == Some("review")
 }
 
 fn raw_args_use_legacy_check_alias() -> bool {
     args_use_legacy_check_alias(std::env::args())
+}
+
+fn raw_args_invoked_review_alias() -> bool {
+    args_invoked_review_alias(std::env::args())
 }
 
 fn warn_legacy_check_alias_if_needed(used_legacy_check_alias: bool, quiet: bool) {
@@ -2665,8 +2814,14 @@ fn finalize_report_file(
 /// the output format. Returns the parse error's exit code on failure.
 fn parse_cli_args() -> Result<(Cli, FormatConfig), ExitCode> {
     let used_legacy_check_alias = raw_args_use_legacy_check_alias();
-    let cli = Cli::try_parse().map_err(|err| handle_cli_parse_error(&err))?;
+    let mut cli = Cli::try_parse().map_err(|err| handle_cli_parse_error(&err))?;
     warn_legacy_check_alias_if_needed(used_legacy_check_alias, cli.quiet);
+    // `fallow review` is the `visible_alias` of `audit`; it implies `--brief`.
+    if raw_args_invoked_review_alias()
+        && let Some(Command::Audit { brief, .. }) = cli.command.as_mut()
+    {
+        *brief = true;
+    }
     output_envelope::set_legacy_envelope(cli.legacy_envelope);
     runtime_support::set_max_file_size_override(cli.max_file_size);
 
@@ -3222,6 +3377,7 @@ fn command_rejects_output_gate(command: Option<&Command>) -> bool {
                 | Command::Ci { .. }
                 | Command::List { .. }
                 | Command::Inspect { .. }
+                | Command::Trace { .. }
                 | Command::Flags { .. }
                 | Command::Migrate { .. }
                 | Command::License { .. }
@@ -3410,7 +3566,17 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
     match command {
         check @ Command::Check { .. } => dispatch_check_command(check, dispatch),
         Command::Watch { no_clear } => dispatch_watch(dispatch, no_clear),
-        Command::Inspect { file, symbol } => dispatch_inspect_command(dispatch, file, symbol),
+        Command::Inspect {
+            file,
+            symbol,
+            symbol_chain,
+        } => dispatch_inspect_command(dispatch, file, symbol, symbol_chain),
+        Command::Trace {
+            symbol,
+            callers,
+            callees,
+            depth,
+        } => dispatch_trace_command(dispatch, symbol, callers, callees, depth),
         fix @ Command::Fix { .. } => dispatch_fix_command(&fix, dispatch),
         init @ Command::Init { .. } => dispatch_init_command(init, root, quiet),
         Command::Hooks { subcommand } => run_hooks_command(root, subcommand, output),
@@ -3428,6 +3594,9 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
         Command::Flags { top } => dispatch_flags_command(dispatch, top),
         Command::Explain { issue_type } => explain::run_explain(&issue_type.join(" "), output),
         audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
+        Command::DecisionSurface { max_decisions } => {
+            dispatch_decision_surface(dispatch, max_decisions)
+        }
         Command::Impact {
             subcommand,
             all,
@@ -3460,6 +3629,7 @@ fn dispatch_check_command(command: Command, dispatch: &DispatchContext<'_>) -> E
         trace,
         trace_file,
         trace_dependency,
+        impact_closure,
         top,
         file,
         ..
@@ -3476,6 +3646,7 @@ fn dispatch_check_command(command: Command, dispatch: &DispatchContext<'_>) -> E
                 trace_export: trace,
                 trace_file,
                 trace_dependency,
+                impact_closure,
                 performance: dispatch.cli.performance,
             },
             include_dupes,
@@ -3590,6 +3761,7 @@ fn dispatch_inspect_command(
     dispatch: &DispatchContext<'_>,
     file: Option<String>,
     symbol: Option<String>,
+    symbol_chain: bool,
 ) -> ExitCode {
     let target = match (file, symbol) {
         (Some(file), None) => inspect::InspectTarget::File { file },
@@ -3631,6 +3803,28 @@ fn dispatch_inspect_command(
         production: dispatch.cli.production,
         workspace: dispatch.cli.workspace.as_ref(),
         target,
+        symbol_chain,
+    })
+}
+
+fn dispatch_trace_command(
+    dispatch: &DispatchContext<'_>,
+    symbol: String,
+    callers: bool,
+    callees: bool,
+    depth: Option<u32>,
+) -> ExitCode {
+    trace_chain::run_trace(&trace_chain::TraceChainOptions {
+        root: dispatch.root,
+        config_path: &dispatch.cli.config,
+        output: dispatch.output,
+        no_cache: dispatch.cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        target: symbol,
+        callers,
+        callees,
+        depth: depth.unwrap_or(fallow_core::trace_chain::DEFAULT_TRACE_DEPTH),
     })
 }
 
@@ -4113,10 +4307,19 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
         runtime_coverage,
         min_invocations_hot,
         gate_marker,
+        brief,
+        max_decisions,
+        walkthrough_guide,
+        walkthrough_file,
+        show_deprioritized,
     } = command
     else {
         unreachable!("audit dispatcher only handles audit commands");
     };
+
+    // The walkthrough flags imply the brief path (the guide digest + the
+    // graph-snapshot pin are brief-path data).
+    let brief = brief || walkthrough_guide || walkthrough_file.is_some();
 
     dispatch_audit(
         dispatch,
@@ -4134,6 +4337,11 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
             runtime_coverage,
             min_invocations_hot,
             gate_marker,
+            brief,
+            max_decisions,
+            walkthrough_guide,
+            walkthrough_file,
+            show_deprioritized,
         },
     )
 }
@@ -4386,8 +4594,7 @@ fn telemetry_workflow_for_command(
         Some(Command::Check { .. }) => telemetry::Workflow::DeadCode,
         Some(Command::Dupes { .. }) => telemetry::Workflow::Dupes,
         Some(Command::Health { .. }) => telemetry::Workflow::Health,
-        Some(Command::Audit { .. }) => telemetry::Workflow::Audit,
-        Some(Command::Inspect { .. }) => telemetry::Workflow::ProjectInventory,
+        Some(Command::Audit { .. } | Command::DecisionSurface { .. }) => telemetry::Workflow::Audit,
         Some(Command::Ci { .. }) => match output {
             fallow_config::OutputFormat::ReviewGitlab
             | fallow_config::OutputFormat::PrCommentGitlab
@@ -4399,9 +4606,13 @@ fn telemetry_workflow_for_command(
         Some(Command::Security { .. }) => telemetry::Workflow::Security,
         Some(Command::Fix { .. }) => telemetry::Workflow::Fix,
         Some(Command::Explain { .. }) => telemetry::Workflow::Explain,
-        Some(Command::List { .. } | Command::Workspaces | Command::Schema) => {
-            telemetry::Workflow::ProjectInventory
-        }
+        Some(
+            Command::Inspect { .. }
+            | Command::Trace { .. }
+            | Command::List { .. }
+            | Command::Workspaces
+            | Command::Schema,
+        ) => telemetry::Workflow::ProjectInventory,
         Some(Command::License { .. }) => telemetry::Workflow::License,
         Some(
             Command::Init { .. }
@@ -4971,6 +5182,15 @@ struct AuditDispatchArgs {
     runtime_coverage: Option<PathBuf>,
     min_invocations_hot: u64,
     gate_marker: Option<String>,
+    brief: bool,
+    max_decisions: usize,
+    /// Emit the agent-contract walkthrough guide instead of the brief body.
+    walkthrough_guide: bool,
+    /// Post-validate an agent's judgment JSON from this path against the
+    /// live graph.
+    walkthrough_file: Option<PathBuf>,
+    /// Expand the de-prioritized units in the human focus map.
+    show_deprioritized: bool,
 }
 
 struct ResolvedAuditInputs {
@@ -5098,9 +5318,82 @@ fn run_resolved_audit(
             include_entry_exports: cli.include_entry_exports,
             runtime_coverage: args.runtime_coverage.as_deref(),
             min_invocations_hot: args.min_invocations_hot,
+            brief: args.brief,
+            max_decisions: args.max_decisions,
+            walkthrough_guide: args.walkthrough_guide,
+            walkthrough_file: args.walkthrough_file.as_deref(),
+            show_deprioritized: args.show_deprioritized,
         },
         args.gate_marker.as_deref(),
     )
+}
+
+/// Dispatch `fallow decision-surface`: the separable apex. Reuses the audit
+/// input resolution in brief mode (changed-code scope) with all gating /
+/// coverage / baseline knobs defaulted, then renders ONLY the decision surface.
+fn dispatch_decision_surface(dispatch: &DispatchContext<'_>, max_decisions: usize) -> ExitCode {
+    let cli = dispatch.cli;
+    // A defaulted audit-args bag: the decision surface takes only the global
+    // diff-scope flags (`--base`/`--changed-since`/`--workspace`) plus the cap.
+    let args = AuditDispatchArgs {
+        production_dead_code: false,
+        production_health: false,
+        production_dupes: false,
+        dead_code_baseline: None,
+        health_baseline: None,
+        dupes_baseline: None,
+        max_crap: None,
+        coverage: None,
+        coverage_root: None,
+        gate: None,
+        runtime_coverage: None,
+        min_invocations_hot: 0,
+        gate_marker: None,
+        brief: true,
+        max_decisions,
+        walkthrough_guide: false,
+        walkthrough_file: None,
+        show_deprioritized: false,
+    };
+    let inputs = match resolve_audit_inputs(dispatch, &args) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
+    };
+    audit::run_decision_surface(&audit::AuditOptions {
+        root: dispatch.root,
+        config_path: &cli.config,
+        cache_dir: &inputs.cache_dir,
+        output: dispatch.output,
+        no_cache: cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        changed_since: cli.changed_since.as_deref(),
+        production: cli.production,
+        production_dead_code: Some(inputs.production.dead_code),
+        production_health: Some(inputs.production.health),
+        production_dupes: Some(inputs.production.dupes),
+        workspace: cli.workspace.as_deref(),
+        changed_workspaces: cli.changed_workspaces.as_deref(),
+        explain: cli.explain,
+        explain_skipped: cli.explain_skipped,
+        performance: cli.performance,
+        group_by: cli.group_by,
+        dead_code_baseline: inputs.dead_code_baseline.as_deref(),
+        health_baseline: inputs.health_baseline.as_deref(),
+        dupes_baseline: inputs.dupes_baseline.as_deref(),
+        max_crap: None,
+        coverage: None,
+        coverage_root: None,
+        gate: inputs.audit_cfg.gate,
+        include_entry_exports: cli.include_entry_exports,
+        runtime_coverage: None,
+        min_invocations_hot: 0,
+        brief: true,
+        max_decisions,
+        walkthrough_guide: false,
+        walkthrough_file: None,
+        show_deprioritized: false,
+    })
 }
 
 struct HealthDispatchArgs<'a> {

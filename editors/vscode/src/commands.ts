@@ -1041,7 +1041,7 @@ export const runHealthAnalysis = async (
       complexityBreakdown: breakdownEnabled,
     });
 
-    const output = await execFallow(binary, args, root);
+    const output = await execAnalysisTolerant(args, root, binary, outputChannel);
 
     if (output.trim().length === 0) {
       // A successful exit with empty stdout means there was nothing to report.

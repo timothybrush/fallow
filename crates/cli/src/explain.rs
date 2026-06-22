@@ -1262,6 +1262,11 @@ pub const SECURITY_RULES: &[RuleDef] = &[
     security_catalogue_rule!("xxe", "XML external entity (XXE) sink", "611"),
     security_catalogue_rule!("secret-pii-log", "Secret or PII logged", "532"),
     security_catalogue_rule!("xpath-injection", "XPath injection sink", "643"),
+    security_catalogue_rule!(
+        "llm-call-injection",
+        "Untrusted input reaches an LLM call",
+        "1427"
+    ),
 ];
 
 /// Build the `_meta` object for `fallow dead-code --format json --explain`.

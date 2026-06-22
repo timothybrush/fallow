@@ -330,6 +330,7 @@ async fn e2e_inspect_target_file_returns_evidence_bundle() {
             workspace: None,
             no_cache: None,
             threads: None,
+            symbol_chain: None,
         },
     )
     .await
@@ -368,6 +369,7 @@ async fn e2e_inspect_target_symbol_returns_symbol_and_file_evidence() {
             workspace: None,
             no_cache: None,
             threads: None,
+            symbol_chain: None,
         },
     )
     .await

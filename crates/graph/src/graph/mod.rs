@@ -5,9 +5,13 @@
 
 mod build;
 mod cycles;
+mod fan_io;
+mod impact_closure;
 mod namespace_aliases;
 mod namespace_re_exports;
 mod narrowing;
+mod partition_order;
+mod public_exports;
 mod re_export_reachability;
 mod re_exports;
 mod reachability;
@@ -22,6 +26,11 @@ use crate::resolve::ResolvedModule;
 use fallow_types::discover::{DiscoveredFile, EntryPoint, FileId};
 use fallow_types::extract::ImportedName;
 
+pub use fan_io::{FocusFileFacts, FocusFileFactsPaths};
+pub use impact_closure::{
+    CoordinationGap, CoordinationGapPaths, ImpactClosure, ImpactClosurePaths,
+};
+pub use partition_order::{PartitionOrder, PartitionOrderPaths, ReviewUnit, ReviewUnitPaths};
 pub use re_exports::GraphReExportCycle;
 pub use types::{ExportSymbol, ModuleNode, ReExportEdge, ReferenceKind, SymbolReference};
 
@@ -81,23 +90,35 @@ pub struct ModuleGraph {
 }
 
 /// An edge in the module graph.
+///
+/// Public surface: `fallow trace` walks the raw per-symbol `imported_name`
+/// / `local_name` in BOTH directions (callers via `reverse_deps`, callees via
+/// outgoing edges), which the flattened summary structs cannot express. The
+/// field layout (and the `Edge == 32` size assertion below) is unchanged by the
+/// visibility widen.
 #[derive(Debug)]
-pub(super) struct Edge {
-    pub(super) source: FileId,
-    pub(super) target: FileId,
-    pub(super) symbols: Vec<ImportedSymbol>,
+pub struct Edge {
+    /// Source module of this import edge.
+    pub source: FileId,
+    /// Target module imported by `source`.
+    pub target: FileId,
+    /// Symbols imported across this edge.
+    pub symbols: Vec<ImportedSymbol>,
 }
 
 /// A symbol imported across an edge.
 #[derive(Debug)]
-pub(super) struct ImportedSymbol {
-    pub(super) imported_name: ImportedName,
-    pub(super) local_name: String,
+pub struct ImportedSymbol {
+    /// The name as imported from the target (`Named`, `Default`, `Namespace`,
+    /// `SideEffect`).
+    pub imported_name: ImportedName,
+    /// Local binding name in the importing file.
+    pub local_name: String,
     /// Byte span of the import statement in the source file.
-    pub(super) import_span: oxc_span::Span,
+    pub import_span: oxc_span::Span,
     /// Whether this import is type-only (`import type { ... }`).
     /// Used to skip type-only edges in circular dependency detection.
-    pub(super) is_type_only: bool,
+    pub is_type_only: bool,
 }
 
 /// Importer details for one file that directly imports a target module.
@@ -254,6 +275,36 @@ impl ModuleGraph {
         }
         let range = &self.modules[idx].edge_range;
         self.edges[range.clone()].iter().map(|e| e.target).collect()
+    }
+
+    /// Iterate the outgoing edges of `file_id` with full per-symbol data.
+    ///
+    /// `fallow trace` needs the raw `ImportedSymbol` set on each edge in
+    /// both directions, which the flattened summary structs cannot express.
+    /// Returns an empty iterator for out-of-range file ids.
+    pub fn outgoing_symbol_edges(
+        &self,
+        file_id: FileId,
+    ) -> impl Iterator<Item = (FileId, &[ImportedSymbol])> + '_ {
+        let idx = file_id.0 as usize;
+        let range = if idx < self.modules.len() {
+            self.modules[idx].edge_range.clone()
+        } else {
+            0..0
+        };
+        self.edges[range]
+            .iter()
+            .map(|edge| (edge.target, edge.symbols.as_slice()))
+    }
+
+    /// The importer `FileId`s that directly import `target` (reverse-dep view).
+    ///
+    /// Returns an empty slice when `target` is out of range.
+    #[must_use]
+    pub fn importers_of(&self, target: FileId) -> &[FileId] {
+        self.reverse_deps
+            .get(target.0 as usize)
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Summarize files that directly import `target`.

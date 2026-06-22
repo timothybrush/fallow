@@ -240,6 +240,14 @@ pub struct InspectTargetParams {
     pub no_cache: Option<bool>,
 
     pub threads: Option<usize>,
+
+    /// OPT-IN (default off): also attach the best-effort symbol-level call chain
+    /// (`fallow trace`) as the `symbol_chain` evidence section. Only
+    /// meaningful for a SYMBOL target. Best-effort, syntactic (ADR-001), and
+    /// EXPLICITLY OFF the ranked path: resolved-vs-unresolved callees are
+    /// reported honestly, the chain is never folded into the ranked brief and is
+    /// never a focus-map / ranking input.
+    pub symbol_chain: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -823,6 +831,38 @@ pub struct FeatureFlagsParams {
         reason = "exposed via JSON Schema for agent discovery; CLI filter pending"
     )]
     pub confidence: Option<String>,
+
+    /// Disable the incremental parse cache. Forces a full re-parse of all files.
+    pub no_cache: Option<bool>,
+
+    /// Number of parser threads. Defaults to available CPU cores.
+    pub threads: Option<usize>,
+}
+
+#[derive(Default, Deserialize, JsonSchema)]
+pub struct DecisionSurfaceParams {
+    /// Root directory of the project to analyze. Defaults to current working directory.
+    pub root: Option<String>,
+
+    /// Path to fallow config file (.fallowrc.json, .fallowrc.jsonc, fallow.toml, or .fallow.toml).
+    pub config: Option<String>,
+
+    /// Git ref to compare against (e.g., "main", "HEAD~5"). When unset, the
+    /// base is the git merge-base against the branch's upstream or the remote
+    /// default (`origin/main`); set `FALLOW_AUDIT_BASE` in the server env to pin
+    /// it. Passed through to the CLI's `--base` flag.
+    pub base: Option<String>,
+
+    /// Cap on the number of consequential structural decisions surfaced (the
+    /// working-memory limit). Default 4; clamped to the 3-5 band (4 plus or minus
+    /// 1). Passed through to the CLI's `--max-decisions` flag.
+    pub max_decisions: Option<usize>,
+
+    /// Scope analysis to one or more workspaces. Accepts a single package name
+    /// for the common case, or a comma-separated list with globs and `!` negation
+    /// (e.g. `"web,admin"`, `"apps/*"`). Passed through to the CLI's `--workspace`
+    /// flag.
+    pub workspace: Option<String>,
 
     /// Disable the incremental parse cache. Forces a full re-parse of all files.
     pub no_cache: Option<bool>,

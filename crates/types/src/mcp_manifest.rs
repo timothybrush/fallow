@@ -204,6 +204,15 @@ pub const MCP_TOOLS: &[McpToolInfo] = &[
         read_only: true,
     },
     McpToolInfo {
+        name: "decision_surface",
+        kind: "analysis",
+        description: "Surface the few consequential structural decisions a change embeds (coupling, public API, dependency), each as a judgment question with the routed expert; ranked, capped, and signal_id-anchored",
+        key_params: &["base", "max_decisions", "workspace"],
+        license: McpToolLicense::Free,
+        license_note: None,
+        read_only: true,
+    },
+    McpToolInfo {
         name: "fallow_explain",
         kind: "introspection",
         description: "Explain one issue type (rationale, examples, fix guidance) without running an analysis",

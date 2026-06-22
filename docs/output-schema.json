@@ -8306,6 +8306,66 @@
               ]
             }
           ]
+        },
+        {
+          "description": "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, `triage`, and\n`graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;\nalways emitted with exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReviewBriefOutput"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "audit-brief"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
+        },
+        {
+          "description": "`fallow review --walkthrough-guide --format json`. The digest +\nschema the agent fetches: brief + decision surface, review direction, the\ngraph-snapshot pin, and the embedded agent schema. Graph-derived only\n(injection-resistant). Always exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/WalkthroughGuide"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "review-walkthrough-guide"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
+        },
+        {
+          "description": "`fallow review --walkthrough-file --format json`. Post-validation\nof an agent's judgment JSON against the live graph: `accepted` (anchored,\nframing fenced), `rejected` (unanchored), and a `stale` flag. The verifier\nis the graph, not a second model. Always exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/WalkthroughValidation"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "review-walkthrough-validation"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
         }
       ],
       "title": "fallow --format json (typed root)",
@@ -15568,6 +15628,21 @@
         },
         "security": {
           "$ref": "#/definitions/InspectEvidenceSection"
+        },
+        "impact_closure": {
+          "description": "Impact closure scoped to the inspected file as the seed: the transitive\naffected-but-not-in-diff set + coordination gap.",
+          "$ref": "#/definitions/InspectEvidenceSection"
+        },
+        "symbol_chain": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InspectEvidenceSection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OPT-IN symbol-level call chain. Present only when `--symbol-chain` was\nrequested AND the target is a SYMBOL (best-effort, syntactic, OFF the\nranked path). `None` (omitted) by default: symbol-level chains are\nbest-effort and not part of the trusted ranked evidence."
         }
       },
       "required": [
@@ -15575,7 +15650,8 @@
         "dead_code",
         "duplication",
         "complexity",
-        "security"
+        "security",
+        "impact_closure"
       ]
     },
     "InspectEvidenceSection": {
@@ -15742,6 +15818,1230 @@
         "ok",
         "error"
       ]
+    },
+    "ReviewBriefOutput": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Independently-versioned brief schema version.",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this output."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"audit-brief\"`."
+        },
+        "triage": {
+          "description": "Stage 0: diff triage.",
+          "$ref": "#/definitions/DiffTriage"
+        },
+        "graph_facts": {
+          "description": "Stage 1: graph orientation facts.",
+          "$ref": "#/definitions/GraphFacts"
+        },
+        "partition": {
+          "description": "Stage 2: the partition + order (by-module units + dependency-sensible\nreview order). The backbone the directed-review loop hands the agent.",
+          "$ref": "#/definitions/PartitionFacts"
+        },
+        "impact_closure": {
+          "description": "Stage 3: the impact closure (affected-not-shown + coordination gap).",
+          "$ref": "#/definitions/ImpactClosureFacts"
+        },
+        "focus": {
+          "description": "Stage 4: the weighted focus map. A composite attention score per\nchanged-file unit (fan-in/out + security taint + risk zone + change shape),\nwith `review-here` / `not-prioritized` labels (NEVER `skip` in free mode),\na per-unit confidence flag, and the FULL `deprioritized` escape-hatch list\nso every de-prioritized piece is reachable. Stage 4 sits UNDER the decision\nsurface as drill-down.",
+          "$ref": "#/definitions/FocusMap"
+        },
+        "deltas": {
+          "description": "6.A: diff-aware deterministic deltas (boundary/cycle introduced +\nexports-aware public-API surface delta), new-vs-pre-existing.",
+          "$ref": "#/definitions/ReviewDeltas"
+        },
+        "weakening": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WeakeningSignal"
+          },
+          "description": "6.F, headline: reviewer-private weakening signals (tests\nremoved/skipped, thresholds lowered, suppressions added, security steps\nremoved). Advisory, never gates, never auto-posted."
+        },
+        "routing": {
+          "description": "6.D: ownership-aware reviewer routing (per-file expert + bus-factor).",
+          "$ref": "#/definitions/RoutingFacts"
+        },
+        "decisions": {
+          "description": "6.G, the APEX: the decision surface. The ranked, capped,\nsignal_id-anchored set of consequential structural decisions, each framed\nas a judgment question with its routed expert. This is the only thing the\nbrief visibly leads with; the stages above are its drill-down derivation.",
+          "$ref": "#/definitions/DecisionSurface"
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "triage",
+        "graph_facts",
+        "partition",
+        "impact_closure",
+        "focus",
+        "deltas",
+        "weakening",
+        "routing",
+        "decisions"
+      ],
+      "title": "fallow audit --brief --format json",
+      "description": "The full `fallow audit --brief --format json` envelope. Carries the\ninformational verdict, the triage and graph-facts orientation stages, plus\nthe reused \"subtract\" section (the same dead-code / duplication / complexity\npayload `fallow audit --format json` emits)."
+    },
+    "ReviewBriefSchemaVersion": {
+      "type": "integer",
+      "description": "Independently-versioned wire-version newtype for the brief envelope.\nSerializes as the integer `REVIEW_BRIEF_SCHEMA_VERSION`."
+    },
+    "RiskClass": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "low",
+          "description": "Small, contained change."
+        },
+        {
+          "type": "string",
+          "const": "medium",
+          "description": "Moderately sized change."
+        },
+        {
+          "type": "string",
+          "const": "high",
+          "description": "Large change spanning many files or lines."
+        }
+      ],
+      "description": "Coarse risk classification for a changeset, a pure function of the change\nsize (file count plus, once threaded, net lines)."
+    },
+    "ReviewEffort": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "glance",
+          "description": "A quick scan is enough."
+        },
+        {
+          "type": "string",
+          "const": "review",
+          "description": "A normal line-by-line review."
+        },
+        {
+          "type": "string",
+          "const": "deep_dive",
+          "description": "A careful, deep review is warranted."
+        }
+      ],
+      "description": "Suggested reviewer effort, a pure function of [`RiskClass`]."
+    },
+    "DiffTriage": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer",
+          "description": "Number of changed files in the audit scope."
+        },
+        "hunks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Number of diff hunks. `None` in v1 (no diff index threaded yet)."
+        },
+        "net_lines": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Net added-minus-removed lines. `None` in v1 (no diff index threaded yet)."
+        },
+        "risk_class": {
+          "description": "Coarse risk class derived from the change size.",
+          "$ref": "#/definitions/RiskClass"
+        },
+        "review_effort": {
+          "description": "Suggested reviewer effort derived from `risk_class`.",
+          "$ref": "#/definitions/ReviewEffort"
+        }
+      },
+      "required": [
+        "files",
+        "risk_class",
+        "review_effort"
+      ],
+      "description": "Stage 0 of the brief: triage facts derived purely from the diff size.\n\n`hunks` and `net_lines` are `None` in v1: the file-level audit does not yet\nthread a `DiffIndex` (from `report/ci/diff_filter.rs`). They populate later,\non `--diff-file` / `--diff-stdin`, without a schema bump."
+    },
+    "GraphFacts": {
+      "type": "object",
+      "properties": {
+        "exports_added": {
+          "type": "integer",
+          "description": "Number of exports added by the changeset. Stubbed to `0` in v1."
+        },
+        "api_width_delta": {
+          "type": "integer",
+          "description": "Change in public API width (added minus removed exports). Stubbed to `0`\nin v1."
+        },
+        "reachable_from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative paths of modules the changed code is reachable from / affects\n(the impact closure's affected-but-not-in-diff set), deduped and sorted.\nEmpty when no graph was retained or nothing depends on the changed files."
+        },
+        "boundaries_touched": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Architecture boundary zones touched by the changeset, deduped and sorted.\nDerived from the run's boundary-violation findings."
+        }
+      },
+      "required": [
+        "exports_added",
+        "api_width_delta",
+        "reachable_from",
+        "boundaries_touched"
+      ],
+      "description": "Stage 1 of the brief: graph-derived orientation facts.\n\n`boundaries_touched` is derived from the run's boundary-violation zones;\n`reachable_from` is populated by the impact closure (the affected-not-shown\nset: modules the changed code is reachable from / affects, none in the diff).\n`exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the\nexport-surface delta lands. The fields are present and correctly typed so\nvalues fill in later without a schema bump."
+    },
+    "ImpactClosureFacts": {
+      "type": "object",
+      "properties": {
+        "affected_not_shown": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative paths transitively affected by the changeset (reverse-deps +\nre-export chains) that are NOT in the diff, deduped and sorted."
+        },
+        "coordination_gap": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CoordinationGapFact"
+          },
+          "description": "Coordination gaps: a changed file exports a contract consumed by a module\nabsent from the diff. One entry per (changed file, consumer) pair."
+        }
+      },
+      "required": [
+        "affected_not_shown",
+        "coordination_gap"
+      ],
+      "description": "Stage 3 of the brief: the impact closure. The transitive\naffected-but-not-in-diff set plus the coordination gap. The differentiator a\ndiff tool fundamentally cannot do, because it has no graph.\n\nHonest scope (ADR-001, syntactic): the coordination gap is an attention\npointer at the exact inter-module failure mode, NOT a correctness proof."
+    },
+    "CoordinationGapFact": {
+      "type": "object",
+      "properties": {
+        "changed_file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file whose contract is consumed elsewhere."
+        },
+        "consumer_file": {
+          "type": "string",
+          "description": "Root-relative path of the consumer module that is NOT in the diff."
+        },
+        "consumed_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The exported symbol names the consumer references, sorted."
+        },
+        "note": {
+          "type": "string",
+          "description": "Honest scope note: this is a syntactic attention pointer, not a proof."
+        }
+      },
+      "required": [
+        "changed_file",
+        "consumer_file",
+        "consumed_symbols",
+        "note"
+      ],
+      "description": "One coordination-gap entry: a changed file exports symbols consumed by a\n`consumer_file` that is NOT in the diff. Deduped per (changed, consumer) pair\n(firing-precision rule R2)."
+    },
+    "ReviewDeltas": {
+      "type": "object",
+      "properties": {
+        "boundary_introduced": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Cross-zone boundary EDGES introduced vs base (R2 first-edge-only: one per\n`<from_zone>-><to_zone>` pair, never per import). New-vs-pre-existing."
+        },
+        "cycle_introduced": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Circular dependencies introduced vs base (canonical file-set keys)."
+        },
+        "public_api_added": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exports-aware public-API surface delta: the public-export keys\n(`<rel_path>::<name>`) added vs base, resolved through `package.json`\n`exports` + re-export reachability. A symbol re-exported only through an\ninternal barrel NOT in `exports` is absent here (zero delta); one\nreachable through an `exports` path is present (exactly one)."
+        }
+      },
+      "required": [
+        "boundary_introduced",
+        "cycle_introduced",
+        "public_api_added"
+      ],
+      "description": "Diff-aware deterministic deltas (6.A), framed new-vs-pre-existing against\nthe audit base snapshot. Each entry is a brief summary/verdict line.\n\n`public_api` is batch-consolidated to ONE decision per change (rule R1):\nthe `added` list carries the introduced public-export keys as evidence, but a\nreviewer reads \"the public surface widened by N\", never one decision per\nsymbol."
+    },
+    "WeakeningSignal": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "What kind of guardrail was weakened.",
+          "$ref": "#/definitions/WeakeningKind"
+        },
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file the signal was detected in."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Short evidence string (e.g. the offending token or the threshold delta)."
+        }
+      },
+      "required": [
+        "kind",
+        "file",
+        "evidence"
+      ],
+      "description": "One weakening signal: a category, the file it was detected in, and a short\nhuman-readable evidence string. Reviewer-private; never gates."
+    },
+    "WeakeningKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "test-weakened",
+          "description": "A test was removed (a net-removed `it(`/`test(`/`describe(` callsite) or\nskipped (`it.skip`/`xit`/`describe.skip` added, or a `.only` narrowing\nthat silently excludes sibling tests)."
+        },
+        {
+          "type": "string",
+          "const": "threshold-lowered",
+          "description": "A coverage or quality threshold was lowered (a numeric config key whose\nvalue decreased between base and head)."
+        },
+        {
+          "type": "string",
+          "const": "suppression-added",
+          "description": "A suppression was added (a net-new `fallow-ignore` / `eslint-disable` /\n`@ts-ignore` / `@ts-expect-error` in the diff)."
+        },
+        {
+          "type": "string",
+          "const": "security-check-removed",
+          "description": "A security check / step was removed from CI (a net-removed line invoking\na security scanner or audit step)."
+        }
+      ],
+      "description": "The category of a single weakening signal."
+    },
+    "RoutingFacts": {
+      "type": "object",
+      "properties": {
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RoutingUnit"
+          },
+          "description": "Per-changed-file routing units, sorted by file path."
+        }
+      },
+      "required": [
+        "units"
+      ],
+      "description": "The full routing section: one unit per changed source file with a routable\nsignal. Files with no ownership signal are omitted (no noise)."
+    },
+    "RoutingUnit": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s): the CODEOWNERS declared owner when present, else the\ntop git-blame / recency contributor; empty when no signal is available."
+        },
+        "bus_factor_one": {
+          "type": "boolean",
+          "description": "Whether the only qualified owner is a single contributor (bus-factor-1):\na knowledge-concentration risk worth a second reviewer."
+        }
+      },
+      "required": [
+        "file",
+        "expert"
+      ],
+      "description": "One routed unit (a changed file) with its experts and bus-factor flag."
+    },
+    "Decision": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "Deterministic anchor to the fallow-emitted candidate this decision frames.\n`accept_signal_id` rejects any id not in the emitted set."
+        },
+        "category": {
+          "description": "One of the SOLID-3 categories.",
+          "$ref": "#/definitions/DecisionCategory"
+        },
+        "question": {
+          "type": "string",
+          "description": "The decision framed as a judgment question for the human."
+        },
+        "anchor_file": {
+          "type": "string",
+          "description": "Root-relative file the decision is anchored at (for suppression + routing)."
+        },
+        "anchor_line": {
+          "type": "integer",
+          "description": "1-based anchor line, when the underlying signal carries one (0 = file head)."
+        },
+        "signal_key": {
+          "type": "string",
+          "description": "The raw fallow-emitted candidate key the `signal_id` hashes (the evidence)."
+        },
+        "previous_signal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `signal_id` this decision WOULD have had before any rename in this\nchange (the anchor file's pre-rename path). Present only when the anchor was\nrenamed. A review-memory layer carries a dismissal across a `git mv`: if\n`previous_signal_id` was dismissed in an earlier PR, treat this decision as\ndismissed too. Keeps `signal_id` itself exact + deterministic."
+        },
+        "blast": {
+          "type": "integer",
+          "description": "Blast radius: count of modules affected beyond the diff by this decision."
+        },
+        "consequence": {
+          "type": "integer",
+          "description": "`blast * reversibility_weight`: the rank key (sorted descending)."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s) to ask, from ownership routing. Empty when no\nownership signal is available for the anchor file."
+        },
+        "bus_factor_one": {
+          "type": "boolean",
+          "description": "Whether the anchor file's only qualified owner is one person (bus-factor-1)."
+        }
+      },
+      "required": [
+        "signal_id",
+        "category",
+        "question",
+        "anchor_file",
+        "anchor_line",
+        "signal_key",
+        "blast",
+        "consequence",
+        "expert"
+      ],
+      "description": "One consequential structural decision, framed as a judgment question for a\nhuman with taste, anchored to a fallow-emitted signal."
+    },
+    "DecisionAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Stable action discriminator (`ask-expert`, `suppress`).",
+          "$ref": "#/definitions/DecisionActionType"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the action."
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A runnable command or a paste-ready suppression comment, when applicable."
+        },
+        "auto_fixable": {
+          "type": "boolean",
+          "description": "Whether fallow can carry the action out automatically. Always `false`:\na decision is a human judgment, never auto-applied."
+        }
+      },
+      "required": [
+        "type",
+        "description",
+        "auto_fixable"
+      ],
+      "description": "A structured action attached to a surfaced decision (the agent-actionable\nsurface). Mirrors the typed-action shape the rest of fallow emits."
+    },
+    "DecisionActionType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ask-expert",
+          "description": "Route the decision to the named expert(s) for a judgment call."
+        },
+        {
+          "type": "string",
+          "const": "suppress",
+          "description": "Suppress the decision with a `// fallow-ignore` comment."
+        }
+      ],
+      "description": "The discriminated action kinds a decision can carry."
+    },
+    "DecisionCategory": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "coupling-boundary",
+          "description": "A new dependency edge between modules or zones that did not depend before."
+        },
+        {
+          "type": "string",
+          "const": "public-api-contract",
+          "description": "A new exported contract, or a changed contract consumed outside the diff."
+        },
+        {
+          "type": "string",
+          "const": "dependency",
+          "description": "A new third-party dependency (new maintenance + security surface).\n\nThe arm is part of the SOLID-3 surface, but its candidate source (a\n`package.json` dependency delta) is not yet threaded onto the brief path,\nso the extractor never constructs it from a live signal today. Reserved,\nnot dead: it ships the moment the dependency delta lands, with no category\nreframe. (The variant is referenced by the schema + `reversibility_weight`\n+ the no-cut-category test, so it is exercised, not orphaned.)"
+        }
+      ],
+      "description": "The exactly-three shippable decision categories (the SOLID-3). No cut category\n(abstraction / deletion / convention / irreversibility) is representable: this\nenum is the structural guarantee that confirmed-noise categories never ship."
+    },
+    "DecisionSurface": {
+      "type": "object",
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Decision"
+          },
+          "description": "Up to `cap` ranked decisions, highest consequence first."
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TruncationNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when more than `cap` decisions were extracted."
+        },
+        "emitted_signal_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every signal_id the deterministic layer emitted, INCLUDING those whose\ndecision was collapsed below the cap or suppressed. The anti-hallucination\nallowlist: an agent decision whose id is absent is rejected."
+        }
+      },
+      "required": [
+        "decisions",
+        "emitted_signal_ids"
+      ],
+      "description": "The ranked, capped decision surface plus the set of signal_ids the\ndeterministic layer emitted (the anti-hallucination allowlist)."
+    },
+    "DecisionSurfaceOutput": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Independently-versioned schema version.",
+          "$ref": "#/definitions/DecisionSurfaceSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this output."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"decision-surface\"`."
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DecisionWithActions"
+          },
+          "description": "The ranked, capped decisions, each with structured actions."
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TruncationNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when more than `cap` decisions were extracted."
+        },
+        "signal_count": {
+          "type": "integer",
+          "description": "Count of fallow-emitted signal_ids (the anti-hallucination allowlist size)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "decisions",
+        "signal_count"
+      ],
+      "title": "fallow decision-surface --format json",
+      "description": "The separable `decision-surface` envelope: the single call that puts taste-\ndecisions in front of a human, callable WITHOUT the full pipeline (the\n`decision_surface` MCP tool's output). Carries `kind`/`schema_version` plus\nstructured `actions[]` per decision."
+    },
+    "DecisionSurfaceSchemaVersion": {
+      "type": "integer",
+      "description": "Independently-versioned wire-version newtype. Serializes as the integer\n[`DECISION_SURFACE_SCHEMA_VERSION`]."
+    },
+    "DecisionWithActions": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "Deterministic anchor to the fallow-emitted candidate this decision frames.\n`accept_signal_id` rejects any id not in the emitted set."
+        },
+        "category": {
+          "description": "One of the SOLID-3 categories.",
+          "$ref": "#/definitions/DecisionCategory"
+        },
+        "question": {
+          "type": "string",
+          "description": "The decision framed as a judgment question for the human."
+        },
+        "anchor_file": {
+          "type": "string",
+          "description": "Root-relative file the decision is anchored at (for suppression + routing)."
+        },
+        "anchor_line": {
+          "type": "integer",
+          "description": "1-based anchor line, when the underlying signal carries one (0 = file head)."
+        },
+        "signal_key": {
+          "type": "string",
+          "description": "The raw fallow-emitted candidate key the `signal_id` hashes (the evidence)."
+        },
+        "previous_signal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `signal_id` this decision WOULD have had before any rename in this\nchange (the anchor file's pre-rename path). Present only when the anchor was\nrenamed. A review-memory layer carries a dismissal across a `git mv`: if\n`previous_signal_id` was dismissed in an earlier PR, treat this decision as\ndismissed too. Keeps `signal_id` itself exact + deterministic."
+        },
+        "blast": {
+          "type": "integer",
+          "description": "Blast radius: count of modules affected beyond the diff by this decision."
+        },
+        "consequence": {
+          "type": "integer",
+          "description": "`blast * reversibility_weight`: the rank key (sorted descending)."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s) to ask, from ownership routing. Empty when no\nownership signal is available for the anchor file."
+        },
+        "bus_factor_one": {
+          "type": "boolean",
+          "description": "Whether the anchor file's only qualified owner is one person (bus-factor-1)."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DecisionAction"
+          },
+          "description": "Structured actions: route to the expert, or suppress."
+        }
+      },
+      "required": [
+        "signal_id",
+        "category",
+        "question",
+        "anchor_file",
+        "anchor_line",
+        "signal_key",
+        "blast",
+        "consequence",
+        "expert",
+        "actions"
+      ],
+      "description": "One decision plus its structured `actions[]`, for the separable envelope."
+    },
+    "TruncationNote": {
+      "type": "object",
+      "properties": {
+        "collapsed": {
+          "type": "integer",
+          "description": "How many decisions were collapsed below the cap."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable collapse reason."
+        }
+      },
+      "required": [
+        "collapsed",
+        "reason"
+      ],
+      "description": "A note for the decisions collapsed below the cap."
+    },
+    "AcceptedJudgment": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "The fallow-emitted `signal_id` (verified against the allowlist)."
+        },
+        "agent_framing": {
+          "type": "string",
+          "description": "The agent's framing, FENCED: this is non-deterministic agent prose."
+        },
+        "concern": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The agent's optional concern category (advisory)."
+        },
+        "deterministic": {
+          "type": "boolean",
+          "description": "Hard fence: always `false`. The framing is agent prose, never a\ndeterministic fallow result, so it never gates or auto-posts."
+        }
+      },
+      "required": [
+        "signal_id",
+        "agent_framing",
+        "deterministic"
+      ],
+      "description": "One accepted judgment: the real anchored signal passed through with the\nagent's framing FENCED as non-deterministic."
+    },
+    "AgentSchema": {
+      "type": "object",
+      "properties": {
+        "judgment_shape": {
+          "type": "string",
+          "description": "How the agent must structure each judgment: cite an emitted `signal_id`,\nadd free-text `framing` (non-deterministic, fenced), an optional `concern`."
+        },
+        "echo_field": {
+          "type": "string",
+          "description": "The agent MUST echo this `graph_snapshot_hash` back in its JSON; a\nmismatch on reentry REFUSES the payload as stale."
+        },
+        "anchoring_rule": {
+          "type": "string",
+          "description": "The constant naming the anti-hallucination rule."
+        }
+      },
+      "required": [
+        "judgment_shape",
+        "echo_field",
+        "anchoring_rule"
+      ],
+      "description": "The shape the agent must return, embedded in the guide so a thin skill needs\nno frozen copy. Documents the anchoring + staleness contract in the wire."
+    },
+    "DirectionUnit": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the unit to review."
+        },
+        "concern_lens": {
+          "type": "string",
+          "description": "The concern lens the agent should check for this unit, derived from the\nunit's risk signals (impact-closure consumers vs a plain touched file)."
+        },
+        "scoring_budget": {
+          "type": "integer",
+          "description": "Per-unit review-effort budget: the weighted-focus composite score for\nthis file. A cloud fan-out spends AI passes/verifiers PROPORTIONAL to this\n(higher = review harder); a local single-agent loop can ignore it."
+        },
+        "out_of_diff": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative paths of modules affected by this unit but NOT in the diff\n(the out-of-diff context the agent must reason about)."
+        },
+        "expert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The routed expert(s) to ask, from ownership routing."
+        }
+      },
+      "required": [
+        "file",
+        "concern_lens",
+        "scoring_budget",
+        "out_of_diff",
+        "expert"
+      ],
+      "description": "One directed review unit projected from the graph: a file the change touches,\nthe concern to check, the out-of-diff consumers it must account for, and the\nrouted expert. Graph-derived only (routing + impact closure), NEVER from prose."
+    },
+    "RejectedJudgment": {
+      "type": "object",
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "description": "The `signal_id` the agent cited (fallow never emitted it)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The rejection reason (e.g. `unanchored-signal-id`)."
+        }
+      },
+      "required": [
+        "signal_id",
+        "reason"
+      ],
+      "description": "One rejected judgment plus the reason it was rejected."
+    },
+    "ReviewDirection": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The dependency-sensible review order: unit file paths, units carrying\nout-of-diff consumers first (review the load-bearing definitions before\nthe mechanical units)."
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DirectionUnit"
+          },
+          "description": "The coherent review units, in `order`."
+        }
+      },
+      "required": [
+        "order",
+        "units"
+      ],
+      "description": "The review direction artifact: the order to review in, the coherent units,\nand per-unit concern lens + out-of-diff + expert. A minimal projection of the\nEXISTING graph facts (routing units + impact closure); the full weighted-focus\nengine is a later epic. Graph-derived only (injection-resistant)."
+    },
+    "WalkthroughGuide": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Pinned to the brief schema version (the spec versions the guide by\n`review_brief_schema_version`).",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this guide."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"review-walkthrough-guide\"`."
+        },
+        "graph_snapshot_hash": {
+          "type": "string",
+          "description": "The deterministic graph-snapshot hash pinned into the digest. The agent\nechoes it back; a mismatch on reentry refuses the payload as stale."
+        },
+        "digest": {
+          "description": "The graph-derived digest (brief + decision surface). Pure over the tree.",
+          "$ref": "#/definitions/ReviewBriefOutput"
+        },
+        "direction": {
+          "description": "The review direction (order/units/concern-lens/out-of-diff/expert).",
+          "$ref": "#/definitions/ReviewDirection"
+        },
+        "agent_schema": {
+          "description": "The JSON shape the agent must return, embedded so the skill stays thin.",
+          "$ref": "#/definitions/AgentSchema"
+        },
+        "injection_note": {
+          "type": "string",
+          "description": "The injection-resistance note (digest is graph-only; PR prose untrusted)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "graph_snapshot_hash",
+        "digest",
+        "direction",
+        "agent_schema",
+        "injection_note"
+      ],
+      "title": "fallow review --walkthrough-guide --format json",
+      "description": "The `fallow review --walkthrough-guide` envelope: the current digest + schema\nthe agent fetches. The tool owns this; the skill stays thin (it fetches this\nrather than embedding a frozen copy). Always emitted with exit 0."
+    },
+    "WalkthroughValidation": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Pinned to the brief schema version.",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "type": "string",
+          "description": "Fallow CLI version that produced this validation."
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"review-walkthrough-validation\"`."
+        },
+        "graph_snapshot_hash": {
+          "type": "string",
+          "description": "The current run's deterministic graph-snapshot hash."
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "`true` when the agent's echoed hash != the current hash (the tree moved):\nthe WHOLE payload is refused, `accepted` is empty."
+        },
+        "accepted": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptedJudgment"
+          },
+          "description": "Judgments that cite a real fallow-emitted signal, framing fenced."
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RejectedJudgment"
+          },
+          "description": "Judgments rejected (unanchored signal id, or all-rejected when stale)."
+        },
+        "accepted_count": {
+          "type": "integer",
+          "description": "Count of accepted judgments."
+        },
+        "rejected_count": {
+          "type": "integer",
+          "description": "Count of rejected judgments."
+        },
+        "unanchored_count": {
+          "type": "integer",
+          "description": "Count of accepted judgments whose `signal_id` resolved against the live\nallowlist. Zero unanchored when this equals `accepted_count` and there are\nno rejections (the clean done-condition)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "graph_snapshot_hash",
+        "stale",
+        "accepted",
+        "rejected",
+        "accepted_count",
+        "rejected_count",
+        "unanchored_count"
+      ],
+      "title": "fallow review --walkthrough-file --format json",
+      "description": "The `fallow review --walkthrough-file` validation envelope: the result of\npost-validating the agent's judgment against the live graph. Always exit 0."
+    },
+    "PartitionFacts": {
+      "type": "object",
+      "properties": {
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewUnitFact"
+          },
+          "description": "The by-module units, sorted by module directory. Empty when no graph was\nretained or no changed file maps to a known module."
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The dependency-sensible review order: module-directory strings,\ndefinitions before consumers, mechanical/leaf units last. A permutation of\nthe `units` module directories."
+        }
+      },
+      "required": [
+        "units",
+        "order"
+      ],
+      "description": "Stage 2 of the brief: the partition + order. The changed files split into\ncoherent BY-MODULE units (the only byte-identical-deterministic clustering\ndefinition straight from the graph), plus a dependency-sensible review ORDER\nover those units (definitions before consumers, mechanical/leaf units last,\nties broken by the path sort). Stage 2 sits UNDER the decision surface as a\ndrill-down; it is the backbone the directed-review loop hands the agent.\n\nFeature-cluster and concern partitioning are deferred (they need scoring\nheuristics whose tie-breaks are a fresh nondeterminism surface)."
+    },
+    "ReviewUnitFact": {
+      "type": "object",
+      "properties": {
+        "module_dir": {
+          "type": "string",
+          "description": "The module directory the unit covers (root-relative, forward-slashed).\nThe empty string is the repository-root group."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The changed files in this unit, path-sorted."
+        }
+      },
+      "required": [
+        "module_dir",
+        "files"
+      ],
+      "description": "One review unit: a coherent by-module cluster of the changed set."
+    },
+    "FocusLabel": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "review-here",
+          "description": "Review this unit: its composite attention score is at or above the line."
+        },
+        {
+          "type": "string",
+          "const": "not-prioritized",
+          "description": "Not prioritized: below the line. NEVER \"skip\" (the reviewer is free to\nreview it anyway; the escape hatch enumerates every such unit)."
+        }
+      ],
+      "description": "The focus label for a review unit. EXACTLY two variants: `Skip` is NOT\nrepresentable, so the type system is the guarantee that free mode never emits\na `skip` label (safe explicit-skip is paid, runtime-backed only). Mirrors\nthe decision surface's \"cut category not representable\" structural posture."
+    },
+    "ConfidenceFlag": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "dynamic-dispatch",
+          "description": "The unit is dynamically wired (DI / decorators / plugin-loader / lazy\npatterns the static graph cannot fully resolve)."
+        },
+        {
+          "type": "string",
+          "const": "re-export-indirection",
+          "description": "The unit's reachability runs through re-export barrels."
+        }
+      ],
+      "description": "A per-unit confidence flag. The EXACT panel-decided strings: a dynamically-\nwired or re-export-heavy unit carries one so its static-reachability signal is\nnot trusted as complete (the anti-silent-de-prioritization guard). The flag\nNEVER lowers the score; it is advisory provenance."
+    },
+    "FocusScore": {
+      "type": "object",
+      "properties": {
+        "fan_io": {
+          "type": "integer",
+          "description": "Fan-in/out blast-radius component."
+        },
+        "security_taint": {
+          "type": "integer",
+          "description": "Security source -> sink taint-touch component (0 until a security pass is\nthreaded onto the brief path; the seam is built and tested)."
+        },
+        "risk_zone": {
+          "type": "integer",
+          "description": "Risk-zone component (boundary / public-API / security-sensitive)."
+        },
+        "change_shape": {
+          "type": "integer",
+          "description": "Change-shape component (new/widened export, signature change proxy)."
+        },
+        "total": {
+          "type": "integer",
+          "description": "The summed total. The paid runtime layer multiplies a runtime hot/cold weight in here."
+        }
+      },
+      "required": [
+        "fan_io",
+        "security_taint",
+        "risk_zone",
+        "change_shape",
+        "total"
+      ],
+      "description": "The composite attention score, with the four deterministic component\nsub-scores kept on the wire so the runtime seam can re-weight `total`\nwithout recomputing the signals."
+    },
+    "FocusUnit": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Root-relative path of the changed file this unit covers."
+        },
+        "score": {
+          "description": "The composite attention score and its component breakdown.",
+          "$ref": "#/definitions/FocusScore"
+        },
+        "label": {
+          "description": "The focus label (`review-here` / `not-prioritized`; NEVER `skip`).",
+          "$ref": "#/definitions/FocusLabel"
+        },
+        "reason": {
+          "type": "string",
+          "description": "A human-readable reason for the label, built from the present signals."
+        },
+        "confidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConfidenceFlag"
+          },
+          "description": "Confidence flags (advisory; never lower the score). Sorted, deduped."
+        }
+      },
+      "required": [
+        "file",
+        "score",
+        "label",
+        "reason"
+      ],
+      "description": "One review unit on the focus map: its file, composite score, label, human\nreason, and any confidence flags."
+    },
+    "FocusMap": {
+      "type": "object",
+      "properties": {
+        "review_here": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FocusUnit"
+          },
+          "description": "Units labeled `review-here`, ranked by composite score (descending), ties\nbroken by path for determinism."
+        },
+        "deprioritized": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FocusUnit"
+          },
+          "description": "EVERY `not-prioritized` unit (the escape hatch). Always present and fully\nenumerated so a reviewer can always \"show me what you de-prioritized\"; the\nhuman brief collapses it by default and re-expands under\n`--show-deprioritized`."
+        }
+      },
+      "required": [
+        "review_here",
+        "deprioritized"
+      ],
+      "description": "The weighted focus map: the ranked `review-here` units plus the FULL\n`deprioritized` escape-hatch list, so nothing is hidden.\n\nCompleteness invariant (the escape-hatch done-condition): the two lists\npartition the unit set, so `review_here.len() + deprioritized.len()` equals\nthe total unit count by construction."
+    },
+    "SymbolChainTrace": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file containing the traced symbol (project-root-relative)."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "The traced symbol name."
+        },
+        "symbol_found": {
+          "type": "boolean",
+          "description": "Whether the symbol's defining export was found in the graph. When\n`false`, the chains are empty and `reason` explains why."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "The chain depth applied to both directions."
+        },
+        "best_effort": {
+          "type": "boolean",
+          "description": "Whether this trace is best-effort (always `true`: symbol-level chains are\nlabeled best-effort, syntactic per ADR-001)."
+        },
+        "callers": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/ChainHop"
+          },
+          "description": "Caller chain hops (UP). Present only when `--callers` was requested."
+        },
+        "callees": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/ChainHop"
+          },
+          "description": "Callee chain hops (DOWN) resolved to an import-symbol edge. Present only\nwhen `--callees` was requested."
+        },
+        "unresolved_callees": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/UnresolvedCallee"
+          },
+          "description": "Callees referenced at a call site in the symbol's module that the\nsyntactic walk could NOT resolve to an import-symbol edge (locals,\nglobals, dynamic dispatch, re-bound callees). Reported, never dropped.\nPresent only when `--callees` was requested."
+        },
+        "reason": {
+          "type": "string",
+          "description": "A human-readable summary of the trace outcome."
+        }
+      },
+      "required": [
+        "file",
+        "symbol",
+        "symbol_found",
+        "depth",
+        "best_effort",
+        "reason"
+      ],
+      "description": "The result of a symbol-level call-chain trace. Its own surface (`kind:\n\"trace\"`), NOT folded into the ranked brief."
+    },
+    "ChainHop": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "The file at this hop (project-root-relative). For a caller hop this is\nthe importing module; for a callee hop the imported module."
+        },
+        "imported_as": {
+          "type": "string",
+          "description": "The symbol name as imported across the edge (`default`, `*` for namespace,\nthe imported name otherwise)."
+        },
+        "local_name": {
+          "type": "string",
+          "description": "The local binding name in the file at this hop."
+        },
+        "type_only": {
+          "type": "boolean",
+          "description": "Whether the import edge is type-only (`import type { ... }`)."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "The hop's depth (1 = direct caller/callee of the symbol)."
+        }
+      },
+      "required": [
+        "file",
+        "imported_as",
+        "local_name",
+        "type_only",
+        "depth"
+      ],
+      "description": "One hop in a caller / callee chain."
+    },
+    "UnresolvedCallee": {
+      "type": "object",
+      "properties": {
+        "callee": {
+          "type": "string",
+          "description": "The callee path as written at the call site (e.g. `helper`,\n`obj.method`)."
+        },
+        "reason": {
+          "description": "Why it is unresolved (best-effort classification).",
+          "$ref": "#/definitions/UnresolvedReason"
+        }
+      },
+      "required": [
+        "callee",
+        "reason"
+      ],
+      "description": "A callee referenced at a call site that did not resolve to an import-symbol\nedge. Surfaced so a missing callee is never silently dropped."
+    },
+    "UnresolvedReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "local-or-global",
+          "description": "A bare identifier call with no matching import binding (a same-module\nlocal function, a global, or a re-bound callee)."
+        },
+        {
+          "type": "string",
+          "const": "member-or-dynamic",
+          "description": "A computed / member-expression callee (`obj.method`, dynamic dispatch)."
+        }
+      ],
+      "description": "Best-effort classification of why a callee did not resolve to an edge."
     }
   }
 }

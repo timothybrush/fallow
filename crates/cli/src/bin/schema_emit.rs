@@ -25,6 +25,18 @@ use std::process::ExitCode;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value};
 
+use fallow_cli::audit_brief::{
+    DiffTriage, GraphFacts, ReviewBriefOutput, ReviewBriefSchemaVersion, ReviewEffort, RiskClass,
+};
+use fallow_cli::audit_decision_surface::{
+    Decision, DecisionAction, DecisionActionType, DecisionCategory, DecisionSurface,
+    DecisionSurfaceOutput, DecisionSurfaceSchemaVersion, DecisionWithActions, TruncationNote,
+};
+use fallow_cli::audit_focus::{ConfidenceFlag, FocusLabel, FocusMap, FocusScore, FocusUnit};
+use fallow_cli::audit_walkthrough::{
+    AcceptedJudgment, AgentSchema, DirectionUnit, RejectedJudgment, ReviewDirection,
+    WalkthroughGuide, WalkthroughValidation,
+};
 use fallow_cli::health_types::{
     ComplexityViolation, ContributorEntry, ContributorIdentifierFormat, CoverageGapSummary,
     CoverageGaps, CoverageModel, CoverageTier, ExceededThreshold, FileHealthScore, FindingSeverity,
@@ -299,6 +311,33 @@ const DERIVED_DEFINITION_NAMES: &[&str] = &[
     "CodeClimateIssue",
     "CodeClimateOutput",
     "CombinedOutput",
+    "ReviewBriefOutput",
+    "ReviewBriefSchemaVersion",
+    "RiskClass",
+    "ReviewEffort",
+    "DiffTriage",
+    "GraphFacts",
+    "FocusLabel",
+    "ConfidenceFlag",
+    "FocusScore",
+    "FocusUnit",
+    "FocusMap",
+    "Decision",
+    "DecisionAction",
+    "DecisionActionType",
+    "DecisionCategory",
+    "DecisionSurface",
+    "DecisionSurfaceOutput",
+    "DecisionSurfaceSchemaVersion",
+    "DecisionWithActions",
+    "TruncationNote",
+    "AcceptedJudgment",
+    "AgentSchema",
+    "DirectionUnit",
+    "RejectedJudgment",
+    "ReviewDirection",
+    "WalkthroughGuide",
+    "WalkthroughValidation",
     "CoverageSetupFileToEdit",
     "CoverageSetupMember",
     "CoverageSetupOutput",
@@ -454,6 +493,8 @@ fn derived_definitions() -> Map<String, Value> {
     register_health_definitions(&mut generator);
     register_meta_definitions(&mut generator);
     register_per_command_envelope_definitions(&mut generator);
+    register_audit_brief_definitions(&mut generator);
+    register_walkthrough_definitions(&mut generator);
     register_impact_definitions(&mut generator);
     register_security_definitions(&mut generator);
     let _ = generator.subschema_for::<FallowOutput>();
@@ -611,6 +652,42 @@ fn register_meta_definitions(generator: &mut schemars::SchemaGenerator) {
     let _ = generator.subschema_for::<TelemetryMeta>();
 }
 
+/// Register the `fallow audit --brief --format json` envelope.
+fn register_audit_brief_definitions(generator: &mut schemars::SchemaGenerator) {
+    let _ = generator.subschema_for::<ReviewBriefSchemaVersion>();
+    let _ = generator.subschema_for::<RiskClass>();
+    let _ = generator.subschema_for::<ReviewEffort>();
+    let _ = generator.subschema_for::<DiffTriage>();
+    let _ = generator.subschema_for::<GraphFacts>();
+    let _ = generator.subschema_for::<FocusLabel>();
+    let _ = generator.subschema_for::<ConfidenceFlag>();
+    let _ = generator.subschema_for::<FocusScore>();
+    let _ = generator.subschema_for::<FocusUnit>();
+    let _ = generator.subschema_for::<FocusMap>();
+    let _ = generator.subschema_for::<ReviewBriefOutput>();
+    let _ = generator.subschema_for::<DecisionCategory>();
+    let _ = generator.subschema_for::<Decision>();
+    let _ = generator.subschema_for::<DecisionAction>();
+    let _ = generator.subschema_for::<DecisionActionType>();
+    let _ = generator.subschema_for::<DecisionWithActions>();
+    let _ = generator.subschema_for::<TruncationNote>();
+    let _ = generator.subschema_for::<DecisionSurface>();
+    let _ = generator.subschema_for::<DecisionSurfaceSchemaVersion>();
+    let _ = generator.subschema_for::<DecisionSurfaceOutput>();
+}
+
+/// Register the `fallow review --walkthrough-guide` /
+/// `--walkthrough-file` envelopes (the agent-contract loop).
+fn register_walkthrough_definitions(generator: &mut schemars::SchemaGenerator) {
+    let _ = generator.subschema_for::<DirectionUnit>();
+    let _ = generator.subschema_for::<ReviewDirection>();
+    let _ = generator.subschema_for::<AgentSchema>();
+    let _ = generator.subschema_for::<WalkthroughGuide>();
+    let _ = generator.subschema_for::<AcceptedJudgment>();
+    let _ = generator.subschema_for::<RejectedJudgment>();
+    let _ = generator.subschema_for::<WalkthroughValidation>();
+}
+
 fn register_impact_definitions(generator: &mut schemars::SchemaGenerator) {
     let _ = generator.subschema_for::<ImpactCounts>();
     let _ = generator.subschema_for::<EnabledSource>();
@@ -725,6 +802,11 @@ fn register_per_command_envelope_definitions(generator: &mut schemars::SchemaGen
     let _ = generator.subschema_for::<InspectEvidenceSection>();
     let _ = generator.subschema_for::<InspectSectionStatus>();
     let _ = generator.subschema_for::<InspectEvidenceScope>();
+    // Symbol-level call chain (`fallow trace`, `FallowOutput::Trace`).
+    let _ = generator.subschema_for::<fallow_core::trace_chain::SymbolChainTrace>();
+    let _ = generator.subschema_for::<fallow_core::trace_chain::ChainHop>();
+    let _ = generator.subschema_for::<fallow_core::trace_chain::UnresolvedCallee>();
+    let _ = generator.subschema_for::<fallow_core::trace_chain::UnresolvedReason>();
     let _ = generator.subschema_for::<CodeClimateOutput>();
     let _ = generator.subschema_for::<CodeClimateIssue>();
     let _ = generator.subschema_for::<CodeClimateIssueKind>();
@@ -902,6 +984,21 @@ const FALLOW_OUTPUT_VARIANTS: &[(&str, &[&str], &str)] = &[
         "combined",
         &["CombinedOutput"],
         "Bare `fallow --format json` (combined dead-code + dupes + health).\nRequired `schema_version`, `version`, and `elapsed_ms`, with optional\n`check`, `dupes`, and `health` subreports.",
+    ),
+    (
+        "audit-brief",
+        &["ReviewBriefOutput"],
+        "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, `triage`, and\n`graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;\nalways emitted with exit 0.",
+    ),
+    (
+        "review-walkthrough-guide",
+        &["WalkthroughGuide"],
+        "`fallow review --walkthrough-guide --format json`. The digest +\nschema the agent fetches: brief + decision surface, review direction, the\ngraph-snapshot pin, and the embedded agent schema. Graph-derived only\n(injection-resistant). Always exit 0.",
+    ),
+    (
+        "review-walkthrough-validation",
+        &["WalkthroughValidation"],
+        "`fallow review --walkthrough-file --format json`. Post-validation\nof an agent's judgment JSON against the live graph: `accepted` (anchored,\nframing fenced), `rejected` (unanchored), and a `stale` flag. The verifier\nis the graph, not a second model. Always exit 0.",
     ),
 ];
 
@@ -1236,6 +1333,10 @@ mod drift_tests {
             ("SecurityBlindSpots", "SecurityBlindSpotsOutput"),
             ("Check", "CheckOutput"),
             ("Combined", "CombinedOutput"),
+            ("AuditBrief", "ReviewBriefOutput"),
+            ("DecisionSurface", "DecisionSurfaceOutput"),
+            ("WalkthroughGuide", "WalkthroughGuide"),
+            ("WalkthroughValidation", "WalkthroughValidation"),
         ];
 
         #[expect(
@@ -1247,6 +1348,7 @@ mod drift_tests {
                 FallowOutput::Audit(_) => "Audit",
                 FallowOutput::Explain(_) => "Explain",
                 FallowOutput::Inspect(_) => "Inspect",
+                FallowOutput::Trace(_) => "Trace",
                 FallowOutput::ReviewEnvelope(_) => "ReviewEnvelope",
                 FallowOutput::ReviewReconcile(_) => "ReviewReconcile",
                 FallowOutput::CoverageSetup(_) => "CoverageSetup",
@@ -1264,6 +1366,10 @@ mod drift_tests {
                 FallowOutput::SecurityBlindSpots(_) => "SecurityBlindSpots",
                 FallowOutput::Check(_) => "Check",
                 FallowOutput::Combined(_) => "Combined",
+                FallowOutput::AuditBrief(_) => "AuditBrief",
+                FallowOutput::DecisionSurface(_) => "DecisionSurface",
+                FallowOutput::WalkthroughGuide(_) => "WalkthroughGuide",
+                FallowOutput::WalkthroughValidation(_) => "WalkthroughValidation",
             }
         }
 

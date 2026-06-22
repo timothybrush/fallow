@@ -477,6 +477,75 @@ fn format_reference_kind(kind: ReferenceKind) -> String {
     }
 }
 
+/// Result of computing the impact closure for a single file as the seed: the
+/// transitive affected-but-not-in-diff set plus the coordination gap. Serializes
+/// as the `impact_closure` evidence section of `inspect_target`.
+#[derive(Debug, Serialize)]
+pub struct ImpactClosureTrace {
+    /// The seed file (the inspected file), root-relative.
+    pub seed: String,
+    /// Root-relative paths transitively affected by the seed (reverse-deps +
+    /// re-export chains), sorted. These do NOT include the seed itself.
+    pub affected_not_shown: Vec<String>,
+    /// Coordination gaps: the seed exports contracts consumed by these modules.
+    /// One entry per (seed, consumer) pair.
+    pub coordination_gap: Vec<ImpactClosureGap>,
+}
+
+/// One coordination-gap entry in an [`ImpactClosureTrace`].
+#[derive(Debug, Serialize)]
+pub struct ImpactClosureGap {
+    /// Root-relative path of the consumer module.
+    pub consumer_file: String,
+    /// The exported symbol names the consumer references, sorted.
+    pub consumed_symbols: Vec<String>,
+    /// Honest scope note: this is a syntactic attention pointer, not a proof.
+    pub note: String,
+}
+
+/// Compute the impact closure for a single file as the seed.
+///
+/// Resolves `file_path` to a graph `FileId`, walks `reverse_deps` + re-export
+/// chains to the transitive affected set, and reports the coordination gap (the
+/// seed's exported contracts consumed by modules outside the seed). Returns
+/// `None` when the file is not in the module graph.
+#[must_use]
+pub fn trace_impact_closure(
+    graph: &ModuleGraph,
+    root: &Path,
+    file_path: &str,
+) -> Option<ImpactClosureTrace> {
+    let module = graph
+        .modules
+        .iter()
+        .find(|m| path_matches(&m.path, root, file_path))?;
+
+    let closure = graph.impact_closure(&[module.file_id]);
+    let paths = graph.closure_with_paths(&closure, root);
+
+    let seed = paths
+        .in_diff
+        .first()
+        .cloned()
+        .unwrap_or_else(|| file_path.replace('\\', "/"));
+
+    let coordination_gap = paths
+        .coordination_gap
+        .into_iter()
+        .map(|gap| ImpactClosureGap {
+            consumer_file: gap.consumer_file,
+            consumed_symbols: gap.consumed_symbols,
+            note: "syntactic attention pointer, not a correctness proof".to_string(),
+        })
+        .collect();
+
+    Some(ImpactClosureTrace {
+        seed,
+        affected_not_shown: paths.affected_not_shown,
+        coordination_gap,
+    })
+}
+
 /// Result of tracing a clone: all groups containing the code at a given location.
 #[derive(Debug, Serialize)]
 pub struct CloneTrace {

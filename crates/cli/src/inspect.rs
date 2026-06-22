@@ -31,6 +31,11 @@ pub struct InspectOptions<'a> {
     pub production: bool,
     pub workspace: Option<&'a Vec<String>>,
     pub target: InspectTarget,
+    /// OPT-IN: also run the best-effort symbol-level call chain
+    /// (`fallow trace`) and attach it as the `symbol_chain` evidence section.
+    /// Only meaningful for a SYMBOL target. Default off (best-effort, off the
+    /// ranked path).
+    pub symbol_chain: bool,
 }
 
 #[derive(Debug)]
@@ -99,7 +104,7 @@ pub fn run_inspect(opts: &InspectOptions<'_>) -> ExitCode {
         );
     }
 
-    let evidence = build_inspect_evidence(opts, target_file, &trace_file, trace_export.clone());
+    let evidence = build_inspect_evidence(opts, &target, &trace_file, trace_export.clone());
     push_inspect_warnings(&mut warnings, &evidence);
 
     let identity = build_inspect_identity(&target, &trace_file, trace_export.as_ref());
@@ -125,14 +130,16 @@ fn collect_trace_export(
     run_required_json(opts, trace_export_args(&target.file, export_name)).map(Some)
 }
 
-/// Compose the five evidence sections (trace, dead-code, duplication,
-/// complexity, security) for the inspect bundle.
+/// Compose the evidence sections (trace, dead-code, duplication, complexity,
+/// security, impact-closure, plus the OPT-IN symbol chain) for the inspect
+/// bundle.
 fn build_inspect_evidence(
     opts: &InspectOptions<'_>,
-    target_file: &str,
+    target: &NormalizedTarget,
     trace_file: &Value,
     trace_export: Option<Value>,
 ) -> InspectEvidence {
+    let target_file = target.file.as_str();
     InspectEvidence {
         trace_file: InspectEvidenceSection::ok(InspectEvidenceScope::File, trace_file.clone()),
         trace_export: trace_export
@@ -161,7 +168,34 @@ fn build_inspect_evidence(
             InspectEvidenceScope::File,
             |value| value,
         ),
+        impact_closure: optional_section(
+            opts,
+            impact_closure_args(target_file),
+            InspectEvidenceScope::ProjectFilteredToFile,
+            |value| value,
+        ),
+        symbol_chain: build_symbol_chain_section(opts, target),
     }
+}
+
+/// Build the OPT-IN symbol-level call-chain section. Returns `None` (the
+/// section is omitted) unless `--symbol-chain` was requested AND the target is a
+/// SYMBOL. Best-effort, syntactic, OFF the ranked path: it is attached as
+/// separate evidence, never folded into the trusted sections.
+fn build_symbol_chain_section(
+    opts: &InspectOptions<'_>,
+    target: &NormalizedTarget,
+) -> Option<InspectEvidenceSection> {
+    if !opts.symbol_chain {
+        return None;
+    }
+    let export_name = target.export_name.as_deref()?;
+    Some(optional_section(
+        opts,
+        symbol_chain_args(&target.file, export_name),
+        InspectEvidenceScope::Symbol,
+        |value| value,
+    ))
 }
 
 /// Derive the identity summary from the trace evidence (symbol when an export
@@ -239,6 +273,10 @@ fn print_human(bundle: &InspectOutput, quiet: bool) {
     print_evidence_summary("duplication", &bundle.evidence.duplication);
     print_evidence_summary("complexity", &bundle.evidence.complexity);
     print_evidence_summary("security", &bundle.evidence.security);
+    print_evidence_summary("impact_closure", &bundle.evidence.impact_closure);
+    if let Some(section) = bundle.evidence.symbol_chain.as_ref() {
+        print_evidence_summary("symbol_chain", section);
+    }
     if !bundle.warnings.is_empty() && !quiet {
         outln!();
         for warning in &bundle.warnings {
@@ -411,6 +449,23 @@ fn security_args(file: &str) -> Vec<String> {
     ]
 }
 
+fn impact_closure_args(file: &str) -> Vec<String> {
+    vec![
+        "dead-code".to_string(),
+        "--impact-closure".to_string(),
+        file.to_string(),
+    ]
+}
+
+fn symbol_chain_args(file: &str, export_name: &str) -> Vec<String> {
+    vec![
+        "trace".to_string(),
+        format!("{file}:{export_name}"),
+        "--callers".to_string(),
+        "--callees".to_string(),
+    ]
+}
+
 fn filter_path_array(value: &Value, file: &str, key: &str) -> Value {
     let matched = value
         .get(key)
@@ -531,6 +586,7 @@ fn push_inspect_warnings(warnings: &mut Vec<String>, evidence: &InspectEvidence)
     push_warning(warnings, "duplication", &evidence.duplication);
     push_warning(warnings, "complexity", &evidence.complexity);
     push_warning(warnings, "security", &evidence.security);
+    push_warning(warnings, "impact_closure", &evidence.impact_closure);
 }
 
 fn push_warning(warnings: &mut Vec<String>, section: &str, evidence: &InspectEvidenceSection) {
@@ -569,6 +625,7 @@ mod tests {
             production: false,
             workspace: None,
             target,
+            symbol_chain: false,
         }
     }
 
