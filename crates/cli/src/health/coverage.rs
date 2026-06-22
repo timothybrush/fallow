@@ -606,6 +606,18 @@ fn resolve_sidecar_via_command(
         return None;
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
+    resolve_sidecar_from_output(root, &stdout, output_kind)
+}
+
+/// Resolve a sidecar path from a package-manager command's captured stdout.
+/// Split out from [`resolve_sidecar_via_command`] so the path-resolution
+/// branches stay testable without spawning a subprocess (the spawn-based tests
+/// flaked under the instrumented coverage CI run).
+fn resolve_sidecar_from_output(
+    root: &Path,
+    stdout: &str,
+    output_kind: PackageManagerOutput,
+) -> Option<PathBuf> {
     let candidate = stdout
         .lines()
         .rev()
@@ -2127,9 +2139,9 @@ mod tests {
         RemappedFunction, RuntimeCoverageAnalysisInput, StaticFunctionInput, StaticSignalIndex,
         build_request, build_static_signal_index, convert_response, discover_sidecar,
         looks_like_istanbul, merge_remapped_functions, path_binary_candidates,
-        prepare_coverage_sources, resolve_original_source_path, resolve_sidecar_via_command,
-        sidecar_binary_name, static_function, verify_sidecar_signature,
-        write_istanbul_coverage_file,
+        prepare_coverage_sources, resolve_original_source_path, resolve_sidecar_from_output,
+        resolve_sidecar_via_command, sidecar_binary_name, static_function,
+        verify_sidecar_signature, write_istanbul_coverage_file,
     };
     use crate::health::RuntimeCoverageOptions;
     use fallow_config::{FallowConfig, OutputFormat};
@@ -2359,6 +2371,36 @@ mod tests {
     }
 
     #[test]
+    fn coverage_directory_ignores_non_json_files_and_sorts_sources() {
+        let root = make_temp_dir("coverage-source-sort");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create temp dir: {err}"));
+        std::fs::write(root.join("notes.txt"), "not coverage")
+            .unwrap_or_else(|err| panic!("failed to write notes.txt: {err}"));
+        std::fs::write(root.join("z-v8.json"), "{\"result\":[]}")
+            .unwrap_or_else(|err| panic!("failed to write z-v8.json: {err}"));
+        std::fs::write(root.join("a-istanbul.json"), "{}")
+            .unwrap_or_else(|err| panic!("failed to write a-istanbul.json: {err}"));
+
+        let prepared = prepare_coverage_sources(&root)
+            .unwrap_or_else(|err| panic!("failed to collect coverage sources: {err}"));
+        let sources = prepared.sources;
+
+        assert_eq!(sources.len(), 2);
+        assert!(matches!(
+            &sources[0],
+            CoverageSource::Istanbul { path } if path.ends_with("a-istanbul.json")
+        ));
+        assert!(matches!(
+            &sources[1],
+            CoverageSource::V8 { path } if path.ends_with("z-v8.json")
+        ));
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
     fn empty_coverage_directory_is_treated_as_v8_directory() {
         let root = make_temp_dir("coverage-empty-dir");
         std::fs::create_dir_all(&root)
@@ -2567,6 +2609,24 @@ mod tests {
     }
 
     #[test]
+    fn scoped_platform_sidecar_ignores_unusable_package_dirs() {
+        let root = make_temp_dir("sidecar-scoped-ignore");
+        let scoped = root.join("node_modules").join("@fallow-cli");
+        std::fs::create_dir_all(scoped.join("fallow-cov-darwin-arm64"))
+            .unwrap_or_else(|err| panic!("failed to create scoped package: {err}"));
+        std::fs::create_dir_all(scoped.join("not-fallow-cov"))
+            .unwrap_or_else(|err| panic!("failed to create unrelated package: {err}"));
+
+        assert_eq!(
+            super::find_scoped_platform_sidecar(&scoped, sidecar_binary_name()),
+            None
+        );
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
     fn detects_package_manager_from_field_before_lockfiles() {
         let root = make_temp_dir("sidecar-package-manager-field");
         std::fs::create_dir_all(&root)
@@ -2679,24 +2739,14 @@ mod tests {
     #[test]
     fn resolves_yarn_sidecar_without_node_modules_bin() {
         let root = make_temp_dir("sidecar-yarn");
-        let command_dir = root.join("commands");
         let unplugged_dir = root
             .join(".yarn")
             .join("unplugged")
             .join("fallow-cov")
             .join("node_modules")
             .join(".bin");
-        std::fs::create_dir_all(&command_dir)
-            .unwrap_or_else(|err| panic!("failed to create {}: {err}", command_dir.display()));
         std::fs::create_dir_all(&unplugged_dir)
             .unwrap_or_else(|err| panic!("failed to create {}: {err}", unplugged_dir.display()));
-        std::fs::write(
-            root.join("package.json"),
-            r#"{"name":"demo","packageManager":"yarn@4.1.0"}"#,
-        )
-        .unwrap_or_else(|err| panic!("failed to write package.json: {err}"));
-        std::fs::write(root.join("yarn.lock"), "")
-            .unwrap_or_else(|err| panic!("failed to write yarn.lock: {err}"));
 
         let sidecar = if cfg!(windows) {
             unplugged_dir.join("fallow-cov.cmd")
@@ -2706,20 +2756,13 @@ mod tests {
         std::fs::write(&sidecar, "")
             .unwrap_or_else(|err| panic!("failed to write {}: {err}", sidecar.display()));
 
-        let yarn = if cfg!(windows) {
-            command_dir.join("yarn.cmd")
-        } else {
-            command_dir.join("yarn")
-        };
-        write_fake_yarn_bin_command(&yarn, &sidecar);
-
-        let resolved = resolve_sidecar_via_command(
-            &root,
-            yarn.as_os_str(),
-            &["bin", "fallow-cov"],
-            PackageManagerOutput::BinaryPath,
-        )
-        .unwrap_or_else(|| panic!("failed to resolve yarn-local sidecar"));
+        // `yarn bin fallow-cov` prints the absolute sidecar path on its last
+        // line. Parse that output directly instead of spawning yarn, which
+        // flaked under the instrumented coverage run.
+        let stdout = format!("{}\n", sidecar.display());
+        let resolved =
+            resolve_sidecar_from_output(&root, &stdout, PackageManagerOutput::BinaryPath)
+                .unwrap_or_else(|| panic!("failed to resolve yarn-local sidecar"));
 
         assert_eq!(resolved, sidecar);
 
@@ -2730,10 +2773,7 @@ mod tests {
     #[test]
     fn resolves_npm_sidecar_from_node_modules_root() {
         let root = make_temp_dir("sidecar-npm");
-        let command_dir = root.join("commands");
         let bin_dir = root.join("custom-node_modules").join(".bin");
-        std::fs::create_dir_all(&command_dir)
-            .unwrap_or_else(|err| panic!("failed to create {}: {err}", command_dir.display()));
         std::fs::create_dir_all(&bin_dir)
             .unwrap_or_else(|err| panic!("failed to create {}: {err}", bin_dir.display()));
 
@@ -2745,22 +2785,89 @@ mod tests {
         std::fs::write(&sidecar, "")
             .unwrap_or_else(|err| panic!("failed to write {}: {err}", sidecar.display()));
 
-        let npm = if cfg!(windows) {
-            command_dir.join("npm.cmd")
-        } else {
-            command_dir.join("npm")
-        };
-        write_fake_npm_root_command(&npm, &root.join("custom-node_modules"));
+        // `npm root` prints the node_modules dir; NodeModulesDir resolution
+        // appends `.bin` plus the sidecar name. Parse the printed dir directly
+        // instead of spawning npm.
+        let stdout = format!("{}\n", root.join("custom-node_modules").display());
+        let resolved =
+            resolve_sidecar_from_output(&root, &stdout, PackageManagerOutput::NodeModulesDir)
+                .unwrap_or_else(|| panic!("failed to resolve npm-local sidecar"));
+
+        assert_eq!(resolved, sidecar);
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn package_manager_sidecar_resolution_ignores_missing_commands() {
+        let root = make_temp_dir("sidecar-missing-command");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
 
         let resolved = resolve_sidecar_via_command(
             &root,
-            npm.as_os_str(),
-            &["root"],
-            PackageManagerOutput::NodeModulesDir,
-        )
-        .unwrap_or_else(|| panic!("failed to resolve npm-local sidecar"));
+            std::ffi::OsStr::new("definitely-not-fallow-cov-manager"),
+            &["bin"],
+            PackageManagerOutput::BinDir,
+        );
 
-        assert_eq!(resolved, sidecar);
+        assert_eq!(resolved, None);
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn parse_source_map_cache_rejects_missing_or_malformed_cache() {
+        let missing = fallow_v8_coverage::V8CoverageDump {
+            result: Vec::new(),
+            source_map_cache: None,
+        };
+        assert!(super::parse_source_map_cache(&missing).is_none());
+
+        let malformed = fallow_v8_coverage::V8CoverageDump {
+            result: Vec::new(),
+            source_map_cache: Some(serde_json::json!("not a cache object")),
+        };
+        assert!(super::parse_source_map_cache(&malformed).is_none());
+    }
+
+    #[test]
+    fn ensure_temp_dir_reuses_existing_directory() {
+        let mut temp_dir = None;
+        let first = super::ensure_temp_dir(&mut temp_dir)
+            .unwrap_or_else(|err| panic!("failed to create tempdir: {err}"))
+            .to_path_buf();
+        let second = super::ensure_temp_dir(&mut temp_dir)
+            .unwrap_or_else(|err| panic!("failed to reuse tempdir: {err}"))
+            .to_path_buf();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn generated_source_for_script_reads_file_urls_only() {
+        let root = make_temp_dir("coverage-generated-source");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
+        let source = root.join("bundle.js");
+        std::fs::write(&source, "function alpha() {}\n")
+            .unwrap_or_else(|err| panic!("failed to write {}: {err}", source.display()));
+        let source_url = file_url(&source);
+        let script = script_coverage_with_url(&source_url);
+
+        assert_eq!(
+            super::generated_source_for_script(&script),
+            Some("function alpha() {}\n".to_owned())
+        );
+
+        let remote = script_coverage_with_url("https://cdn.example.com/bundle.js");
+        assert_eq!(super::generated_source_for_script(&remote), None);
+
+        let missing_url = file_url(&root.join("missing.js"));
+        let missing = script_coverage_with_url(&missing_url);
+        assert_eq!(super::generated_source_for_script(&missing), None);
 
         std::fs::remove_dir_all(&root)
             .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
@@ -2986,6 +3093,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn build_request_joins_dead_code_and_direct_test_signals() {
         let root = make_temp_dir("coverage-static-signals");
         let src_dir = root.join("src");
@@ -3724,39 +3835,13 @@ mod tests {
         }
     }
 
-    fn write_fake_yarn_bin_command(path: &Path, sidecar: &Path) {
-        if cfg!(windows) {
-            std::fs::write(
-                path,
-                format!(
-                    "@echo off\r\nif \"%1\"==\"bin\" if \"%2\"==\"fallow-cov\" (\r\n  echo {}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n",
-                    sidecar.display()
-                ),
-            )
-            .unwrap_or_else(|err| panic!("failed to write {}: {err}", path.display()));
-            return;
-        }
-
-        std::fs::write(
-            path,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = \"bin\" ] && [ \"$2\" = \"fallow-cov\" ]; then\n  printf '%s\\n' '{}'\n  exit 0\nfi\nexit 1\n",
-                sidecar.display()
-            ),
-        )
-        .unwrap_or_else(|err| panic!("failed to write {}: {err}", path.display()));
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = std::fs::metadata(path)
-                .unwrap_or_else(|err| panic!("failed to stat {}: {err}", path.display()))
-                .permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(path, permissions)
-                .unwrap_or_else(|err| panic!("failed to chmod {}: {err}", path.display()));
-        }
+    fn script_coverage_with_url(url: &str) -> fallow_v8_coverage::ScriptCoverage {
+        serde_json::from_value(serde_json::json!({
+            "scriptId": "1",
+            "url": url,
+            "functions": []
+        }))
+        .expect("valid script coverage")
     }
 
     fn write_bun_store_sidecar(store: &Path, version: &str) -> PathBuf {
@@ -3781,41 +3866,6 @@ mod tests {
         std::fs::write(&binary, "")
             .unwrap_or_else(|err| panic!("failed to write {}: {err}", binary.display()));
         binary
-    }
-
-    fn write_fake_npm_root_command(path: &Path, node_modules_dir: &Path) {
-        if cfg!(windows) {
-            std::fs::write(
-                path,
-                format!(
-                    "@echo off\r\nif \"%1\"==\"root\" (\r\n  echo {}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n",
-                    node_modules_dir.display()
-                ),
-            )
-            .unwrap_or_else(|err| panic!("failed to write {}: {err}", path.display()));
-            return;
-        }
-
-        std::fs::write(
-            path,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = \"root\" ]; then\n  printf '%s\\n' '{}'\n  exit 0\nfi\nexit 1\n",
-                node_modules_dir.display()
-            ),
-        )
-        .unwrap_or_else(|err| panic!("failed to write {}: {err}", path.display()));
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = std::fs::metadata(path)
-                .unwrap_or_else(|err| panic!("failed to stat {}: {err}", path.display()))
-                .permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(path, permissions)
-                .unwrap_or_else(|err| panic!("failed to chmod {}: {err}", path.display()));
-        }
     }
 
     #[test]
@@ -3892,6 +3942,61 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_missing_message_uses_detected_package_manager_guidance() {
+        for (name, package_json, lockfile, hint, install) in [
+            (
+                "npm",
+                r#"{"name":"p","packageManager":"npm@10.0.0"}"#,
+                "package-lock.json",
+                "`npm root` + `.bin/fallow-cov`",
+                "npm install --save-dev @fallow-cli/fallow-cov",
+            ),
+            (
+                "pnpm",
+                r#"{"name":"p","packageManager":"pnpm@9.0.0"}"#,
+                "pnpm-lock.yaml",
+                "`pnpm bin`",
+                "pnpm add -D @fallow-cli/fallow-cov",
+            ),
+            (
+                "yarn",
+                r#"{"name":"p","packageManager":"yarn@4.0.0"}"#,
+                "yarn.lock",
+                "`yarn bin fallow-cov`",
+                "yarn add -D @fallow-cli/fallow-cov",
+            ),
+            (
+                "bun",
+                r#"{"name":"p","packageManager":"bun@1.2.0"}"#,
+                "bun.lock",
+                "`bun pm bin`",
+                "bun add -d @fallow-cli/fallow-cov",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::fs::write(dir.path().join("package.json"), package_json)
+                .unwrap_or_else(|err| panic!("failed to write package.json for {name}: {err}"));
+            std::fs::write(dir.path().join(lockfile), "")
+                .unwrap_or_else(|err| panic!("failed to write {lockfile}: {err}"));
+
+            let message = super::sidecar_missing_message(Some(dir.path()));
+
+            assert!(
+                message.contains("node_modules/.bin/fallow-cov"),
+                "{name} message should list project-local bin path: {message}"
+            );
+            assert!(
+                message.contains(hint),
+                "{name} message should include lookup hint {hint}: {message}"
+            );
+            assert!(
+                message.contains(install),
+                "{name} message should include install command {install}: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn detect_package_manager_prefers_package_json_field() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -3928,22 +4033,31 @@ mod tests {
 
     #[test]
     fn package_manager_install_commands_match_detected_tool() {
-        assert_eq!(
-            super::LocalPackageManager::Npm.install_command(),
-            "npm install --save-dev @fallow-cli/fallow-cov"
-        );
-        assert_eq!(
-            super::LocalPackageManager::Pnpm.install_command(),
-            "pnpm add -D @fallow-cli/fallow-cov"
-        );
-        assert_eq!(
-            super::LocalPackageManager::Yarn.install_command(),
-            "yarn add -D @fallow-cli/fallow-cov"
-        );
-        assert_eq!(
-            super::LocalPackageManager::Bun.install_command(),
-            "bun add -d @fallow-cli/fallow-cov"
-        );
+        for (manager, install, hint) in [
+            (
+                super::LocalPackageManager::Npm,
+                "npm install --save-dev @fallow-cli/fallow-cov",
+                "`npm root` + `.bin/fallow-cov`",
+            ),
+            (
+                super::LocalPackageManager::Pnpm,
+                "pnpm add -D @fallow-cli/fallow-cov",
+                "`pnpm bin`",
+            ),
+            (
+                super::LocalPackageManager::Yarn,
+                "yarn add -D @fallow-cli/fallow-cov",
+                "`yarn bin fallow-cov`",
+            ),
+            (
+                super::LocalPackageManager::Bun,
+                "bun add -d @fallow-cli/fallow-cov",
+                "`bun pm bin`",
+            ),
+        ] {
+            assert_eq!(manager.install_command(), install);
+            assert_eq!(manager.lookup_hint(), hint);
+        }
     }
 
     #[test]
@@ -3958,6 +4072,33 @@ mod tests {
         assert_eq!(super::utf16_source_offset_to_byte_offset(s, 2), None);
         // Past the end is unmappable.
         assert_eq!(super::utf16_source_offset_to_byte_offset(s, 5), None);
+
+        let ascii = "alpha\nbeta";
+        for (utf16_offset, byte_offset) in [(0, 0), (5, 5), (6, 6), (10, 10)] {
+            assert_eq!(
+                super::utf16_source_offset_to_byte_offset(ascii, utf16_offset),
+                Some(byte_offset)
+            );
+        }
+        assert_eq!(super::utf16_source_offset_to_byte_offset(ascii, 11), None);
+
+        assert_eq!(super::utf16_source_offset_to_byte_offset("", 0), Some(0));
+        assert_eq!(super::utf16_source_offset_to_byte_offset("", 1), None);
+        assert_eq!(super::utf16_source_offset_to_byte_offset("å", 0), Some(0));
+        assert_eq!(super::utf16_source_offset_to_byte_offset("å", 1), Some(2));
+        assert_eq!(super::utf16_source_offset_to_byte_offset("å", 2), None);
+        assert_eq!(
+            super::utf16_source_offset_to_byte_offset("a😀b\nc", 4),
+            Some(6)
+        );
+        assert_eq!(
+            super::utf16_source_offset_to_byte_offset("a😀b\nc", 5),
+            Some(7)
+        );
+        assert_eq!(
+            super::utf16_source_offset_to_byte_offset("a😀b\nc", 6),
+            Some(8)
+        );
     }
 
     #[test]

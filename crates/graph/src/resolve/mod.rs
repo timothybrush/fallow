@@ -157,27 +157,10 @@ pub fn resolve_all_imports_with_session(
     input: &ResolveAllImportsInput<'_>,
     session: &ResolverSession,
 ) -> Vec<ResolvedModule> {
-    let workspace_roots: FxHashMap<&str, &Path> = input
-        .workspaces
-        .iter()
-        .zip(session.canonical_ws_roots.iter())
-        .map(|(ws, canonical)| (ws.name.as_str(), canonical.as_path()))
-        .collect();
-
     let root_is_canonical = session.root_is_canonical;
-
-    let canonical_paths: Vec<PathBuf> = if root_is_canonical {
-        Vec::new()
-    } else {
-        input
-            .files
-            .par_iter()
-            .map(|f| dunce::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()))
-            .collect()
-    };
-
+    let workspace_roots = build_workspace_roots(input.workspaces, &session.canonical_ws_roots);
+    let canonical_paths = build_canonical_file_paths(input.files, root_is_canonical);
     let path_to_id = build_path_to_id(input.files, &canonical_paths, root_is_canonical);
-
     let raw_path_to_id: FxHashMap<&Path, FileId> = input
         .files
         .iter()
@@ -230,6 +213,28 @@ pub fn resolve_all_imports_with_session(
     );
 
     resolved
+}
+
+fn build_workspace_roots<'a>(
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    canonical_ws_roots: &'a [PathBuf],
+) -> FxHashMap<&'a str, &'a Path> {
+    workspaces
+        .iter()
+        .zip(canonical_ws_roots.iter())
+        .map(|(ws, canonical)| (ws.name.as_str(), canonical.as_path()))
+        .collect()
+}
+
+fn build_canonical_file_paths(files: &[DiscoveredFile], root_is_canonical: bool) -> Vec<PathBuf> {
+    if root_is_canonical {
+        return Vec::new();
+    }
+
+    files
+        .par_iter()
+        .map(|f| dunce::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()))
+        .collect()
 }
 
 /// Load the root package manifest plus each workspace manifest into the

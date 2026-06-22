@@ -41,15 +41,29 @@ fn fingerprint_hash(parts: &[&str]) -> String {
 /// Build a single CodeClimate issue. Wire shape is locked by the
 /// [`CodeClimateIssue`] typed envelope (and the schema drift gate);
 /// changes to the wire must flow through that struct.
-fn cc_issue(
-    check_name: &str,
-    description: &str,
+/// The fields of one Code Climate issue, bundled so `cc_issue` takes a single
+/// descriptor instead of seven positional parameters.
+#[derive(Clone, Copy)]
+struct CcIssue<'a> {
+    check_name: &'a str,
+    description: &'a str,
     severity: CodeClimateSeverity,
-    category: &str,
-    path: &str,
+    category: &'a str,
+    path: &'a str,
     begin_line: Option<u32>,
-    fingerprint: &str,
-) -> CodeClimateIssue {
+    fingerprint: &'a str,
+}
+
+fn cc_issue(issue: CcIssue<'_>) -> CodeClimateIssue {
+    let CcIssue {
+        check_name,
+        description,
+        severity,
+        category,
+        path,
+        begin_line,
+        fingerprint,
+    } = issue;
     CodeClimateIssue {
         kind: CodeClimateIssueKind::Issue,
         check_name: check_name.to_string(),
@@ -98,15 +112,15 @@ impl HealthCodeClimateContext<'_> {
         let check_name = complexity_check_name(finding);
         let line_str = finding.line.to_string();
         let fp = fingerprint_hash(&[check_name, &path, &line_str, &finding.name]);
-        cc_issue(
+        cc_issue(CcIssue {
             check_name,
-            &self.complexity_description(finding),
-            health_finding_severity(finding.severity),
-            "Complexity",
-            &path,
-            Some(finding.line),
-            &fp,
-        )
+            description: &self.complexity_description(finding),
+            severity: health_finding_severity(finding.severity),
+            category: "Complexity",
+            path: &path,
+            begin_line: Some(finding.line),
+            fingerprint: &fp,
+        })
     }
 
     fn complexity_description(&self, finding: &ComplexityViolation) -> String {
@@ -159,15 +173,15 @@ impl HealthCodeClimateContext<'_> {
             &finding.line.to_string(),
             &finding.function,
         ]);
-        cc_issue(
+        cc_issue(CcIssue {
             check_name,
-            &description,
-            runtime_coverage_severity(finding.verdict),
-            "Bug Risk",
-            &path,
-            Some(finding.line),
-            &fp,
-        )
+            description: &description,
+            severity: runtime_coverage_severity(finding.verdict),
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(finding.line),
+            fingerprint: &fp,
+        })
     }
 
     fn coverage_intelligence_issue(
@@ -189,15 +203,15 @@ impl HealthCodeClimateContext<'_> {
             identity,
             &finding.id,
         ]);
-        Some(cc_issue(
+        Some(cc_issue(CcIssue {
             check_name,
-            &description,
+            description: &description,
             severity,
-            "Bug Risk",
-            &path,
-            Some(finding.line),
-            &fp,
-        ))
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(finding.line),
+            fingerprint: &fp,
+        }))
     }
 
     fn untested_file_issue(&self, item: &UntestedFileFinding) -> CodeClimateIssue {
@@ -212,15 +226,15 @@ impl HealthCodeClimateContext<'_> {
             },
         );
         let fp = fingerprint_hash(&["fallow/untested-file", &path]);
-        cc_issue(
-            "fallow/untested-file",
-            &description,
-            CodeClimateSeverity::Minor,
-            "Coverage",
-            &path,
-            None,
-            &fp,
-        )
+        cc_issue(CcIssue {
+            check_name: "fallow/untested-file",
+            description: &description,
+            severity: CodeClimateSeverity::Minor,
+            category: "Coverage",
+            path: &path,
+            begin_line: None,
+            fingerprint: &fp,
+        })
     }
 
     fn untested_export_issue(&self, item: &UntestedExportFinding) -> CodeClimateIssue {
@@ -236,15 +250,15 @@ impl HealthCodeClimateContext<'_> {
             &line_str,
             &item.export.export_name,
         ]);
-        cc_issue(
-            "fallow/untested-export",
-            &description,
-            CodeClimateSeverity::Minor,
-            "Coverage",
-            &path,
-            Some(item.export.line),
-            &fp,
-        )
+        cc_issue(CcIssue {
+            check_name: "fallow/untested-export",
+            description: &description,
+            severity: CodeClimateSeverity::Minor,
+            category: "Coverage",
+            path: &path,
+            begin_line: Some(item.export.line),
+            fingerprint: &fp,
+        })
     }
 }
 
@@ -343,18 +357,18 @@ fn push_dep_cc_issues<'a, I>(
                 .join(", ");
             format!("; imported in other workspaces: {workspaces}")
         };
-        issues.push(cc_issue(
-            rule_id,
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: rule_id,
+            description: &format!(
                 "Package '{}' is in {location_label} but never imported{workspace_context}",
                 dep.package_name
             ),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -371,15 +385,15 @@ fn push_unused_file_issues(
     for entry in files {
         let path = cc_path(&entry.file.path, root);
         let fp = fingerprint_hash(&["fallow/unused-file", &path]);
-        issues.push(cc_issue(
-            "fallow/unused-file",
-            "File is not reachable from any entry point",
-            level,
-            "Bug Risk",
-            &path,
-            None,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-file",
+            description: "File is not reachable from any entry point",
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: None,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -412,18 +426,18 @@ where
         };
         let line_str = export.line.to_string();
         let fp = fingerprint_hash(&[input.rule_id, &path, &line_str, &export.export_name]);
-        input.issues.push(cc_issue(
-            input.rule_id,
-            &format!(
+        input.issues.push(cc_issue(CcIssue {
+            check_name: input.rule_id,
+            description: &format!(
                 "{kind} '{}' is never imported by other modules",
                 export.export_name
             ),
-            level,
-            "Bug Risk",
-            &path,
-            Some(export.line),
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(export.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -448,18 +462,18 @@ fn push_private_type_leak_issues(
             &leak.export_name,
             &leak.type_name,
         ]);
-        issues.push(cc_issue(
-            "fallow/private-type-leak",
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/private-type-leak",
+            description: &format!(
                 "Export '{}' references private type '{}'",
                 leak.export_name, leak.type_name
             ),
-            level,
-            "Bug Risk",
-            &path,
-            Some(leak.line),
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(leak.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -478,18 +492,18 @@ fn push_type_only_dep_issues(
         let path = cc_path(&dep.path, root);
         let line = if dep.line > 0 { Some(dep.line) } else { None };
         let fp = fingerprint_hash(&["fallow/type-only-dependency", &dep.package_name]);
-        issues.push(cc_issue(
-            "fallow/type-only-dependency",
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/type-only-dependency",
+            description: &format!(
                 "Package '{}' is only imported via type-only imports (consider moving to devDependencies)",
                 dep.package_name
             ),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -508,18 +522,18 @@ fn push_test_only_dep_issues(
         let path = cc_path(&dep.path, root);
         let line = if dep.line > 0 { Some(dep.line) } else { None };
         let fp = fingerprint_hash(&["fallow/test-only-dependency", &dep.package_name]);
-        issues.push(cc_issue(
-            "fallow/test-only-dependency",
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/test-only-dependency",
+            description: &format!(
                 "Package '{}' is only imported by test files (consider moving to devDependencies)",
                 dep.package_name
             ),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -548,18 +562,18 @@ fn push_unused_member_issues<'a, I>(
             &member.parent_name,
             &member.member_name,
         ]);
-        issues.push(cc_issue(
-            rule_id,
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: rule_id,
+            description: &format!(
                 "{entity_label} member '{}.{}' is never referenced",
                 member.parent_name, member.member_name
             ),
-            level,
-            "Bug Risk",
-            &path,
-            Some(member.line),
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(member.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -583,15 +597,15 @@ fn push_unresolved_import_issues(
             &line_str,
             &import.specifier,
         ]);
-        issues.push(cc_issue(
-            "fallow/unresolved-import",
-            &format!("Import '{}' could not be resolved", import.specifier),
-            level,
-            "Bug Risk",
-            &path,
-            Some(import.line),
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unresolved-import",
+            description: &format!("Import '{}' could not be resolved", import.specifier),
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(import.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -616,18 +630,18 @@ fn push_unlisted_dep_issues(
                 &line_str,
                 &dep.package_name,
             ]);
-            issues.push(cc_issue(
-                "fallow/unlisted-dependency",
-                &format!(
+            issues.push(cc_issue(CcIssue {
+                check_name: "fallow/unlisted-dependency",
+                description: &format!(
                     "Package '{}' is imported but not listed in package.json",
                     dep.package_name
                 ),
-                level,
-                "Bug Risk",
-                &path,
-                Some(site.line),
-                &fp,
-            ));
+                severity: level,
+                category: "Bug Risk",
+                path: &path,
+                begin_line: Some(site.line),
+                fingerprint: &fp,
+            }));
         }
     }
 }
@@ -653,15 +667,15 @@ fn push_duplicate_export_issues(
                 &line_str,
                 &dup.export_name,
             ]);
-            issues.push(cc_issue(
-                "fallow/duplicate-export",
-                &format!("Export '{}' appears in multiple modules", dup.export_name),
-                level,
-                "Bug Risk",
-                &path,
-                Some(loc.line),
-                &fp,
-            ));
+            issues.push(cc_issue(CcIssue {
+                check_name: "fallow/duplicate-export",
+                description: &format!("Export '{}' appears in multiple modules", dup.export_name),
+                severity: level,
+                category: "Bug Risk",
+                path: &path,
+                begin_line: Some(loc.line),
+                fingerprint: &fp,
+            }));
         }
     }
 }
@@ -690,9 +704,9 @@ fn push_circular_dep_issues(
         } else {
             None
         };
-        issues.push(cc_issue(
-            "fallow/circular-dependency",
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/circular-dependency",
+            description: &format!(
                 "Circular dependency{}: {}",
                 if cycle.is_cross_package {
                     " (cross-package)"
@@ -701,12 +715,12 @@ fn push_circular_dep_issues(
                 },
                 chain.join(" \u{2192} ")
             ),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -737,15 +751,15 @@ fn push_re_export_cycle_issues(
             fallow_core::results::ReExportCycleKind::MultiNode => "",
         };
         let fp = fingerprint_hash(&["fallow/re-export-cycle", kind_token, &chain_str]);
-        issues.push(cc_issue(
-            "fallow/re-export-cycle",
-            &format!("Re-export cycle{}: {}", kind_tag, chain.join(" <-> ")),
-            level,
-            "Bug Risk",
-            &path,
-            None,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/re-export-cycle",
+            description: &format!("Re-export cycle{}: {}", kind_tag, chain.join(" <-> ")),
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: None,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -765,18 +779,18 @@ fn push_boundary_violation_issues(
         let to = cc_path(&v.to_path, root);
         let fp = fingerprint_hash(&["fallow/boundary-violation", &path, &to]);
         let line = if v.line > 0 { Some(v.line) } else { None };
-        issues.push(cc_issue(
-            "fallow/boundary-violation",
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/boundary-violation",
+            description: &format!(
                 "Boundary violation: {} -> {} ({} -> {})",
                 path, to, v.from_zone, v.to_zone
             ),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -795,15 +809,15 @@ fn push_boundary_coverage_issues(
         let path = cc_path(&v.path, root);
         let fp = fingerprint_hash(&["fallow/boundary-coverage", &path]);
         let line = if v.line > 0 { Some(v.line) } else { None };
-        issues.push(cc_issue(
-            "fallow/boundary-coverage",
-            &format!("Boundary coverage: {path} matches no configured zone"),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/boundary-coverage",
+            description: &format!("Boundary coverage: {path} matches no configured zone"),
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -822,18 +836,18 @@ fn push_boundary_call_issues(
         let path = cc_path(&v.path, root);
         let fp = fingerprint_hash(&["fallow/boundary-call-violation", &path, &v.callee]);
         let line = if v.line > 0 { Some(v.line) } else { None };
-        issues.push(cc_issue(
-            "fallow/boundary-call-violation",
-            &format!(
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/boundary-call-violation",
+            description: &format!(
                 "Boundary call: `{}` matches forbidden pattern `{}` in zone '{}'",
                 v.callee, v.pattern, v.zone
             ),
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -864,15 +878,15 @@ fn push_policy_violation_issues(
             ),
             None => format!("Policy violation: `{}` is banned by `{rule}`", v.matched),
         };
-        issues.push(cc_issue(
-            "fallow/policy-violation",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/policy-violation",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -895,15 +909,15 @@ fn push_invalid_client_export_issues(
             "Export `{}` is not allowed in a \"{}\" file (Next.js server-only / route-config name)",
             e.export_name, e.directive
         );
-        issues.push(cc_issue(
-            "fallow/invalid-client-export",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/invalid-client-export",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -931,15 +945,15 @@ fn push_mixed_client_server_barrel_issues(
             "Barrel re-exports both a \"use client\" module (`{}`) and a server-only module (`{}`); one import drags the other's directive across the boundary",
             b.client_origin, b.server_origin
         );
-        issues.push(cc_issue(
-            "fallow/mixed-client-server-barrel",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/mixed-client-server-barrel",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -967,15 +981,15 @@ fn push_misplaced_directive_issues(
             "Directive `\"{}\"` is not in the leading position, so the RSC bundler ignores it; move it to the top of the file",
             d.directive
         );
-        issues.push(cc_issue(
-            "fallow/misplaced-directive",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/misplaced-directive",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1003,15 +1017,15 @@ fn push_unprovided_inject_issues(
             "inject(`{}`) has no matching provide(`{}`) in this project; at runtime it returns undefined (provide the key or remove this inject)",
             i.key_name, i.key_name
         );
-        issues.push(cc_issue(
-            "fallow/unprovided-inject",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unprovided-inject",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1039,15 +1053,15 @@ fn push_unrendered_component_issues(
             "component `{}` is reachable but rendered nowhere in this project (render it somewhere or remove it)",
             c.component_name
         );
-        issues.push(cc_issue(
-            "fallow/unrendered-component",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unrendered-component",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1075,15 +1089,15 @@ fn push_unused_component_prop_issues(
             "prop `{}` is declared but referenced nowhere in component `{}` (remove it or use it)",
             p.prop_name, p.component_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-component-prop",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-component-prop",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1111,15 +1125,15 @@ fn push_unused_component_emit_issues(
             "emit `{}` is declared but emitted nowhere in component `{}` (remove it or emit it)",
             e.emit_name, e.component_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-component-emit",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-component-emit",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1147,15 +1161,15 @@ fn push_unused_svelte_event_issues(
             "event `{}` is dispatched by component `{}` but listened to nowhere in the project (remove it or listen for it)",
             e.event_name, e.component_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-svelte-event",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-svelte-event",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1183,15 +1197,15 @@ fn push_unused_component_input_issues(
             "input `{}` is declared but referenced nowhere in component `{}` (remove it or use it)",
             i.input_name, i.component_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-component-input",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-component-input",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1219,15 +1233,15 @@ fn push_unused_component_output_issues(
             "output `{}` is declared but emitted nowhere in component `{}` (remove it or emit it)",
             o.output_name, o.component_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-component-output",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-component-output",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1255,15 +1269,15 @@ fn push_unused_server_action_issues(
             "server action `{}` is exported from a \"use server\" file but no code in this project references it (wire it to a consumer or remove it)",
             a.action_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-server-action",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-server-action",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1291,15 +1305,15 @@ fn push_unused_load_data_key_issues(
             "load() return key `{}` is read by no consumer (sibling +page.svelte data.<key> or project-wide page.data.<key>); delete the key or wire a consumer",
             k.key_name
         );
-        issues.push(cc_issue(
-            "fallow/unused-load-data-key",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-load-data-key",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1323,15 +1337,15 @@ fn push_route_collision_issues(
             c.url,
             c.conflicting_paths.len()
         );
-        issues.push(cc_issue(
-            "fallow/route-collision",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/route-collision",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1355,15 +1369,15 @@ fn push_dynamic_segment_name_conflict_issues(
             c.position,
             c.conflicting_segments.join(", ")
         );
-        issues.push(cc_issue(
-            "fallow/dynamic-segment-name-conflict",
-            &message,
-            level,
-            "Bug Risk",
-            &path,
-            line,
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/dynamic-segment-name-conflict",
+            description: &message,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: line,
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1391,15 +1405,15 @@ fn push_stale_suppression_issues(
             "fallow/stale-suppression"
         };
         let fp = fingerprint_hash(&[check_name, &path, &line_str]);
-        issues.push(cc_issue(
+        issues.push(cc_issue(CcIssue {
             check_name,
-            &s.display_message(),
-            level,
-            "Bug Risk",
-            &path,
-            Some(s.line),
-            &fp,
-        ));
+            description: &s.display_message(),
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(s.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1435,15 +1449,15 @@ fn push_unused_catalog_entry_issues(
                 entry.entry_name, entry.catalog_name
             )
         };
-        issues.push(cc_issue(
-            "fallow/unused-catalog-entry",
-            &description,
-            level,
-            "Bug Risk",
-            &path,
-            Some(entry.line),
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-catalog-entry",
+            description: &description,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(entry.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1491,15 +1505,15 @@ fn push_unresolved_catalog_reference_issues(
                 finding.available_in_catalogs.join(", ")
             );
         }
-        issues.push(cc_issue(
-            "fallow/unresolved-catalog-reference",
-            &description,
-            level,
-            "Bug Risk",
-            &path,
-            Some(finding.line),
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unresolved-catalog-reference",
+            description: &description,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(finding.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1523,15 +1537,15 @@ fn push_empty_catalog_group_issues(
             &line_str,
             &group.catalog_name,
         ]);
-        issues.push(cc_issue(
-            "fallow/empty-catalog-group",
-            &format!("Catalog group '{}' has no entries", group.catalog_name),
-            level,
-            "Bug Risk",
-            &path,
-            Some(group.line),
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/empty-catalog-group",
+            description: &format!("Catalog group '{}' has no entries", group.catalog_name),
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(group.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1564,15 +1578,15 @@ fn push_unused_dependency_override_issues(
             use std::fmt::Write as _;
             let _ = write!(description, " ({hint})");
         }
-        issues.push(cc_issue(
-            "fallow/unused-dependency-override",
-            &description,
-            level,
-            "Bug Risk",
-            &path,
-            Some(finding.line),
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/unused-dependency-override",
+            description: &description,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(finding.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -1603,15 +1617,15 @@ fn push_misconfigured_dependency_override_issues(
             finding.raw_value,
             finding.reason.describe(),
         );
-        issues.push(cc_issue(
-            "fallow/misconfigured-dependency-override",
-            &description,
-            level,
-            "Bug Risk",
-            &path,
-            Some(finding.line),
-            &fp,
-        ));
+        issues.push(cc_issue(CcIssue {
+            check_name: "fallow/misconfigured-dependency-override",
+            description: &description,
+            severity: level,
+            category: "Bug Risk",
+            path: &path,
+            begin_line: Some(finding.line),
+            fingerprint: &fp,
+        }));
     }
 }
 
@@ -2148,20 +2162,20 @@ pub fn build_duplication_codeclimate(
                 &line_count_str,
                 &fragment_prefix,
             ]);
-            issues.push(cc_issue(
-                "fallow/code-duplication",
-                &format!(
+            issues.push(cc_issue(CcIssue {
+                check_name: "fallow/code-duplication",
+                description: &format!(
                     "Code clone group {} ({} lines, {} instances)",
                     i + 1,
                     group.line_count,
                     group.instances.len()
                 ),
-                CodeClimateSeverity::Minor,
-                "Duplication",
-                &path,
-                Some(instance.start_line as u32),
-                &fp,
-            ));
+                severity: CodeClimateSeverity::Minor,
+                category: "Duplication",
+                path: &path,
+                begin_line: Some(instance.start_line as u32),
+                fingerprint: &fp,
+            }));
         }
     }
 
@@ -2931,5 +2945,1570 @@ mod tests {
         let description = issues[0]["description"].as_str().unwrap();
         assert!(description.contains("CRAP score"), "desc: {description}");
         assert!(description.contains("coverage 25%"), "desc: {description}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // coverage_intelligence_check_name: all four recommendation arms
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn coverage_intelligence_check_name_review_before_changing() {
+        use crate::health_types::CoverageIntelligenceRecommendation;
+        assert_eq!(
+            coverage_intelligence_check_name(
+                CoverageIntelligenceRecommendation::ReviewBeforeChanging
+            ),
+            "fallow/coverage-intelligence-review"
+        );
+    }
+
+    #[test]
+    fn coverage_intelligence_check_name_refactor_carefully() {
+        use crate::health_types::CoverageIntelligenceRecommendation;
+        assert_eq!(
+            coverage_intelligence_check_name(
+                CoverageIntelligenceRecommendation::RefactorCarefullyKeepBehavior
+            ),
+            "fallow/coverage-intelligence-refactor"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // complexity description: Both / Cyclomatic / Cognitive / All thresholds
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn complexity_description_both_threshold_exceeded() {
+        use crate::health_types::{ComplexityViolation, ExceededThreshold, FindingSeverity};
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            findings: vec![
+                ComplexityViolation {
+                    path: root.join("src/fn.ts"),
+                    name: "bothFn".to_string(),
+                    line: 1,
+                    col: 0,
+                    cyclomatic: 25,
+                    cognitive: 20,
+                    line_count: 50,
+                    param_count: 2,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
+                    exceeded: ExceededThreshold::Both,
+                    severity: FindingSeverity::High,
+                    crap: None,
+                    coverage_pct: None,
+                    coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
+                    component_rollup: None,
+                    contributions: vec![],
+                    effective_thresholds: None,
+                    threshold_source: None,
+                }
+                .into(),
+            ],
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues[0]["check_name"], "fallow/high-complexity");
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("cyclomatic complexity"), "desc: {desc}");
+        assert!(desc.contains("cognitive complexity"), "desc: {desc}");
+    }
+
+    #[test]
+    fn complexity_description_cyclomatic_only() {
+        use crate::health_types::{ComplexityViolation, ExceededThreshold, FindingSeverity};
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            findings: vec![
+                ComplexityViolation {
+                    path: root.join("src/fn.ts"),
+                    name: "cycFn".to_string(),
+                    line: 1,
+                    col: 0,
+                    cyclomatic: 25,
+                    cognitive: 5,
+                    line_count: 30,
+                    param_count: 1,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
+                    exceeded: ExceededThreshold::Cyclomatic,
+                    severity: FindingSeverity::High,
+                    crap: None,
+                    coverage_pct: None,
+                    coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
+                    component_rollup: None,
+                    contributions: vec![],
+                    effective_thresholds: None,
+                    threshold_source: None,
+                }
+                .into(),
+            ],
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues[0]["check_name"], "fallow/high-cyclomatic-complexity");
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("cyclomatic complexity"), "desc: {desc}");
+        assert!(
+            !desc.contains("cognitive"),
+            "desc should not mention cognitive: {desc}"
+        );
+    }
+
+    #[test]
+    fn complexity_description_cognitive_only() {
+        use crate::health_types::{ComplexityViolation, ExceededThreshold, FindingSeverity};
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            findings: vec![
+                ComplexityViolation {
+                    path: root.join("src/fn.ts"),
+                    name: "cogFn".to_string(),
+                    line: 1,
+                    col: 0,
+                    cyclomatic: 5,
+                    cognitive: 30,
+                    line_count: 30,
+                    param_count: 1,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
+                    exceeded: ExceededThreshold::Cognitive,
+                    severity: FindingSeverity::High,
+                    crap: None,
+                    coverage_pct: None,
+                    coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
+                    component_rollup: None,
+                    contributions: vec![],
+                    effective_thresholds: None,
+                    threshold_source: None,
+                }
+                .into(),
+            ],
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues[0]["check_name"], "fallow/high-cognitive-complexity");
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("cognitive complexity"), "desc: {desc}");
+        assert!(!desc.contains("cyclomatic"), "desc: {desc}");
+    }
+
+    #[test]
+    fn complexity_description_all_threshold_crap_no_coverage() {
+        use crate::health_types::{ComplexityViolation, ExceededThreshold, FindingSeverity};
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            findings: vec![
+                ComplexityViolation {
+                    path: root.join("src/fn.ts"),
+                    name: "allFn".to_string(),
+                    line: 1,
+                    col: 0,
+                    cyclomatic: 30,
+                    cognitive: 20,
+                    line_count: 80,
+                    param_count: 2,
+                    react_hook_count: 0,
+                    react_jsx_max_depth: 0,
+                    react_prop_count: 0,
+                    react_hook_profile: None,
+                    exceeded: ExceededThreshold::All,
+                    severity: FindingSeverity::Critical,
+                    crap: Some(110.0),
+                    coverage_pct: None,
+                    coverage_tier: None,
+                    coverage_source: None,
+                    inherited_from: None,
+                    component_rollup: None,
+                    contributions: vec![],
+                    effective_thresholds: None,
+                    threshold_source: None,
+                }
+                .into(),
+            ],
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues[0]["check_name"], "fallow/high-crap-score");
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("CRAP score"), "desc: {desc}");
+        assert!(
+            !desc.contains("coverage"),
+            "no coverage pct should appear: {desc}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // coverage_intelligence_issue: None identity falls back to "code"
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn coverage_intelligence_issue_none_identity_uses_code_label() {
+        use crate::health_types::{
+            CoverageIntelligenceAction, CoverageIntelligenceConfidence,
+            CoverageIntelligenceEvidence, CoverageIntelligenceFinding,
+            CoverageIntelligenceMatchConfidence, CoverageIntelligenceRecommendation,
+            CoverageIntelligenceReport, CoverageIntelligenceSchemaVersion,
+            CoverageIntelligenceSummary, CoverageIntelligenceVerdict,
+        };
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            coverage_intelligence: Some(CoverageIntelligenceReport {
+                schema_version: CoverageIntelligenceSchemaVersion::V1,
+                verdict: CoverageIntelligenceVerdict::ReviewRequired,
+                summary: CoverageIntelligenceSummary {
+                    findings: 1,
+                    ..Default::default()
+                },
+                findings: vec![CoverageIntelligenceFinding {
+                    id: "fallow:coverage-intel:xyz".to_owned(),
+                    path: root.join("src/util.ts"),
+                    identity: None,
+                    line: 3,
+                    verdict: CoverageIntelligenceVerdict::ReviewRequired,
+                    signals: vec![],
+                    recommendation: CoverageIntelligenceRecommendation::ReviewBeforeChanging,
+                    confidence: CoverageIntelligenceConfidence::Low,
+                    related_ids: vec![],
+                    evidence: CoverageIntelligenceEvidence {
+                        match_confidence: CoverageIntelligenceMatchConfidence::Direct,
+                        ..Default::default()
+                    },
+                    actions: vec![CoverageIntelligenceAction {
+                        kind: "review".to_owned(),
+                        description: "Review before changing".to_owned(),
+                        auto_fixable: false,
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0]["check_name"],
+            "fallow/coverage-intelligence-review"
+        );
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(
+            desc.contains("'code'"),
+            "description should say 'code': {desc}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // coverage_intelligence_issue: Clean/Unknown verdicts are filtered out
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn coverage_intelligence_clean_verdict_emits_no_issue() {
+        use crate::health_types::{
+            CoverageIntelligenceAction, CoverageIntelligenceConfidence,
+            CoverageIntelligenceEvidence, CoverageIntelligenceFinding,
+            CoverageIntelligenceMatchConfidence, CoverageIntelligenceRecommendation,
+            CoverageIntelligenceReport, CoverageIntelligenceSchemaVersion,
+            CoverageIntelligenceSummary, CoverageIntelligenceVerdict,
+        };
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            coverage_intelligence: Some(CoverageIntelligenceReport {
+                schema_version: CoverageIntelligenceSchemaVersion::V1,
+                verdict: CoverageIntelligenceVerdict::Clean,
+                summary: CoverageIntelligenceSummary {
+                    findings: 1,
+                    ..Default::default()
+                },
+                findings: vec![CoverageIntelligenceFinding {
+                    id: "fallow:coverage-intel:clean".to_owned(),
+                    path: root.join("src/util.ts"),
+                    identity: Some("cleanFn".to_owned()),
+                    line: 3,
+                    verdict: CoverageIntelligenceVerdict::Clean,
+                    signals: vec![],
+                    recommendation: CoverageIntelligenceRecommendation::ReviewBeforeChanging,
+                    confidence: CoverageIntelligenceConfidence::Low,
+                    related_ids: vec![],
+                    evidence: CoverageIntelligenceEvidence {
+                        match_confidence: CoverageIntelligenceMatchConfidence::Direct,
+                        ..Default::default()
+                    },
+                    actions: vec![CoverageIntelligenceAction {
+                        kind: "review".to_owned(),
+                        description: "Review before changing".to_owned(),
+                        auto_fixable: false,
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+        let issues = build_health_codeclimate(&report, &root);
+        assert!(
+            issues.is_empty(),
+            "Clean verdict should not produce an issue"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // untested_file_issue: singular vs plural export count in description
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn untested_file_singular_export_count() {
+        use crate::health_types::{
+            CoverageGapSummary, CoverageGaps, UntestedFile, UntestedFileFinding,
+        };
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            coverage_gaps: Some(CoverageGaps {
+                summary: CoverageGapSummary {
+                    runtime_files: 1,
+                    covered_files: 0,
+                    file_coverage_pct: 0.0,
+                    untested_files: 1,
+                    untested_exports: 0,
+                },
+                files: vec![UntestedFileFinding::with_actions(
+                    UntestedFile {
+                        path: root.join("src/single.ts"),
+                        value_export_count: 1,
+                    },
+                    &root,
+                )],
+                exports: vec![],
+            }),
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues.len(), 1);
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("1 value export)"), "singular: {desc}");
+        assert!(
+            !desc.contains("exports"),
+            "singular should not say 'exports': {desc}"
+        );
+    }
+
+    #[test]
+    fn untested_file_plural_export_count() {
+        use crate::health_types::{
+            CoverageGapSummary, CoverageGaps, UntestedFile, UntestedFileFinding,
+        };
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            coverage_gaps: Some(CoverageGaps {
+                summary: CoverageGapSummary {
+                    runtime_files: 1,
+                    covered_files: 0,
+                    file_coverage_pct: 0.0,
+                    untested_files: 1,
+                    untested_exports: 0,
+                },
+                files: vec![UntestedFileFinding::with_actions(
+                    UntestedFile {
+                        path: root.join("src/multi.ts"),
+                        value_export_count: 3,
+                    },
+                    &root,
+                )],
+                exports: vec![],
+            }),
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("3 value exports)"), "plural: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // health_finding_severity: Critical -> Critical, Moderate -> Minor
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn health_finding_severity_critical_maps_to_critical() {
+        use crate::health_types::FindingSeverity;
+        assert_eq!(
+            health_finding_severity(FindingSeverity::Critical),
+            CodeClimateSeverity::Critical
+        );
+    }
+
+    #[test]
+    fn health_finding_severity_moderate_maps_to_minor() {
+        use crate::health_types::FindingSeverity;
+        assert_eq!(
+            health_finding_severity(FindingSeverity::Moderate),
+            CodeClimateSeverity::Minor
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // runtime_coverage_check_name: all verdict arms
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn runtime_coverage_check_name_safe_to_delete() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_check_name(RuntimeCoverageVerdict::SafeToDelete),
+            "fallow/runtime-safe-to-delete"
+        );
+    }
+
+    #[test]
+    fn runtime_coverage_check_name_low_traffic() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_check_name(RuntimeCoverageVerdict::LowTraffic),
+            "fallow/runtime-low-traffic"
+        );
+    }
+
+    #[test]
+    fn runtime_coverage_check_name_coverage_unavailable() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_check_name(RuntimeCoverageVerdict::CoverageUnavailable),
+            "fallow/runtime-coverage-unavailable"
+        );
+    }
+
+    #[test]
+    fn runtime_coverage_check_name_active_and_unknown_use_generic() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_check_name(RuntimeCoverageVerdict::Active),
+            "fallow/runtime-coverage"
+        );
+        assert_eq!(
+            runtime_coverage_check_name(RuntimeCoverageVerdict::Unknown),
+            "fallow/runtime-coverage"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // runtime_coverage_severity: verdict arms
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn runtime_coverage_severity_safe_to_delete_is_critical() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_severity(RuntimeCoverageVerdict::SafeToDelete),
+            CodeClimateSeverity::Critical
+        );
+    }
+
+    #[test]
+    fn runtime_coverage_severity_review_required_is_major() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_severity(RuntimeCoverageVerdict::ReviewRequired),
+            CodeClimateSeverity::Major
+        );
+    }
+
+    #[test]
+    fn runtime_coverage_severity_other_verdicts_are_minor() {
+        use crate::health_types::RuntimeCoverageVerdict;
+        assert_eq!(
+            runtime_coverage_severity(RuntimeCoverageVerdict::LowTraffic),
+            CodeClimateSeverity::Minor
+        );
+        assert_eq!(
+            runtime_coverage_severity(RuntimeCoverageVerdict::Active),
+            CodeClimateSeverity::Minor
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // coverage_intelligence_severity: all verdict arms
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn coverage_intelligence_severity_review_required_is_minor() {
+        use crate::health_types::CoverageIntelligenceVerdict;
+        assert_eq!(
+            coverage_intelligence_severity(CoverageIntelligenceVerdict::ReviewRequired),
+            Some(CodeClimateSeverity::Minor)
+        );
+    }
+
+    #[test]
+    fn coverage_intelligence_severity_refactor_carefully_is_minor() {
+        use crate::health_types::CoverageIntelligenceVerdict;
+        assert_eq!(
+            coverage_intelligence_severity(CoverageIntelligenceVerdict::RefactorCarefully),
+            Some(CodeClimateSeverity::Minor)
+        );
+    }
+
+    #[test]
+    fn coverage_intelligence_severity_clean_is_none() {
+        use crate::health_types::CoverageIntelligenceVerdict;
+        assert_eq!(
+            coverage_intelligence_severity(CoverageIntelligenceVerdict::Clean),
+            None
+        );
+    }
+
+    #[test]
+    fn coverage_intelligence_severity_unknown_is_none() {
+        use crate::health_types::CoverageIntelligenceVerdict;
+        assert_eq!(
+            coverage_intelligence_severity(CoverageIntelligenceVerdict::Unknown),
+            None
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_dep_cc_issues: workspace context included in description
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_dep_with_workspace_context_includes_workspace_in_description() {
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_dependencies
+            .push(UnusedDependencyFinding::with_actions(UnusedDependency {
+                package_name: "shared-lib".to_string(),
+                location: DependencyLocation::Dependencies,
+                path: root.join("package.json"),
+                line: 10,
+                used_in_workspaces: vec![root.join("packages/app")],
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(
+            desc.contains("imported in other workspaces"),
+            "desc: {desc}"
+        );
+        assert!(desc.contains("packages/app"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_private_type_leak_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn private_type_leak_emits_correct_check_name_and_description() {
+        use fallow_config::Severity;
+        use fallow_types::output_dead_code::PrivateTypeLeakFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .private_type_leaks
+            .push(PrivateTypeLeakFinding::with_actions(PrivateTypeLeak {
+                path: root.join("src/api.ts"),
+                export_name: "ApiResponse".to_string(),
+                type_name: "InternalState".to_string(),
+                line: 7,
+                col: 0,
+                span_start: 0,
+            }));
+        // private_type_leaks defaults to Off; enable it so the issue is emitted.
+        let rules = RulesConfig {
+            private_type_leaks: Severity::Error,
+            ..RulesConfig::default()
+        };
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        let arr = output.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["check_name"], "fallow/private-type-leak");
+        let desc = arr[0]["description"].as_str().unwrap();
+        assert!(desc.contains("ApiResponse"), "desc: {desc}");
+        assert!(desc.contains("InternalState"), "desc: {desc}");
+        assert_eq!(arr[0]["location"]["lines"]["begin"], 7);
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_type_only_dep_issues / push_test_only_dep_issues: zero line -> line 1
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn type_only_dep_zero_line_defaults_to_1() {
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .type_only_dependencies
+            .push(TypeOnlyDependencyFinding::with_actions(
+                TypeOnlyDependency {
+                    package_name: "ts-types".to_string(),
+                    path: root.join("package.json"),
+                    line: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["location"]["lines"]["begin"], 1);
+    }
+
+    #[test]
+    fn test_only_dep_zero_line_defaults_to_1() {
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .test_only_dependencies
+            .push(TestOnlyDependencyFinding::with_actions(
+                TestOnlyDependency {
+                    package_name: "vitest".to_string(),
+                    path: root.join("package.json"),
+                    line: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/test-only-dependency");
+        assert_eq!(output[0]["location"]["lines"]["begin"], 1);
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_re_export_cycle_issues: self-loop and multi-node arms
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn re_export_cycle_self_loop_description_contains_self_loop_tag() {
+        use fallow_types::output_dead_code::ReExportCycleFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .re_export_cycles
+            .push(ReExportCycleFinding::with_actions(ReExportCycle {
+                files: vec![root.join("src/index.ts")],
+                kind: ReExportCycleKind::SelfLoop,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/re-export-cycle");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("(self-loop)"), "desc: {desc}");
+    }
+
+    #[test]
+    fn re_export_cycle_multi_node_description_has_no_kind_tag() {
+        use fallow_types::output_dead_code::ReExportCycleFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .re_export_cycles
+            .push(ReExportCycleFinding::with_actions(ReExportCycle {
+                files: vec![root.join("src/a.ts"), root.join("src/b.ts")],
+                kind: ReExportCycleKind::MultiNode,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.starts_with("Re-export cycle: "), "desc: {desc}");
+        assert!(!desc.contains("(self-loop)"), "desc: {desc}");
+        assert!(!desc.contains("(multi-node)"), "desc: {desc}");
+        assert!(desc.contains("src/a.ts"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_boundary_coverage_issues and push_boundary_call_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn boundary_coverage_violation_emits_correct_check_name() {
+        use fallow_types::output_dead_code::BoundaryCoverageViolationFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .boundary_coverage_violations
+            .push(BoundaryCoverageViolationFinding::with_actions(
+                BoundaryCoverageViolation {
+                    path: root.join("src/orphan.ts"),
+                    line: 0,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/boundary-coverage");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("no configured zone"), "desc: {desc}");
+    }
+
+    #[test]
+    fn boundary_call_violation_emits_pattern_in_description() {
+        use fallow_types::output_dead_code::BoundaryCallViolationFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .boundary_call_violations
+            .push(BoundaryCallViolationFinding::with_actions(
+                BoundaryCallViolation {
+                    path: root.join("src/ui/App.ts"),
+                    line: 5,
+                    col: 0,
+                    zone: "ui".to_string(),
+                    callee: "fs.readFile".to_string(),
+                    pattern: "fs.*".to_string(),
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/boundary-call-violation");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("fs.readFile"), "desc: {desc}");
+        assert!(desc.contains("fs.*"), "desc: {desc}");
+        assert!(desc.contains("'ui'"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_policy_violation_issues: error severity and optional message
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn policy_violation_error_severity_maps_to_major() {
+        use fallow_types::output_dead_code::PolicyViolationFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .policy_violations
+            .push(PolicyViolationFinding::with_actions(PolicyViolation {
+                path: root.join("src/service.ts"),
+                line: 2,
+                col: 0,
+                pack: "security".to_string(),
+                rule_id: "no-eval".to_string(),
+                kind: PolicyRuleKind::BannedCall,
+                matched: "eval".to_string(),
+                severity: PolicyViolationSeverity::Error,
+                message: None,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/policy-violation");
+        assert_eq!(output[0]["severity"], "major");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("eval"), "desc: {desc}");
+        assert!(desc.contains("security/no-eval"), "desc: {desc}");
+    }
+
+    #[test]
+    fn policy_violation_warn_severity_maps_to_minor() {
+        use fallow_types::output_dead_code::PolicyViolationFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .policy_violations
+            .push(PolicyViolationFinding::with_actions(PolicyViolation {
+                path: root.join("src/service.ts"),
+                line: 2,
+                col: 0,
+                pack: "style".to_string(),
+                rule_id: "no-console".to_string(),
+                kind: PolicyRuleKind::BannedCall,
+                matched: "console.log".to_string(),
+                severity: PolicyViolationSeverity::Warn,
+                message: Some("Use the project logger instead".to_string()),
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["severity"], "minor");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(
+            desc.contains("Use the project logger instead"),
+            "desc: {desc}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_invalid_client_export_issues and push_mixed_client_server_barrel_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn invalid_client_export_emits_correct_check_name_and_directive() {
+        use fallow_types::output_dead_code::InvalidClientExportFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .invalid_client_exports
+            .push(InvalidClientExportFinding::with_actions(
+                InvalidClientExport {
+                    path: root.join("src/page.ts"),
+                    export_name: "metadata".to_string(),
+                    directive: "use client".to_string(),
+                    line: 3,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/invalid-client-export");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("metadata"), "desc: {desc}");
+        assert!(desc.contains("use client"), "desc: {desc}");
+    }
+
+    #[test]
+    fn mixed_client_server_barrel_emits_correct_check_name_and_origins() {
+        use fallow_types::output_dead_code::MixedClientServerBarrelFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .mixed_client_server_barrels
+            .push(MixedClientServerBarrelFinding::with_actions(
+                MixedClientServerBarrel {
+                    path: root.join("src/index.ts"),
+                    client_origin: "./client-comp".to_string(),
+                    server_origin: "./server-only".to_string(),
+                    line: 1,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/mixed-client-server-barrel");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("./client-comp"), "desc: {desc}");
+        assert!(desc.contains("./server-only"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_misplaced_directive_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn misplaced_directive_emits_correct_check_name_and_guidance() {
+        use fallow_types::output_dead_code::MisplacedDirectiveFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .misplaced_directives
+            .push(MisplacedDirectiveFinding::with_actions(
+                MisplacedDirective {
+                    path: root.join("src/page.ts"),
+                    directive: "use client".to_string(),
+                    line: 5,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/misplaced-directive");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("use client"), "desc: {desc}");
+        assert!(desc.contains("leading position"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unrendered_component_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unrendered_component_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnrenderedComponentFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unrendered_components
+            .push(UnrenderedComponentFinding::with_actions(
+                UnrenderedComponent {
+                    path: root.join("src/Dead.vue"),
+                    component_name: "Dead".to_string(),
+                    framework: "vue".to_string(),
+                    reachable_via: None,
+                    line: 1,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unrendered-component");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`Dead`"), "desc: {desc}");
+        assert!(desc.contains("rendered nowhere"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_component_prop_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_component_prop_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedComponentPropFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_component_props
+            .push(UnusedComponentPropFinding::with_actions(
+                UnusedComponentProp {
+                    path: root.join("src/Card.vue"),
+                    component_name: "Card".to_string(),
+                    prop_name: "color".to_string(),
+                    line: 3,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-component-prop");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`color`"), "desc: {desc}");
+        assert!(desc.contains("Card"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_component_emit_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_component_emit_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedComponentEmitFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_component_emits
+            .push(UnusedComponentEmitFinding::with_actions(
+                UnusedComponentEmit {
+                    path: root.join("src/Button.vue"),
+                    component_name: "Button".to_string(),
+                    emit_name: "close".to_string(),
+                    line: 4,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-component-emit");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`close`"), "desc: {desc}");
+        assert!(desc.contains("Button"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_svelte_event_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_svelte_event_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedSvelteEventFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_svelte_events
+            .push(UnusedSvelteEventFinding::with_actions(UnusedSvelteEvent {
+                path: root.join("src/Child.svelte"),
+                component_name: "Child".to_string(),
+                event_name: "submit".to_string(),
+                line: 2,
+                col: 0,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-svelte-event");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`submit`"), "desc: {desc}");
+        assert!(desc.contains("listened to nowhere"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_component_input_issues and push_unused_component_output_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_component_input_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedComponentInputFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_component_inputs
+            .push(UnusedComponentInputFinding::with_actions(
+                UnusedComponentInput {
+                    path: root.join("src/card.component.ts"),
+                    component_name: "CardComponent".to_string(),
+                    input_name: "label".to_string(),
+                    line: 5,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-component-input");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`label`"), "desc: {desc}");
+        assert!(desc.contains("CardComponent"), "desc: {desc}");
+    }
+
+    #[test]
+    fn unused_component_output_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedComponentOutputFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_component_outputs
+            .push(UnusedComponentOutputFinding::with_actions(
+                UnusedComponentOutput {
+                    path: root.join("src/toggle.component.ts"),
+                    component_name: "ToggleComponent".to_string(),
+                    output_name: "changed".to_string(),
+                    line: 6,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-component-output");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`changed`"), "desc: {desc}");
+        assert!(desc.contains("ToggleComponent"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_server_action_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_server_action_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedServerActionFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_server_actions
+            .push(UnusedServerActionFinding::with_actions(
+                UnusedServerAction {
+                    path: root.join("src/app/actions.ts"),
+                    action_name: "deleteUser".to_string(),
+                    line: 8,
+                    col: 0,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-server-action");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`deleteUser`"), "desc: {desc}");
+        assert!(desc.contains("\"use server\""), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_load_data_key_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_load_data_key_emits_correct_check_name_and_description() {
+        use fallow_types::output_dead_code::UnusedLoadDataKeyFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_load_data_keys
+            .push(UnusedLoadDataKeyFinding::with_actions(UnusedLoadDataKey {
+                path: root.join("src/routes/+page.ts"),
+                key_name: "postCount".to_string(),
+                line: 7,
+                col: 0,
+                route_dir: None,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-load-data-key");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`postCount`"), "desc: {desc}");
+        assert!(desc.contains("no consumer"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_route_collision_issues and push_dynamic_segment_name_conflict_issues
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn route_collision_emits_correct_check_name_and_url_in_description() {
+        use fallow_types::output_dead_code::RouteCollisionFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .route_collisions
+            .push(RouteCollisionFinding::with_actions(RouteCollision {
+                path: root.join("src/app/about/page.tsx"),
+                url: "/about".to_string(),
+                conflicting_paths: vec![root.join("src/app/(marketing)/about/page.tsx")],
+                line: 1,
+                col: 0,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/route-collision");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`/about`"), "desc: {desc}");
+        assert!(desc.contains("1 other file"), "desc: {desc}");
+    }
+
+    #[test]
+    fn dynamic_segment_name_conflict_emits_correct_check_name_and_position() {
+        use fallow_types::output_dead_code::DynamicSegmentNameConflictFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results.dynamic_segment_name_conflicts.push(
+            DynamicSegmentNameConflictFinding::with_actions(DynamicSegmentNameConflict {
+                path: root.join("src/app/shop/[id]/page.tsx"),
+                position: "/shop".to_string(),
+                conflicting_segments: vec!["[id]".to_string(), "[slug]".to_string()],
+                conflicting_paths: vec![root.join("src/app/shop/[slug]/page.tsx")],
+                line: 1,
+                col: 0,
+            }),
+        );
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(
+            output[0]["check_name"],
+            "fallow/dynamic-segment-name-conflict"
+        );
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("`/shop`"), "desc: {desc}");
+        assert!(desc.contains("[id]"), "desc: {desc}");
+        assert!(desc.contains("[slug]"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unresolved_catalog_reference_issues: default and named catalog
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unresolved_catalog_reference_default_catalog_description() {
+        use fallow_types::output_dead_code::UnresolvedCatalogReferenceFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results.unresolved_catalog_references.push(
+            UnresolvedCatalogReferenceFinding::with_actions(UnresolvedCatalogReference {
+                entry_name: "react".to_string(),
+                catalog_name: "default".to_string(),
+                path: root.join("packages/app/package.json"),
+                line: 5,
+                available_in_catalogs: vec![],
+            }),
+        );
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(
+            output[0]["check_name"],
+            "fallow/unresolved-catalog-reference"
+        );
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("the default catalog"), "desc: {desc}");
+        assert!(desc.contains("react"), "desc: {desc}");
+        assert!(desc.contains("catalog:"), "desc: {desc}");
+    }
+
+    #[test]
+    fn unresolved_catalog_reference_named_catalog_description() {
+        use fallow_types::output_dead_code::UnresolvedCatalogReferenceFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results.unresolved_catalog_references.push(
+            UnresolvedCatalogReferenceFinding::with_actions(UnresolvedCatalogReference {
+                entry_name: "lodash".to_string(),
+                catalog_name: "react17".to_string(),
+                path: root.join("packages/legacy/package.json"),
+                line: 3,
+                available_in_catalogs: vec!["default".to_string()],
+            }),
+        );
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("catalog 'react17'"), "desc: {desc}");
+        assert!(desc.contains("available in"), "desc: {desc}");
+        assert!(desc.contains("default"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // push_unused_dependency_override_issues: hint included in description
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_dependency_override_with_hint_includes_hint_in_description() {
+        use fallow_types::output_dead_code::UnusedDependencyOverrideFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_dependency_overrides
+            .push(UnusedDependencyOverrideFinding::with_actions(
+                UnusedDependencyOverride {
+                    raw_key: "react".to_string(),
+                    target_package: "react".to_string(),
+                    parent_package: None,
+                    version_constraint: None,
+                    version_range: "^18.0.0".to_string(),
+                    source: DependencyOverrideSource::PnpmPackageJson,
+                    path: root.join("package.json"),
+                    line: 12,
+                    hint: Some("verify lockfile before removing".to_string()),
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-dependency-override");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("react"), "desc: {desc}");
+        assert!(desc.contains("verify lockfile"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_health_codeclimate: runtime coverage findings
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn health_codeclimate_runtime_safe_to_delete_maps_to_critical_severity() {
+        use crate::health_types::{
+            RuntimeCoverageConfidence, RuntimeCoverageDataSource, RuntimeCoverageEvidence,
+            RuntimeCoverageFinding, RuntimeCoverageReport, RuntimeCoverageReportVerdict,
+            RuntimeCoverageSchemaVersion, RuntimeCoverageSummary, RuntimeCoverageVerdict,
+        };
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            runtime_coverage: Some(RuntimeCoverageReport {
+                schema_version: RuntimeCoverageSchemaVersion::V1,
+                verdict: RuntimeCoverageReportVerdict::ColdCodeDetected,
+                signals: vec![],
+                summary: RuntimeCoverageSummary {
+                    data_source: RuntimeCoverageDataSource::Local,
+                    last_received_at: None,
+                    functions_tracked: 10,
+                    functions_hit: 8,
+                    functions_unhit: 2,
+                    functions_untracked: 0,
+                    coverage_percent: 80.0,
+                    trace_count: 1000,
+                    period_days: 7,
+                    deployments_seen: 1,
+                    capture_quality: None,
+                },
+                findings: vec![RuntimeCoverageFinding {
+                    id: "fallow:prod:aabbccdd".to_string(),
+                    stable_id: None,
+                    source_hash: None,
+                    path: root.join("src/legacy.ts"),
+                    function: "legacyHelper".to_string(),
+                    line: 12,
+                    verdict: RuntimeCoverageVerdict::SafeToDelete,
+                    invocations: Some(0),
+                    confidence: RuntimeCoverageConfidence::High,
+                    evidence: RuntimeCoverageEvidence {
+                        static_status: "unused".to_string(),
+                        test_coverage: "not_covered".to_string(),
+                        v8_tracking: "tracked".to_string(),
+                        untracked_reason: None,
+                        observation_days: 30,
+                        deployments_observed: 3,
+                    },
+                    actions: vec![],
+                }],
+                hot_paths: vec![],
+                blast_radius: vec![],
+                importance: vec![],
+                watermark: None,
+                warnings: vec![],
+            }),
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["check_name"], "fallow/runtime-safe-to-delete");
+        assert_eq!(issues[0]["severity"], "critical");
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("legacyHelper"), "desc: {desc}");
+        assert!(desc.contains("safe to delete"), "desc: {desc}");
+        assert!(desc.contains("0 invocations"), "desc: {desc}");
+        assert_eq!(issues[0]["location"]["path"], "src/legacy.ts");
+        assert_eq!(issues[0]["location"]["lines"]["begin"], 12);
+    }
+
+    #[test]
+    fn health_codeclimate_runtime_finding_with_none_invocations_shows_untracked() {
+        use crate::health_types::{
+            RuntimeCoverageConfidence, RuntimeCoverageDataSource, RuntimeCoverageEvidence,
+            RuntimeCoverageFinding, RuntimeCoverageReport, RuntimeCoverageReportVerdict,
+            RuntimeCoverageSchemaVersion, RuntimeCoverageSummary, RuntimeCoverageVerdict,
+        };
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            runtime_coverage: Some(RuntimeCoverageReport {
+                schema_version: RuntimeCoverageSchemaVersion::V1,
+                verdict: RuntimeCoverageReportVerdict::ColdCodeDetected,
+                signals: vec![],
+                summary: RuntimeCoverageSummary {
+                    data_source: RuntimeCoverageDataSource::Local,
+                    last_received_at: None,
+                    functions_tracked: 5,
+                    functions_hit: 4,
+                    functions_unhit: 0,
+                    functions_untracked: 1,
+                    coverage_percent: 80.0,
+                    trace_count: 500,
+                    period_days: 7,
+                    deployments_seen: 1,
+                    capture_quality: None,
+                },
+                findings: vec![RuntimeCoverageFinding {
+                    id: "fallow:prod:11223344".to_string(),
+                    stable_id: None,
+                    source_hash: None,
+                    path: root.join("src/worker.ts"),
+                    function: "workerFn".to_string(),
+                    line: 5,
+                    verdict: RuntimeCoverageVerdict::CoverageUnavailable,
+                    invocations: None,
+                    confidence: RuntimeCoverageConfidence::Low,
+                    evidence: RuntimeCoverageEvidence {
+                        static_status: "used".to_string(),
+                        test_coverage: "not_covered".to_string(),
+                        v8_tracking: "untracked".to_string(),
+                        untracked_reason: Some("worker_thread".to_string()),
+                        observation_days: 7,
+                        deployments_observed: 1,
+                    },
+                    actions: vec![],
+                }],
+                hot_paths: vec![],
+                blast_radius: vec![],
+                importance: vec![],
+                watermark: None,
+                warnings: vec![],
+            }),
+            ..Default::default()
+        };
+        let json = issues_to_value(&build_health_codeclimate(&report, &root));
+        let issues = json.as_array().unwrap();
+        let desc = issues[0]["description"].as_str().unwrap();
+        assert!(desc.contains("untracked"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_duplication_codeclimate
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn duplication_codeclimate_one_issue_per_instance() {
+        use fallow_core::duplicates::{
+            CloneGroup, CloneInstance, DuplicationReport, DuplicationStats,
+        };
+        let root = PathBuf::from("/project");
+        let report = DuplicationReport {
+            clone_groups: vec![CloneGroup {
+                instances: vec![
+                    CloneInstance {
+                        file: root.join("src/a.ts"),
+                        start_line: 10,
+                        end_line: 20,
+                        start_col: 0,
+                        end_col: 0,
+                        fragment: "const x = 1;\nconst y = 2;".to_string(),
+                    },
+                    CloneInstance {
+                        file: root.join("src/b.ts"),
+                        start_line: 30,
+                        end_line: 40,
+                        start_col: 0,
+                        end_col: 0,
+                        fragment: "const x = 1;\nconst y = 2;".to_string(),
+                    },
+                ],
+                token_count: 20,
+                line_count: 10,
+            }],
+            clone_families: vec![],
+            mirrored_directories: vec![],
+            stats: DuplicationStats::default(),
+        };
+        let output = issues_to_value(&build_duplication_codeclimate(&report, &root));
+        let issues = output.as_array().unwrap();
+        assert_eq!(issues.len(), 2, "one issue per clone instance");
+        assert_eq!(issues[0]["check_name"], "fallow/code-duplication");
+        assert_eq!(issues[1]["check_name"], "fallow/code-duplication");
+        assert_eq!(issues[0]["location"]["path"].as_str().unwrap(), "src/a.ts");
+        assert_eq!(issues[1]["location"]["path"].as_str().unwrap(), "src/b.ts");
+        assert_eq!(issues[0]["location"]["lines"]["begin"], 10);
+        assert_eq!(issues[1]["location"]["lines"]["begin"], 30);
+        assert_eq!(issues[0]["categories"][0], "Duplication");
+    }
+
+    #[test]
+    fn duplication_codeclimate_description_includes_group_number_and_line_count() {
+        use fallow_core::duplicates::{
+            CloneGroup, CloneInstance, DuplicationReport, DuplicationStats,
+        };
+        let root = PathBuf::from("/project");
+        let report = DuplicationReport {
+            clone_groups: vec![
+                CloneGroup {
+                    instances: vec![CloneInstance {
+                        file: root.join("src/a.ts"),
+                        start_line: 1,
+                        end_line: 10,
+                        start_col: 0,
+                        end_col: 0,
+                        fragment: "x".to_string(),
+                    }],
+                    token_count: 5,
+                    line_count: 8,
+                },
+                CloneGroup {
+                    instances: vec![CloneInstance {
+                        file: root.join("src/b.ts"),
+                        start_line: 5,
+                        end_line: 12,
+                        start_col: 0,
+                        end_col: 0,
+                        fragment: "y".to_string(),
+                    }],
+                    token_count: 3,
+                    line_count: 6,
+                },
+            ],
+            clone_families: vec![],
+            mirrored_directories: vec![],
+            stats: DuplicationStats::default(),
+        };
+        let output = issues_to_value(&build_duplication_codeclimate(&report, &root));
+        let issues = output.as_array().unwrap();
+        assert_eq!(issues.len(), 2);
+        let desc0 = issues[0]["description"].as_str().unwrap();
+        assert!(desc0.contains("group 1"), "first group: {desc0}");
+        assert!(desc0.contains("8 lines"), "first group line count: {desc0}");
+        let desc1 = issues[1]["description"].as_str().unwrap();
+        assert!(desc1.contains("group 2"), "second group: {desc1}");
+        assert!(
+            desc1.contains("6 lines"),
+            "second group line count: {desc1}"
+        );
+    }
+
+    #[test]
+    fn duplication_codeclimate_empty_report_produces_empty_array() {
+        use fallow_core::duplicates::{DuplicationReport, DuplicationStats};
+        let root = PathBuf::from("/project");
+        let report = DuplicationReport {
+            clone_groups: vec![],
+            clone_families: vec![],
+            mirrored_directories: vec![],
+            stats: DuplicationStats::default(),
+        };
+        let output = issues_to_value(&build_duplication_codeclimate(&report, &root));
+        assert!(output.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplication_codeclimate_fingerprints_are_unique_across_instances() {
+        use fallow_core::duplicates::{
+            CloneGroup, CloneInstance, DuplicationReport, DuplicationStats,
+        };
+        let root = PathBuf::from("/project");
+        let report = DuplicationReport {
+            clone_groups: vec![CloneGroup {
+                instances: vec![
+                    CloneInstance {
+                        file: root.join("src/x.ts"),
+                        start_line: 1,
+                        end_line: 5,
+                        start_col: 0,
+                        end_col: 0,
+                        fragment: "hello".to_string(),
+                    },
+                    CloneInstance {
+                        file: root.join("src/y.ts"),
+                        start_line: 10,
+                        end_line: 14,
+                        start_col: 0,
+                        end_col: 0,
+                        fragment: "hello".to_string(),
+                    },
+                ],
+                token_count: 5,
+                line_count: 4,
+            }],
+            clone_families: vec![],
+            mirrored_directories: vec![],
+            stats: DuplicationStats::default(),
+        };
+        let output = issues_to_value(&build_duplication_codeclimate(&report, &root));
+        let issues = output.as_array().unwrap();
+        let fp0 = issues[0]["fingerprint"].as_str().unwrap();
+        let fp1 = issues[1]["fingerprint"].as_str().unwrap();
+        assert_ne!(
+            fp0, fp1,
+            "different file+line instances must have distinct fingerprints"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // circular_dep: cross-package variant includes cross-package label
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn circular_dep_cross_package_description_contains_label() {
+        use fallow_types::output_dead_code::CircularDependencyFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .circular_dependencies
+            .push(CircularDependencyFinding::with_actions(
+                CircularDependency {
+                    files: vec![
+                        root.join("packages/a/src/index.ts"),
+                        root.join("packages/b/src/index.ts"),
+                    ],
+                    length: 2,
+                    line: 0,
+                    col: 0,
+                    edges: Vec::new(),
+                    is_cross_package: true,
+                },
+            ));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("(cross-package)"), "desc: {desc}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // is_re_export: unused_types re-export label
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unused_type_re_export_uses_type_re_export_label() {
+        use fallow_types::output_dead_code::UnusedTypeFinding;
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_types
+            .push(UnusedTypeFinding::with_actions(UnusedExport {
+                path: root.join("src/index.ts"),
+                export_name: "ReExportedType".to_string(),
+                is_type_only: true,
+                line: 2,
+                col: 0,
+                span_start: 0,
+                is_re_export: true,
+            }));
+        let rules = RulesConfig::default();
+        let output = issues_to_value(&build_codeclimate(&results, &root, &rules));
+        assert_eq!(output[0]["check_name"], "fallow/unused-type");
+        let desc = output[0]["description"].as_str().unwrap();
+        assert!(desc.contains("Type re-export"), "desc: {desc}");
     }
 }

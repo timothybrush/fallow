@@ -70,31 +70,47 @@ pub fn annotate_dead_code_cross_links(
         if !matches!(finding.kind, SecurityFindingKind::TaintedSink) {
             continue;
         }
-        if unused_file_paths.contains(finding.path.as_path()) {
-            finding.dead_code = Some(SecurityDeadCodeContext {
-                kind: SecurityDeadCodeKind::UnusedFile,
-                export_name: None,
-                line: None,
-                guidance: UNUSED_FILE_GUIDANCE.to_string(),
-            });
-            prepend_dead_code_action(finding);
-            continue;
-        }
-
-        if let Some(export) = matching_unused_export(
-            module_by_path.get(finding.path.as_path()).copied(),
+        annotate_finding_dead_code(
+            finding,
+            &unused_file_paths,
+            &module_by_path,
             line_offsets_by_file,
             unused_exports,
-            finding,
-        ) {
-            finding.dead_code = Some(SecurityDeadCodeContext {
-                kind: SecurityDeadCodeKind::UnusedExport,
-                export_name: Some(export.export.export_name.clone()),
-                line: Some(export.export.line),
-                guidance: UNUSED_EXPORT_GUIDANCE.to_string(),
-            });
-            prepend_dead_code_action(finding);
-        }
+        );
+    }
+}
+
+fn annotate_finding_dead_code(
+    finding: &mut SecurityFinding,
+    unused_file_paths: &FxHashSet<&Path>,
+    module_by_path: &FxHashMap<&Path, &ModuleInfo>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    unused_exports: &[UnusedExportFinding],
+) {
+    if unused_file_paths.contains(finding.path.as_path()) {
+        finding.dead_code = Some(SecurityDeadCodeContext {
+            kind: SecurityDeadCodeKind::UnusedFile,
+            export_name: None,
+            line: None,
+            guidance: UNUSED_FILE_GUIDANCE.to_string(),
+        });
+        prepend_dead_code_action(finding);
+        return;
+    }
+
+    if let Some(export) = matching_unused_export(
+        module_by_path.get(finding.path.as_path()).copied(),
+        line_offsets_by_file,
+        unused_exports,
+        finding,
+    ) {
+        finding.dead_code = Some(SecurityDeadCodeContext {
+            kind: SecurityDeadCodeKind::UnusedExport,
+            export_name: Some(export.export.export_name.clone()),
+            line: Some(export.export.line),
+            guidance: UNUSED_EXPORT_GUIDANCE.to_string(),
+        });
+        prepend_dead_code_action(finding);
     }
 }
 
@@ -183,27 +199,22 @@ fn prepend_dead_code_action(finding: &mut SecurityFinding) {
 /// radius, crosses-boundary, active-code over dead-code candidates, then the
 /// existing deterministic `(path, line, col, category)` tiebreak so output stays
 /// stable across runs.
-pub fn rank_security_findings(
-    graph: &ModuleGraph,
-    modules: &[ModuleInfo],
-    line_offsets_by_file: &LineOffsetsMap<'_>,
-    declared_deps: &FxHashSet<String>,
-    request_receivers: &FxHashSet<String>,
-    boundary_crossings: &FxHashMap<PathBuf, (String, String)>,
-    findings: &mut [SecurityFinding],
-) {
+/// Graph and run inputs that drive security-finding ranking.
+pub struct SecurityRankingInput<'a> {
+    pub graph: &'a ModuleGraph,
+    pub modules: &'a [ModuleInfo],
+    pub line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    pub declared_deps: &'a FxHashSet<String>,
+    pub request_receivers: &'a FxHashSet<String>,
+    pub boundary_crossings: &'a FxHashMap<PathBuf, (String, String)>,
+}
+
+pub fn rank_security_findings(input: &SecurityRankingInput<'_>, findings: &mut [SecurityFinding]) {
     if findings.is_empty() {
         return;
     }
 
-    let context = SecurityRankingContext::build(
-        graph,
-        modules,
-        line_offsets_by_file,
-        declared_deps,
-        request_receivers,
-        boundary_crossings,
-    );
+    let context = SecurityRankingContext::build(input);
 
     for finding in findings.iter_mut() {
         enrich_ranked_security_finding(finding, &context);
@@ -222,21 +233,20 @@ struct SecurityRankingContext<'a> {
 }
 
 impl<'a> SecurityRankingContext<'a> {
-    fn build(
-        graph: &'a ModuleGraph,
-        modules: &'a [ModuleInfo],
-        line_offsets_by_file: &'a LineOffsetsMap<'a>,
-        declared_deps: &FxHashSet<String>,
-        request_receivers: &FxHashSet<String>,
-        boundary_crossings: &'a FxHashMap<PathBuf, (String, String)>,
-    ) -> Self {
+    fn build(input: &SecurityRankingInput<'a>) -> Self {
+        let graph = input.graph;
+        let modules = input.modules;
         let path_to_id = graph
             .modules
             .iter()
             .map(|node| (node.path.as_path(), node.file_id))
             .collect();
-        let source_index =
-            UntrustedSourceIndex::build(graph, modules, declared_deps, request_receivers);
+        let source_index = UntrustedSourceIndex::build(
+            graph,
+            modules,
+            input.declared_deps,
+            input.request_receivers,
+        );
         let modules_by_id: FxHashMap<FileId, &ModuleInfo> = modules
             .iter()
             .map(|module| (module.file_id, module))
@@ -253,8 +263,8 @@ impl<'a> SecurityRankingContext<'a> {
 
         Self {
             graph,
-            line_offsets_by_file,
-            boundary_crossings,
+            line_offsets_by_file: input.line_offsets_by_file,
+            boundary_crossings: input.boundary_crossings,
             path_to_id,
             source_index,
             modules_by_path,
@@ -884,12 +894,14 @@ mod tests {
             .map(|path| (path.clone(), ("from".to_string(), "to".to_string())))
             .collect();
         rank_security_findings(
-            graph,
-            &modules,
-            &line_offsets,
-            &declared_deps,
-            &request_receivers,
-            &boundary_crossings,
+            &SecurityRankingInput {
+                graph,
+                modules: &modules,
+                line_offsets_by_file: &line_offsets,
+                declared_deps: &declared_deps,
+                request_receivers: &request_receivers,
+                boundary_crossings: &boundary_crossings,
+            },
             findings,
         );
     }
@@ -904,12 +916,14 @@ mod tests {
         let request_receivers = FxHashSet::default();
         let boundary_crossings = FxHashMap::default();
         rank_security_findings(
-            graph,
-            modules,
-            &line_offsets,
-            &declared_deps,
-            &request_receivers,
-            &boundary_crossings,
+            &SecurityRankingInput {
+                graph,
+                modules,
+                line_offsets_by_file: &line_offsets,
+                declared_deps: &declared_deps,
+                request_receivers: &request_receivers,
+                boundary_crossings: &boundary_crossings,
+            },
             findings,
         );
     }
@@ -981,6 +995,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,

@@ -339,24 +339,58 @@ pub fn discover_external_plugins(
 
     let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
 
+    load_configured_plugin_paths(
+        root,
+        config_plugin_paths,
+        &canonical_root,
+        &mut plugins,
+        &mut seen_names,
+    );
+    load_default_plugins_dir(root, &canonical_root, &mut plugins, &mut seen_names);
+    load_root_plugin_files(root, &canonical_root, &mut plugins, &mut seen_names);
+
+    plugins
+}
+
+fn load_configured_plugin_paths(
+    root: &Path,
+    config_plugin_paths: &[String],
+    canonical_root: &Path,
+    plugins: &mut Vec<ExternalPluginDef>,
+    seen_names: &mut rustc_hash::FxHashSet<String>,
+) {
     for path_str in config_plugin_paths {
         let path = root.join(path_str);
-        if !is_within_root(&path, &canonical_root) {
+        if !is_within_root(&path, canonical_root) {
             tracing::warn!("plugin path '{path_str}' resolves outside project root, skipping");
             continue;
         }
         if path.is_dir() {
-            load_plugins_from_dir(&path, &canonical_root, &mut plugins, &mut seen_names);
+            load_plugins_from_dir(&path, canonical_root, plugins, seen_names);
         } else if path.is_file() {
-            load_plugin_file(&path, &canonical_root, &mut plugins, &mut seen_names);
+            load_plugin_file(&path, canonical_root, plugins, seen_names);
         }
     }
+}
 
+fn load_default_plugins_dir(
+    root: &Path,
+    canonical_root: &Path,
+    plugins: &mut Vec<ExternalPluginDef>,
+    seen_names: &mut rustc_hash::FxHashSet<String>,
+) {
     let plugins_dir = root.join(".fallow").join("plugins");
-    if plugins_dir.is_dir() && is_within_root(&plugins_dir, &canonical_root) {
-        load_plugins_from_dir(&plugins_dir, &canonical_root, &mut plugins, &mut seen_names);
+    if plugins_dir.is_dir() && is_within_root(&plugins_dir, canonical_root) {
+        load_plugins_from_dir(&plugins_dir, canonical_root, plugins, seen_names);
     }
+}
 
+fn load_root_plugin_files(
+    root: &Path,
+    canonical_root: &Path,
+    plugins: &mut Vec<ExternalPluginDef>,
+    seen_names: &mut rustc_hash::FxHashSet<String>,
+) {
     if let Ok(entries) = std::fs::read_dir(root) {
         let mut plugin_files: Vec<PathBuf> = entries
             .filter_map(Result::ok)
@@ -370,11 +404,9 @@ pub fn discover_external_plugins(
             .collect();
         plugin_files.sort();
         for path in plugin_files {
-            load_plugin_file(&path, &canonical_root, &mut plugins, &mut seen_names);
+            load_plugin_file(&path, canonical_root, plugins, seen_names);
         }
     }
-
-    plugins
 }
 
 /// Check if a path resolves within the canonical root (follows symlinks).
@@ -428,33 +460,50 @@ fn load_plugin_file(
         return;
     };
 
+    let Some(content) = read_plugin_file(path) else {
+        return;
+    };
+
+    if let Some(plugin) = parse_plugin(&content, &format, path) {
+        push_plugin_if_unique(plugin, path, plugins, seen);
+    }
+}
+
+fn read_plugin_file(path: &Path) -> Option<String> {
     match std::fs::read_to_string(path) {
-        Ok(content) => {
-            if let Some(plugin) = parse_plugin(&content, &format, path) {
-                if plugin.name.is_empty() {
-                    tracing::warn!(
-                        "external plugin in {} has an empty name, skipping",
-                        path.display()
-                    );
-                    return;
-                }
-                if seen.insert(plugin.name.clone()) {
-                    plugins.push(plugin);
-                } else {
-                    tracing::warn!(
-                        "duplicate external plugin '{}' in {}, skipping",
-                        plugin.name,
-                        path.display()
-                    );
-                }
-            }
-        }
+        Ok(content) => Some(content),
         Err(e) => {
             tracing::warn!(
                 "failed to read external plugin file {}: {e}",
                 path.display()
             );
+            None
         }
+    }
+}
+
+fn push_plugin_if_unique(
+    plugin: ExternalPluginDef,
+    path: &Path,
+    plugins: &mut Vec<ExternalPluginDef>,
+    seen: &mut rustc_hash::FxHashSet<String>,
+) {
+    if plugin.name.is_empty() {
+        tracing::warn!(
+            "external plugin in {} has an empty name, skipping",
+            path.display()
+        );
+        return;
+    }
+
+    if seen.insert(plugin.name.clone()) {
+        plugins.push(plugin);
+    } else {
+        tracing::warn!(
+            "duplicate external plugin '{}' in {}, skipping",
+            plugin.name,
+            path.display()
+        );
     }
 }
 

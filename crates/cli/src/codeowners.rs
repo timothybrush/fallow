@@ -115,89 +115,11 @@ impl CodeOwners {
 
     /// Parse CODEOWNERS content into a lookup structure.
     pub(crate) fn parse(content: &str) -> Result<Self, String> {
-        let mut builder = GlobSetBuilder::new();
-        let mut owners = Vec::new();
-        let mut owner_counts = Vec::new();
-        let mut patterns = Vec::new();
-        let mut is_negation = Vec::new();
-        let mut sections: Vec<Option<String>> = Vec::new();
-        let mut section_owners: Vec<Vec<String>> = Vec::new();
-        let mut current_section: Option<String> = None;
-        let mut current_section_owners: Vec<String> = Vec::new();
-        let mut has_sections = false;
-
+        let mut parser = CodeOwnersParser::new();
         for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            if let Some((name, defaults)) = parse_section_header(line) {
-                current_section = Some(name);
-                current_section_owners = defaults;
-                has_sections = true;
-                continue;
-            }
-
-            let (negate, rest) = if let Some(after) = line.strip_prefix('!') {
-                (true, after.trim_start())
-            } else {
-                (false, line)
-            };
-
-            let mut parts = rest.split_whitespace();
-            let Some(pattern) = parts.next() else {
-                continue;
-            };
-            let inline_owners = parts.collect::<Vec<_>>();
-
-            let (effective_owner, owner_count): (&str, u32) = if negate {
-                ("", 0)
-            } else if let Some(owner) = inline_owners.first() {
-                (
-                    owner,
-                    u32::try_from(inline_owners.len()).unwrap_or(u32::MAX),
-                )
-            } else if let Some(owner) = current_section_owners.first() {
-                (
-                    owner.as_str(),
-                    u32::try_from(current_section_owners.len()).unwrap_or(u32::MAX),
-                )
-            } else {
-                continue;
-            };
-
-            let glob_pattern = translate_pattern(pattern);
-            let glob = Glob::new(&glob_pattern)
-                .map_err(|e| format!("invalid CODEOWNERS pattern '{pattern}': {e}"))?;
-
-            builder.add(glob);
-            owners.push(effective_owner.to_string());
-            owner_counts.push(owner_count);
-            patterns.push(if negate {
-                format!("!{pattern}")
-            } else {
-                pattern.to_string()
-            });
-            is_negation.push(negate);
-            sections.push(current_section.clone());
-            section_owners.push(current_section_owners.clone());
+            parser.parse_line(line)?;
         }
-
-        let globs = builder
-            .build()
-            .map_err(|e| format!("failed to compile CODEOWNERS patterns: {e}"))?;
-
-        Ok(Self {
-            owners,
-            owner_counts,
-            patterns,
-            is_negation,
-            sections,
-            section_owners,
-            has_sections,
-            globs,
-        })
+        parser.finish()
     }
 
     /// Look up the primary owner of a file path (relative to project root).
@@ -318,6 +240,158 @@ impl CodeOwners {
     /// would collapse into the `(no section)` bucket.
     pub fn has_sections(&self) -> bool {
         self.has_sections
+    }
+}
+
+struct CodeOwnersParser {
+    builder: GlobSetBuilder,
+    owners: Vec<String>,
+    owner_counts: Vec<u32>,
+    patterns: Vec<String>,
+    is_negation: Vec<bool>,
+    sections: Vec<Option<String>>,
+    section_owners: Vec<Vec<String>>,
+    current_section: Option<String>,
+    current_section_owners: Vec<String>,
+    has_sections: bool,
+}
+
+impl CodeOwnersParser {
+    fn new() -> Self {
+        Self {
+            builder: GlobSetBuilder::new(),
+            owners: Vec::new(),
+            owner_counts: Vec::new(),
+            patterns: Vec::new(),
+            is_negation: Vec::new(),
+            sections: Vec::new(),
+            section_owners: Vec::new(),
+            current_section: None,
+            current_section_owners: Vec::new(),
+            has_sections: false,
+        }
+    }
+
+    fn parse_line(&mut self, line: &str) -> Result<(), String> {
+        match parse_codeowners_line(line, &self.current_section_owners) {
+            ParsedCodeOwnersLine::Skip => Ok(()),
+            ParsedCodeOwnersLine::Section { name, defaults } => {
+                self.current_section = Some(name);
+                self.current_section_owners = defaults;
+                self.has_sections = true;
+                Ok(())
+            }
+            ParsedCodeOwnersLine::Rule {
+                pattern,
+                owner,
+                owner_count,
+                negate,
+            } => self.add_rule(pattern, owner, owner_count, negate),
+        }
+    }
+
+    fn add_rule(
+        &mut self,
+        pattern: String,
+        owner: String,
+        owner_count: u32,
+        negate: bool,
+    ) -> Result<(), String> {
+        let glob_pattern = translate_pattern(&pattern);
+        let glob = Glob::new(&glob_pattern)
+            .map_err(|e| format!("invalid CODEOWNERS pattern '{pattern}': {e}"))?;
+
+        self.builder.add(glob);
+        self.owners.push(owner);
+        self.owner_counts.push(owner_count);
+        self.patterns.push(if negate {
+            format!("!{pattern}")
+        } else {
+            pattern
+        });
+        self.is_negation.push(negate);
+        self.sections.push(self.current_section.clone());
+        self.section_owners
+            .push(self.current_section_owners.clone());
+        Ok(())
+    }
+
+    fn finish(self) -> Result<CodeOwners, String> {
+        let globs = self
+            .builder
+            .build()
+            .map_err(|e| format!("failed to compile CODEOWNERS patterns: {e}"))?;
+
+        Ok(CodeOwners {
+            owners: self.owners,
+            owner_counts: self.owner_counts,
+            patterns: self.patterns,
+            is_negation: self.is_negation,
+            sections: self.sections,
+            section_owners: self.section_owners,
+            has_sections: self.has_sections,
+            globs,
+        })
+    }
+}
+
+enum ParsedCodeOwnersLine {
+    Skip,
+    Section {
+        name: String,
+        defaults: Vec<String>,
+    },
+    Rule {
+        pattern: String,
+        owner: String,
+        owner_count: u32,
+        negate: bool,
+    },
+}
+
+fn parse_codeowners_line(line: &str, current_section_owners: &[String]) -> ParsedCodeOwnersLine {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return ParsedCodeOwnersLine::Skip;
+    }
+
+    if let Some((name, defaults)) = parse_section_header(line) {
+        return ParsedCodeOwnersLine::Section { name, defaults };
+    }
+
+    let (negate, rest) = if let Some(after) = line.strip_prefix('!') {
+        (true, after.trim_start())
+    } else {
+        (false, line)
+    };
+
+    let mut parts = rest.split_whitespace();
+    let Some(pattern) = parts.next() else {
+        return ParsedCodeOwnersLine::Skip;
+    };
+    let inline_owners = parts.collect::<Vec<_>>();
+
+    let (owner, owner_count) = if negate {
+        (String::new(), 0)
+    } else if let Some(owner) = inline_owners.first() {
+        (
+            (*owner).to_string(),
+            u32::try_from(inline_owners.len()).unwrap_or(u32::MAX),
+        )
+    } else if let Some(owner) = current_section_owners.first() {
+        (
+            owner.clone(),
+            u32::try_from(current_section_owners.len()).unwrap_or(u32::MAX),
+        )
+    } else {
+        return ParsedCodeOwnersLine::Skip;
+    };
+
+    ParsedCodeOwnersLine::Rule {
+        pattern: pattern.to_string(),
+        owner,
+        owner_count,
+        negate,
     }
 }
 

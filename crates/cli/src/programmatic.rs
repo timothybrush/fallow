@@ -307,69 +307,12 @@ struct ResolvedAnalysisOptions {
 
 impl AnalysisOptions {
     fn resolve(&self) -> ProgrammaticResult<ResolvedAnalysisOptions> {
-        if self.threads == Some(0) {
-            return Err(
-                ProgrammaticError::new("`threads` must be greater than 0", 2)
-                    .with_code("FALLOW_INVALID_THREADS")
-                    .with_context("analysis.threads"),
-            );
-        }
-        if self.workspace.is_some() && self.changed_workspaces.is_some() {
-            return Err(ProgrammaticError::new(
-                "`workspace` and `changed_workspaces` are mutually exclusive",
-                2,
-            )
-            .with_code("FALLOW_MUTUALLY_EXCLUSIVE_OPTIONS")
-            .with_context("analysis.workspace"));
-        }
-
-        let root = if let Some(root) = &self.root {
-            root.clone()
-        } else {
-            std::env::current_dir().map_err(|err| {
-                ProgrammaticError::new(
-                    format!("failed to resolve current working directory: {err}"),
-                    2,
-                )
-                .with_code("FALLOW_CWD_UNAVAILABLE")
-                .with_context("analysis.root")
-            })?
-        };
-
-        if !root.exists() {
-            return Err(ProgrammaticError::new(
-                format!("analysis root does not exist: {}", root.display()),
-                2,
-            )
-            .with_code("FALLOW_INVALID_ROOT")
-            .with_context("analysis.root"));
-        }
-        if !root.is_dir() {
-            return Err(ProgrammaticError::new(
-                format!("analysis root is not a directory: {}", root.display()),
-                2,
-            )
-            .with_code("FALLOW_INVALID_ROOT")
-            .with_context("analysis.root"));
-        }
-
-        if let Some(config_path) = &self.config_path
-            && !config_path.exists()
-        {
-            return Err(ProgrammaticError::new(
-                format!("config file does not exist: {}", config_path.display()),
-                2,
-            )
-            .with_code("FALLOW_INVALID_CONFIG_PATH")
-            .with_context("analysis.configPath"));
-        }
+        validate_analysis_option_shape(self)?;
+        let root = resolve_analysis_root(self.root.as_deref())?;
+        validate_analysis_config_path(self.config_path.as_deref())?;
 
         let threads = self.threads.unwrap_or_else(default_threads);
-        let pool = crate::rayon_pool::build_thread_pool(threads).map_err(|err| {
-            ProgrammaticError::new(format!("failed to build analysis thread pool: {err}"), 2)
-                .with_code("FALLOW_THREAD_POOL_INIT_FAILED")
-                .with_context("analysis.threads")
-        })?;
+        let pool = build_analysis_thread_pool(threads)?;
         let diff = self
             .diff_file
             .as_deref()
@@ -394,6 +337,82 @@ impl AnalysisOptions {
             legacy_envelope: self.legacy_envelope,
         })
     }
+}
+
+fn validate_analysis_option_shape(options: &AnalysisOptions) -> ProgrammaticResult<()> {
+    if options.threads == Some(0) {
+        return Err(
+            ProgrammaticError::new("`threads` must be greater than 0", 2)
+                .with_code("FALLOW_INVALID_THREADS")
+                .with_context("analysis.threads"),
+        );
+    }
+    if options.workspace.is_some() && options.changed_workspaces.is_some() {
+        return Err(ProgrammaticError::new(
+            "`workspace` and `changed_workspaces` are mutually exclusive",
+            2,
+        )
+        .with_code("FALLOW_MUTUALLY_EXCLUSIVE_OPTIONS")
+        .with_context("analysis.workspace"));
+    }
+
+    Ok(())
+}
+
+fn resolve_analysis_root(root: Option<&Path>) -> ProgrammaticResult<PathBuf> {
+    let root = match root {
+        Some(root) => root.to_path_buf(),
+        None => std::env::current_dir().map_err(|err| {
+            ProgrammaticError::new(
+                format!("failed to resolve current working directory: {err}"),
+                2,
+            )
+            .with_code("FALLOW_CWD_UNAVAILABLE")
+            .with_context("analysis.root")
+        })?,
+    };
+
+    if !root.exists() {
+        return Err(ProgrammaticError::new(
+            format!("analysis root does not exist: {}", root.display()),
+            2,
+        )
+        .with_code("FALLOW_INVALID_ROOT")
+        .with_context("analysis.root"));
+    }
+    if !root.is_dir() {
+        return Err(ProgrammaticError::new(
+            format!("analysis root is not a directory: {}", root.display()),
+            2,
+        )
+        .with_code("FALLOW_INVALID_ROOT")
+        .with_context("analysis.root"));
+    }
+
+    Ok(root)
+}
+
+fn validate_analysis_config_path(config_path: Option<&Path>) -> ProgrammaticResult<()> {
+    if let Some(config_path) = config_path
+        && !config_path.exists()
+    {
+        return Err(ProgrammaticError::new(
+            format!("config file does not exist: {}", config_path.display()),
+            2,
+        )
+        .with_code("FALLOW_INVALID_CONFIG_PATH")
+        .with_context("analysis.configPath"));
+    }
+
+    Ok(())
+}
+
+fn build_analysis_thread_pool(threads: usize) -> ProgrammaticResult<rayon::ThreadPool> {
+    crate::rayon_pool::build_thread_pool(threads).map_err(|err| {
+        ProgrammaticError::new(format!("failed to build analysis thread pool: {err}"), 2)
+            .with_code("FALLOW_THREAD_POOL_INIT_FAILED")
+            .with_context("analysis.threads")
+    })
 }
 
 impl ResolvedAnalysisOptions {

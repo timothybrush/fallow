@@ -24,9 +24,11 @@
 //! Vite RSC, etc.). Without an RSC bundler the directives carry no special
 //! meaning, so firing would be a false positive.
 
+use std::path::Path;
+
 use rustc_hash::FxHashMap;
 
-use fallow_types::extract::ModuleInfo;
+use fallow_types::extract::{MisplacedDirectiveSite, ModuleInfo};
 
 use crate::discover::FileId;
 use crate::graph::ModuleGraph;
@@ -68,11 +70,7 @@ pub fn find_misplaced_directives(
         return Vec::new();
     }
 
-    let path_by_id: FxHashMap<FileId, &std::path::Path> = graph
-        .modules
-        .iter()
-        .map(|module| (module.file_id, module.path.as_path()))
-        .collect();
+    let path_by_id = path_by_file_id(graph);
 
     let mut findings = Vec::new();
     for module in modules {
@@ -82,29 +80,63 @@ pub fn find_misplaced_directives(
         let Some(path) = path_by_id.get(&module.file_id) else {
             continue;
         };
-
-        for site in &module.misplaced_directives {
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, module.file_id, site.span_start);
-            if suppressions.is_suppressed(module.file_id, line, IssueKind::MisplacedDirective) {
-                continue;
-            }
-
-            let directive = if site.is_server {
-                USE_SERVER
-            } else {
-                USE_CLIENT
-            };
-            findings.push(MisplacedDirective {
-                path: path.to_path_buf(),
-                directive: directive.to_string(),
-                line,
-                col,
-            });
-        }
+        append_misplaced_directives_for_module(
+            module,
+            path,
+            suppressions,
+            line_offsets_by_file,
+            &mut findings,
+        );
     }
 
     findings
+}
+
+fn path_by_file_id(graph: &ModuleGraph) -> FxHashMap<FileId, &Path> {
+    graph
+        .modules
+        .iter()
+        .map(|module| (module.file_id, module.path.as_path()))
+        .collect()
+}
+
+fn append_misplaced_directives_for_module(
+    module: &ModuleInfo,
+    path: &Path,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<MisplacedDirective>,
+) {
+    for site in &module.misplaced_directives {
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, module.file_id, site.span_start);
+        if suppressions.is_suppressed(module.file_id, line, IssueKind::MisplacedDirective) {
+            continue;
+        }
+        findings.push(build_misplaced_directive(path, site, line, col));
+    }
+}
+
+fn build_misplaced_directive(
+    path: &Path,
+    site: &MisplacedDirectiveSite,
+    line: u32,
+    col: u32,
+) -> MisplacedDirective {
+    MisplacedDirective {
+        path: path.to_path_buf(),
+        directive: misplaced_directive_text(site).to_string(),
+        line,
+        col,
+    }
+}
+
+fn misplaced_directive_text(site: &MisplacedDirectiveSite) -> &'static str {
+    if site.is_server {
+        USE_SERVER
+    } else {
+        USE_CLIENT
+    }
 }
 
 #[cfg(test)]

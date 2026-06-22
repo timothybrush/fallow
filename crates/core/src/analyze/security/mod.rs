@@ -51,7 +51,10 @@ mod rank;
 mod tainted_sink;
 
 pub use hardcoded_secret::find_hardcoded_secret_candidates;
-pub use rank::{annotate_dead_code_cross_links, derive_security_severity, rank_security_findings};
+pub use rank::{
+    SecurityRankingInput, annotate_dead_code_cross_links, derive_security_severity,
+    rank_security_findings,
+};
 pub use tainted_sink::{CategoryFilter, TaintedSinkContext, find_tainted_sinks};
 
 /// Segment-aware callee pattern matcher, re-exported for the boundary
@@ -91,6 +94,39 @@ fn build_actions() -> Vec<IssueAction> {
         description: "Suppress with a file-level comment at the top of the client file".to_string(),
         comment: format!("// fallow-ignore-file {SUPPRESS_KIND}"),
     })]
+}
+
+fn build_client_server_leak_finding(
+    evidence: String,
+    trace: Vec<TraceHop>,
+    candidate: SecurityCandidate,
+) -> SecurityFinding {
+    let category = candidate.sink.category.clone();
+
+    SecurityFinding {
+        finding_id: String::new(),
+        kind: SecurityFindingKind::ClientServerLeak,
+        category,
+        cwe: None,
+        path: candidate.sink.path.clone(),
+        line: candidate.sink.line,
+        col: candidate.sink.col,
+        evidence,
+        // The client-server-leak rule is graph-structural, not source-to-sink;
+        // source-backing is a tainted-sink concept (issue #859).
+        source_backed: false,
+        // client-server-leak is module-level by construction (no arg-level read).
+        source_read: None,
+        severity: SecuritySeverity::Low,
+        trace,
+        actions: build_actions(),
+        dead_code: None,
+        reachability: None,
+        candidate,
+        taint_flow: None,
+        runtime: None,
+        attack_surface: None,
+    }
 }
 
 /// The React Server Components client-boundary directive.
@@ -231,47 +267,66 @@ fn walk_client_cone(scan: &LeakScanInput<'_>, client_id: FileId) -> ClientConeRe
     queue.push_back(client_id);
 
     while let Some(current) = queue.pop_front() {
-        if let Some(current_module) = scan.modules_by_id.get(&current)
-            && !current_module.dynamic_import_patterns.is_empty()
-        {
-            result.had_unresolved_edge = true;
-        }
-
-        if current != client_id {
-            if result.reached_secret.is_none() && scan.secret_sources.contains_key(&current) {
-                result.reached_secret = Some(current);
-            }
-            if result.reached_server_only.is_none() && scan.server_only_sources.contains(&current) {
-                result.reached_server_only = Some(current);
-            }
-        }
-
-        // Exclude edges reached only through a `next/dynamic ssr:false`
-        // dynamic import made by `current` (the client-only escape hatch).
-        let excluded = scan
-            .client_only_spans
-            .get(&current)
-            .unwrap_or(scan.empty_spans);
-        for (target, all_type_only, span_start, all_client_only) in scan
-            .graph
-            .outgoing_edge_summaries_with_exclusions(current, excluded)
-        {
-            if all_type_only {
-                continue; // type-only imports are erased at build; cannot leak.
-            }
-            if all_client_only {
-                // Reached only via next/dynamic ssr:false: the sanctioned
-                // client-only escape hatch, not a leak edge.
-                continue;
-            }
-            if visited.insert(target) {
-                result.parent.insert(target, (current, span_start));
-                queue.push_back(target);
-            }
-        }
+        record_client_cone_module(scan, client_id, current, &mut result);
+        enqueue_client_cone_edges(scan, current, &mut visited, &mut result.parent, &mut queue);
     }
 
     result
+}
+
+fn record_client_cone_module(
+    scan: &LeakScanInput<'_>,
+    client_id: FileId,
+    current: FileId,
+    result: &mut ClientConeResult,
+) {
+    if let Some(current_module) = scan.modules_by_id.get(&current)
+        && !current_module.dynamic_import_patterns.is_empty()
+    {
+        result.had_unresolved_edge = true;
+    }
+
+    if current == client_id {
+        return;
+    }
+    if result.reached_secret.is_none() && scan.secret_sources.contains_key(&current) {
+        result.reached_secret = Some(current);
+    }
+    if result.reached_server_only.is_none() && scan.server_only_sources.contains(&current) {
+        result.reached_server_only = Some(current);
+    }
+}
+
+fn enqueue_client_cone_edges(
+    scan: &LeakScanInput<'_>,
+    current: FileId,
+    visited: &mut FxHashSet<FileId>,
+    parent: &mut FxHashMap<FileId, (FileId, Option<u32>)>,
+    queue: &mut VecDeque<FileId>,
+) {
+    // Exclude edges reached only through a `next/dynamic ssr:false`
+    // dynamic import made by `current` (the client-only escape hatch).
+    let excluded = scan
+        .client_only_spans
+        .get(&current)
+        .unwrap_or(scan.empty_spans);
+    for (target, all_type_only, span_start, all_client_only) in scan
+        .graph
+        .outgoing_edge_summaries_with_exclusions(current, excluded)
+    {
+        if all_type_only {
+            continue; // type-only imports are erased at build; cannot leak.
+        }
+        if all_client_only {
+            // Reached only via next/dynamic ssr:false: the sanctioned
+            // client-only escape hatch, not a leak edge.
+            continue;
+        }
+        if visited.insert(target) {
+            parent.insert(target, (current, span_start));
+            queue.push_back(target);
+        }
+    }
 }
 
 fn find_client_server_leaks(
@@ -365,6 +420,15 @@ fn scan_client_file_for_leaks(
         return;
     }
 
+    emit_direct_client_file_leaks(scan, client_id, findings);
+    emit_transitive_client_file_leaks(scan, client_id, findings, stats);
+}
+
+fn emit_direct_client_file_leaks(
+    scan: &LeakScanInput<'_>,
+    client_id: FileId,
+    findings: &mut Vec<SecurityFinding>,
+) {
     // Direct case: the client file itself reads a non-public secret. The
     // most direct leak; no import hop needed.
     if scan.secret_sources.contains_key(&client_id) {
@@ -384,7 +448,14 @@ fn scan_client_file_for_leaks(
     if scan.server_only_sources.contains(&client_id) {
         findings.push(build_direct_server_only_finding(scan.graph, client_id));
     }
+}
 
+fn emit_transitive_client_file_leaks(
+    scan: &LeakScanInput<'_>,
+    client_id: FileId,
+    findings: &mut Vec<SecurityFinding>,
+    stats: &mut UnresolvedEdgeStats,
+) {
     // Transitive case: BFS the import cone.
     let cone = walk_client_cone(scan, client_id);
 
@@ -523,30 +594,7 @@ fn build_leak_finding(
     // the client boundary file; the boundary slot is filled by the ranking pass.
     let candidate = client_leak_candidate(anchor.path.clone(), anchor.line, anchor.col, None);
 
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: None,
-        cwe: None,
-        path: candidate.sink.path.clone(),
-        line: candidate.sink.line,
-        col: candidate.sink.col,
-        evidence,
-        // The client-server-leak rule is graph-structural, not source-to-sink;
-        // source-backing is a tainted-sink concept (issue #859).
-        source_backed: false,
-        // client-server-leak is module-level by construction (no arg-level read).
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace,
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 /// Build a finding for the SERVER-ONLY sink: a `"use client"` file whose
@@ -593,27 +641,7 @@ fn build_server_only_finding(
         Some(SERVER_ONLY_CATEGORY.to_owned()),
     );
 
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: Some(SERVER_ONLY_CATEGORY.to_owned()),
-        cwe: None,
-        path: candidate.sink.path.clone(),
-        line: candidate.sink.line,
-        col: candidate.sink.col,
-        evidence,
-        source_backed: false,
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace,
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 /// Build the candidate record for a `client-server-leak` finding. These findings
@@ -663,33 +691,13 @@ fn build_direct_finding(
          code (it may be guarded, server-only, or build-time-stripped)."
     );
     let candidate = client_leak_candidate(path.clone(), 1, 0, None);
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: None,
-        cwe: None,
-        path: path.clone(),
+    let trace = vec![TraceHop {
+        path,
         line: 1,
         col: 0,
-        evidence,
-        source_backed: false,
-        // client-server-leak is module-level by construction (no arg-level read).
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace: vec![TraceHop {
-            path,
-            line: 1,
-            col: 0,
-            role: TraceHopRole::SecretSource,
-        }],
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+        role: TraceHopRole::SecretSource,
+    }];
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 /// Build a finding for the direct SERVER-ONLY case: a `"use client"` file that is
@@ -707,32 +715,13 @@ fn build_direct_server_only_finding(graph: &ModuleGraph, client_id: FileId) -> S
         .to_owned();
     let candidate =
         client_leak_candidate(path.clone(), 1, 0, Some(SERVER_ONLY_CATEGORY.to_owned()));
-    SecurityFinding {
-        finding_id: String::new(),
-        kind: SecurityFindingKind::ClientServerLeak,
-        category: Some(SERVER_ONLY_CATEGORY.to_owned()),
-        cwe: None,
-        path: path.clone(),
+    let trace = vec![TraceHop {
+        path,
         line: 1,
         col: 0,
-        evidence,
-        source_backed: false,
-        source_read: None,
-        severity: SecuritySeverity::Low,
-        trace: vec![TraceHop {
-            path,
-            line: 1,
-            col: 0,
-            role: TraceHopRole::Sink,
-        }],
-        actions: build_actions(),
-        dead_code: None,
-        reachability: None,
-        candidate,
-        taint_flow: None,
-        runtime: None,
-        attack_surface: None,
-    }
+        role: TraceHopRole::Sink,
+    }];
+    build_client_server_leak_finding(evidence, trace, candidate)
 }
 
 #[cfg(test)]

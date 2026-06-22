@@ -1,6 +1,9 @@
-//! Detection of Vue/Svelte single-file components that are reachable in the
-//! module graph but rendered NOWHERE in the project (the
-//! imported-but-never-rendered dead-half).
+//! Detection of Vue/Svelte/Astro single-file components that are reachable in
+//! the module graph but rendered NOWHERE in the project (the
+//! imported-but-never-rendered dead-half). An `.astro` component is the default
+//! of its file and is rendered via a `<Tag/>` in markup, exactly like a Vue or
+//! Svelte SFC; its referenced bindings are populated by the frontmatter semantic
+//! pass + template-usage credit (see `crate::extract` Astro parsing).
 //!
 //! A `.vue`/`.svelte` SFC's default export is the component. It is "rendered"
 //! when some file instantiates it: a `<Tag>` in a template, a `:is`/`this=`
@@ -14,8 +17,8 @@
 //! component refactored out of every template but left re-exported.
 //!
 //! Built to never false-flag (degrade by abstaining):
-//! - **Dep-gated** on `vue` / `@vue/runtime-core` / `nuxt` (for `.vue`) and
-//!   `svelte` / `@sveltejs/kit` (for `.svelte`).
+//! - **Dep-gated** on `vue` / `@vue/runtime-core` / `nuxt` (for `.vue`),
+//!   `svelte` / `@sveltejs/kit` (for `.svelte`), and `astro` (for `.astro`).
 //! - The "rendered/used" set is built LIBERALLY (any reference, auto-import,
 //!   dynamic import, side-effect import, through barrel chains): over-crediting a
 //!   component can only suppress a finding, never create one.
@@ -33,10 +36,10 @@ use std::path::Path;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use fallow_types::extract::{ImportedName, ModuleInfo};
+use fallow_types::extract::{AngularComponentSelector, ExportName, ImportedName, ModuleInfo};
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::resolve::{ResolvedImport, ResolvedModule};
 use crate::results::UnrenderedComponent;
 use crate::suppress::{IssueKind, SuppressionContext};
@@ -54,6 +57,7 @@ const COMPONENT_LINE: u32 = 1;
 enum SfcFramework {
     Vue,
     Svelte,
+    Astro,
 }
 
 impl SfcFramework {
@@ -61,25 +65,36 @@ impl SfcFramework {
         match self {
             Self::Vue => "vue",
             Self::Svelte => "svelte",
+            Self::Astro => "astro",
         }
     }
 }
 
 /// Classify a path as a dependency-gated SFC, or `None` if it is not an SFC or
-/// the owning framework is not a declared dependency.
-fn sfc_framework(path: &Path, vue: bool, svelte: bool) -> Option<SfcFramework> {
+/// the owning framework is not a declared dependency. `.astro` joins `.vue` /
+/// `.svelte` here: an Astro component is the default of its file, rendered via a
+/// `<Tag/>` in markup, and is kept alive by a barrel re-export exactly like a
+/// Vue/Svelte SFC (its referenced bindings are populated by the frontmatter
+/// semantic pass + template-usage credit, the same mechanism the Vue scanner
+/// uses).
+fn sfc_framework(path: &Path, vue: bool, svelte: bool, astro: bool) -> Option<SfcFramework> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("vue") if vue => Some(SfcFramework::Vue),
         Some("svelte") if svelte => Some(SfcFramework::Svelte),
+        Some("astro") if astro => Some(SfcFramework::Astro),
         _ => None,
     }
 }
 
 fn is_sfc_extension(path: &Path) -> bool {
-    // Extension comparison without allocation; `.vue` / `.svelte` only.
+    // Extension comparison without allocation; `.vue` / `.svelte` / `.astro`.
+    // `.astro` is unconditional here (not dep-gated) because the crediting walks
+    // only ever ADD a file to the rendered/barrel sets; the emit loop is the
+    // dep-gated surface (`sfc_framework`), so a `.astro` file in a non-astro
+    // project is credited/tracked but never flagged.
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("vue") | Some("svelte")
+        Some("vue") | Some("svelte") | Some("astro")
     )
 }
 
@@ -100,7 +115,8 @@ pub fn find_unrendered_components(
         || declared_deps.contains("@vue/runtime-core")
         || declared_deps.contains("nuxt");
     let svelte = declared_deps.contains("svelte") || declared_deps.contains("@sveltejs/kit");
-    if !vue && !svelte {
+    let astro = declared_deps.contains("astro");
+    if !vue && !svelte && !astro {
         return Vec::new();
     }
 
@@ -129,7 +145,7 @@ pub fn find_unrendered_components(
     };
     let mut findings = Vec::new();
     for module in &graph.modules {
-        let Some(framework) = sfc_framework(&module.path, vue, svelte) else {
+        let Some(framework) = sfc_framework(&module.path, vue, svelte, astro) else {
             continue;
         };
         if let Some(finding) = evaluate_unrendered_sfc(&scan, module, framework) {
@@ -276,21 +292,15 @@ fn credit_static_import(
             }
         }
         ImportedName::Namespace => {
-            // `import * as ns from barrel` then `<ns.Foo />`: credit every SFC
-            // the barrel re-exports (liberal, zero-drift).
-            if is_sfc_extension(&graph_path(graph, target)) {
-                used.insert(target);
-            }
-            if let Some(module) = graph.modules.get(target.0 as usize) {
-                let names: Vec<(FileId, String)> = module
-                    .re_exports
-                    .iter()
-                    .map(|re| (re.source_file, re.imported_name.clone()))
-                    .collect();
-                for (source, name) in names {
-                    credit_rendered_sfc_chain(graph, source, &name, used);
-                }
-            }
+            // `import * as ns from barrel` then `<ns.Foo />` (or the two-level
+            // `<ns.Sub.Foo />`): the rendered member is syntactically unknowable,
+            // so credit every SFC reachable from the namespace target through ANY
+            // re-export shape. `credit_all_reexported_sfcs` is name-agnostic, so it
+            // also follows nested `export * as Sub from './x'` and `export * from
+            // './x'` barrels that the old per-edge name walk (which re-walked each
+            // edge under the unmatched name `"*"`) silently dropped, and credits
+            // the target itself when it is an SFC.
+            credit_all_reexported_sfcs(graph, target, used);
         }
     }
 }
@@ -317,20 +327,61 @@ fn credit_rendered_sfc_chain(
         if is_sfc_extension(&module.path) {
             used.insert(file_id);
         }
-        let mut matched_named = false;
+        // `name` is always a concrete export name here (the start name is a
+        // named/default import, never "*"), so `exported_name == name` already
+        // implies `exported_name != "*"`.
+        let mut matched = false;
         for re in &module.re_exports {
-            if re.exported_name != "*" && re.imported_name != "*" && re.exported_name == name {
-                stack.push((re.source_file, re.imported_name.clone()));
-                matched_named = true;
+            if re.exported_name != name {
+                continue;
             }
+            if re.imported_name == "*" {
+                // Namespace re-export: `export * as <name> from './x'`. The
+                // consumer rendered `<name.member>` for a member we cannot pin
+                // down, so credit EVERY SFC the namespace target re-exports
+                // (liberal, zero-drift, mirroring the direct `import * as ns`
+                // handling in `credit_static_import`).
+                credit_all_reexported_sfcs(graph, re.source_file, used);
+            } else {
+                // Named / renamed re-export: `export { X } from`,
+                // `export { Y as X } from`.
+                stack.push((re.source_file, re.imported_name.clone()));
+            }
+            matched = true;
         }
-        if matched_named {
+        if matched {
             continue;
         }
         for re in &module.re_exports {
             if re.exported_name == "*" {
                 stack.push((re.source_file, name.clone()));
             }
+        }
+    }
+}
+
+/// Credit EVERY SFC reachable through ANY re-export edge from `start` (a
+/// namespace re-export target). When a consumer renders `<ns.member>` through a
+/// `export * as ns` barrel, the member is unknowable syntactically, so every
+/// member the namespace exposes is conservatively credited. Follows named,
+/// renamed, namespace, and star re-exports uniformly (name-agnostic) and is
+/// cycle-safe via the visited set. Over-crediting here can only suppress a
+/// finding, never create one.
+fn credit_all_reexported_sfcs(graph: &ModuleGraph, start: FileId, used: &mut FxHashSet<FileId>) {
+    let mut visited: FxHashSet<FileId> = FxHashSet::default();
+    let mut stack: Vec<FileId> = vec![start];
+    while let Some(file_id) = stack.pop() {
+        if !visited.insert(file_id) {
+            continue;
+        }
+        let Some(module) = graph.modules.get(file_id.0 as usize) else {
+            continue;
+        };
+        if is_sfc_extension(&module.path) {
+            used.insert(file_id);
+        }
+        for re in &module.re_exports {
+            stack.push(re.source_file);
         }
     }
 }
@@ -451,6 +502,176 @@ pub fn find_unrendered_angular_components(
     // point (an Angular library surface) is rendered by a downstream consumer.
     let public_api = public_api_reexported_files(graph, public_api_entry_points);
 
+    collect_unrendered_angular_component_findings(&AngularUnrenderedScan {
+        graph,
+        modules_by_id: &modules_by_id,
+        public_api: &public_api,
+        public_api_entry_points,
+        signals: &signals,
+        line_offsets_by_file,
+        suppressions,
+    })
+}
+
+/// Find Lit / web-component custom elements registered (`@customElement` /
+/// `customElements.define`) but rendered as a tag in NO `html` template
+/// project-wide. Gated on `lit` / `lit-element` / `@lit/reactive-element`.
+///
+/// Reuses the `UnrenderedComponent` result with `framework: "lit"`; the
+/// `component_name` is the TAG (`x-foo`), and the finding anchors at the
+/// registering class span (a `.ts` file can register several elements).
+///
+/// Zero-FP ladder (BINDING, per panel review): the dominant Lit shape is a
+/// PUBLISHED design system where "rendered in no LOCAL `html` template" is the
+/// normal state of every element, so a published element is wholesale-abstained
+/// via the existing public-API sets (a file re-exported from a non-private
+/// package entry, or under a non-private exportless `src/**/index.*` surface). For
+/// a PRIVATE app those sets are empty, so an internal registered-but-unrendered
+/// element is eligible. A project-wide DYNAMIC render (`` html`<${tag}>` ``)
+/// abstains EVERY element (mirrors `unprovided-inject`'s `has_dynamic_provide`);
+/// imperative renders (`document.createElement` / `customElements.get`) credit the
+/// tag as rendered. Accepts the false-negative on internal-dead elements inside
+/// published packages (the panel's explicit trade-off).
+#[must_use]
+/// Inputs for the Lit unrendered custom-element pass. Bundled into a struct to
+/// stay within the unit-interfacing ceiling, mirroring [`AngularUnrenderedScan`].
+pub struct LitUnrenderedInput<'a> {
+    pub graph: &'a ModuleGraph,
+    pub modules: &'a [ModuleInfo],
+    pub declared_deps: &'a FxHashSet<String>,
+    pub public_api_entry_points: &'a FxHashSet<FileId>,
+    pub line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    pub suppressions: &'a SuppressionContext<'a>,
+    pub root: &'a Path,
+}
+
+pub fn find_unrendered_lit_elements(input: &LitUnrenderedInput<'_>) -> Vec<UnrenderedComponent> {
+    let graph = input.graph;
+    let modules = input.modules;
+    let declared_deps = input.declared_deps;
+    let public_api_entry_points = input.public_api_entry_points;
+    let line_offsets_by_file = input.line_offsets_by_file;
+    let suppressions = input.suppressions;
+    let root = input.root;
+
+    let lit = declared_deps.contains("lit")
+        || declared_deps.contains("lit-element")
+        || declared_deps.contains("@lit/reactive-element");
+    if !lit {
+        return Vec::new();
+    }
+
+    let modules_by_id: FxHashMap<FileId, &ModuleInfo> =
+        modules.iter().map(|m| (m.file_id, m)).collect();
+
+    // Pass 1: project-wide rendered-tag union, built LIBERALLY. A dynamic-render
+    // sentinel abstains on the whole project.
+    let mut rendered_tags: FxHashSet<&str> = FxHashSet::default();
+    for module in modules {
+        for tag in &module.used_custom_element_tags {
+            if tag == fallow_types::extract::DYNAMIC_CUSTOM_ELEMENT_TAG {
+                return Vec::new();
+            }
+            rendered_tags.insert(tag.as_str());
+        }
+    }
+
+    // Public-API abstain: a published element is rendered by a downstream
+    // consumer. Reuses the same sets as the SFC / Angular arms.
+    let public_api = public_api_reexported_files(graph, public_api_entry_points);
+
+    let mut findings = Vec::new();
+    for node in &graph.modules {
+        if !node.is_reachable() || node.is_entry_point() {
+            continue;
+        }
+        let Some(module) = modules_by_id.get(&node.file_id).copied() else {
+            continue;
+        };
+        if module.registered_custom_elements.is_empty() {
+            continue;
+        }
+        if public_api.contains(&node.file_id) || public_api_entry_points.contains(&node.file_id) {
+            continue;
+        }
+        // Tooling-rendered abstain: an element defined under a docs / dev / demo
+        // directory is rendered by site / dev tooling fallow cannot parse
+        // (Nunjucks / EJS / Markdown templates, dev-server HTML injection, story
+        // harnesses), so a "rendered nowhere" verdict there is FP-prone.
+        // Relativized against the project root so an absolute-path prefix segment
+        // (a `~/dev/...` checkout) cannot trip it.
+        let rel = node.path.strip_prefix(root).unwrap_or(node.path.as_path());
+        if is_tooling_rendered_anchor(rel) {
+            continue;
+        }
+        for reg in &module.registered_custom_elements {
+            if rendered_tags.contains(reg.tag.as_str()) {
+                continue;
+            }
+            let (line, col) =
+                byte_offset_to_line_col(line_offsets_by_file, node.file_id, reg.span_start);
+            if suppressions.is_suppressed(node.file_id, line, IssueKind::UnrenderedComponent)
+                || suppressions.is_file_suppressed(node.file_id, IssueKind::UnrenderedComponent)
+            {
+                continue;
+            }
+            findings.push(UnrenderedComponent {
+                path: node.path.clone(),
+                // Render the TAG: it is the user's mental model and the searchable
+                // artifact, not the file stem.
+                component_name: reg.tag.clone(),
+                framework: "lit".to_string(),
+                reachable_via: None,
+                line,
+                col,
+            });
+        }
+    }
+    findings
+}
+
+/// Whether a workspace-relative path lives under a directory that a docs / dev /
+/// demo site renders through tooling fallow cannot parse (Nunjucks / EJS /
+/// Markdown templates, dev-server HTML injection, story harnesses). The Lit
+/// `unrendered-component` arm abstains on such elements because their render
+/// sites are invisible, so a "rendered nowhere" verdict would be a false
+/// positive. Whole-segment match (a component file literally named `demo.ts` is
+/// not abstained; only a `demo/` directory segment is). Conservative,
+/// false-negative-preferring: a genuinely-dead element under one of these
+/// directories is missed rather than risk flagging a live one.
+fn is_tooling_rendered_anchor(rel: &Path) -> bool {
+    const TOOLING_DIRS: &[&str] = &[
+        "docs",
+        "documentation",
+        "dev",
+        "demo",
+        "demos",
+        "example",
+        "examples",
+        "playground",
+        "sandbox",
+    ];
+    rel.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .is_some_and(|s| TOOLING_DIRS.contains(&s))
+    })
+}
+
+/// Inputs for the Angular unrendered-component emit pass (Pass 2).
+struct AngularUnrenderedScan<'a> {
+    graph: &'a ModuleGraph,
+    modules_by_id: &'a FxHashMap<FileId, &'a ModuleInfo>,
+    public_api: &'a FxHashSet<FileId>,
+    public_api_entry_points: &'a FxHashSet<FileId>,
+    signals: &'a AngularRenderSignals<'a>,
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    suppressions: &'a SuppressionContext<'a>,
+}
+
+fn collect_unrendered_angular_component_findings(
+    scan: &AngularUnrenderedScan<'_>,
+) -> Vec<UnrenderedComponent> {
     // Pass 2: emit.
     //
     // Unlike the Vue/Svelte arm, an entry-point component is NOT skipped here: the
@@ -460,30 +681,46 @@ pub fn find_unrendered_angular_components(
     // the selector-used / route / bootstrap / dynamic / public-API abstains
     // instead. A component not reachable at all is left to `unused-file`.
     let mut findings = Vec::new();
-    for node in &graph.modules {
-        if !node.is_reachable() {
-            continue;
-        }
-        let Some(module) = modules_by_id.get(&node.file_id) else {
+    for node in &scan.graph.modules {
+        let Some(module) = angular_component_scan_target(
+            node,
+            scan.modules_by_id,
+            scan.public_api,
+            scan.public_api_entry_points,
+        ) else {
             continue;
         };
-        if module.angular_component_selectors.is_empty() {
-            continue;
-        }
-        if public_api.contains(&node.file_id) || public_api_entry_points.contains(&node.file_id) {
-            continue;
-        }
         emit_angular_component_findings(
             node,
             module,
-            &signals,
-            line_offsets_by_file,
-            suppressions,
+            scan.signals,
+            scan.line_offsets_by_file,
+            scan.suppressions,
             &mut findings,
         );
     }
 
     findings
+}
+
+fn angular_component_scan_target<'a>(
+    node: &ModuleNode,
+    modules_by_id: &'a FxHashMap<FileId, &'a ModuleInfo>,
+    public_api: &FxHashSet<FileId>,
+    public_api_entry_points: &FxHashSet<FileId>,
+) -> Option<&'a ModuleInfo> {
+    if !node.is_reachable() {
+        return None;
+    }
+    let module = modules_by_id.get(&node.file_id).copied()?;
+    if module.angular_component_selectors.is_empty() {
+        return None;
+    }
+    if public_api.contains(&node.file_id) || public_api_entry_points.contains(&node.file_id) {
+        return None;
+    }
+
+    Some(module)
 }
 
 /// Project-wide Angular render signals, all built LIBERALLY: a selector or class
@@ -519,7 +756,7 @@ fn build_angular_render_signals(modules: &[ModuleInfo]) -> Option<AngularRenderS
 /// per-component abstain ladder (element-selector scope, used-selector, route /
 /// bootstrap entry, lazy-route default-export credit, suppression).
 fn emit_angular_component_findings(
-    node: &crate::graph::ModuleNode,
+    node: &ModuleNode,
     module: &ModuleInfo,
     signals: &AngularRenderSignals<'_>,
     line_offsets_by_file: &LineOffsetsMap<'_>,
@@ -538,51 +775,79 @@ fn emit_angular_component_findings(
     // component is a NAMED export (the `imports: [...]` registration is a named
     // import, the dead case this rule catches), so a referenced NAMED export does
     // NOT suppress it; only the default-export signal does.
-    let default_export_referenced = node.exports.iter().any(|export| {
-        matches!(export.name, fallow_types::extract::ExportName::Default)
-            && (!export.references.is_empty() || export.is_side_effect_used)
-    });
+    let default_export_referenced = angular_default_export_referenced(node);
     for component in &module.angular_component_selectors {
-        // First-cut scope: every selector must be an element selector.
-        if !component.selectors.iter().all(|s| is_element_selector(s)) {
-            continue;
-        }
-        // Used if ANY selector is in the project-wide used set.
-        if component
-            .selectors
-            .iter()
-            .any(|s| signals.used_selectors.contains(&s.to_ascii_lowercase()))
-        {
-            continue;
-        }
-        // Referenced as a route / bootstrap entry point (render-equivalent:
-        // Angular instantiates these without a template `<tag>`).
-        if signals
-            .entry_classes
-            .contains(component.class_name.as_str())
-        {
-            continue;
-        }
-        // Lazily routed via the bare `loadComponent` / `loadChildren` form
-        // (default-export dynamic-import credit).
-        if default_export_referenced {
+        if angular_component_render_abstains(component, signals, default_export_referenced) {
             continue;
         }
         let (line, col) =
             byte_offset_to_line_col(line_offsets_by_file, node.file_id, component.span_start);
-        if suppressions.is_suppressed(node.file_id, line, IssueKind::UnrenderedComponent)
-            || suppressions.is_file_suppressed(node.file_id, IssueKind::UnrenderedComponent)
-        {
+        if angular_component_suppressed(suppressions, node.file_id, line) {
             continue;
         }
-        findings.push(UnrenderedComponent {
-            path: node.path.clone(),
-            component_name: component.class_name.clone(),
-            framework: "angular".to_string(),
-            reachable_via: None,
-            line,
-            col,
-        });
+        findings.push(build_angular_unrendered_component(
+            node, component, line, col,
+        ));
+    }
+}
+
+fn angular_default_export_referenced(node: &ModuleNode) -> bool {
+    node.exports.iter().any(|export| {
+        matches!(export.name, ExportName::Default)
+            && (!export.references.is_empty() || export.is_side_effect_used)
+    })
+}
+
+fn angular_component_render_abstains(
+    component: &AngularComponentSelector,
+    signals: &AngularRenderSignals<'_>,
+    default_export_referenced: bool,
+) -> bool {
+    // First-cut scope: every selector must be an element selector.
+    if !component.selectors.iter().all(|s| is_element_selector(s)) {
+        return true;
+    }
+    // Used if ANY selector is in the project-wide used set.
+    if component
+        .selectors
+        .iter()
+        .any(|s| signals.used_selectors.contains(&s.to_ascii_lowercase()))
+    {
+        return true;
+    }
+    // Referenced as a route / bootstrap entry point.
+    if signals
+        .entry_classes
+        .contains(component.class_name.as_str())
+    {
+        return true;
+    }
+    // Lazily routed via the bare `loadComponent` / `loadChildren` form.
+    default_export_referenced
+}
+
+fn angular_component_suppressed(
+    suppressions: &SuppressionContext<'_>,
+    file_id: FileId,
+    line: u32,
+) -> bool {
+    suppressions.is_suppressed(file_id, line, IssueKind::UnrenderedComponent)
+        || suppressions.is_file_suppressed(file_id, IssueKind::UnrenderedComponent)
+}
+
+fn build_angular_unrendered_component(
+    node: &ModuleNode,
+    component: &AngularComponentSelector,
+    line: u32,
+    col: u32,
+) -> UnrenderedComponent {
+    UnrenderedComponent {
+        path: node.path.clone(),
+        component_name: component.class_name.clone(),
+        framework: "angular".to_string(),
+        reachable_via: None,
+        line,
+        col,
     }
 }
 

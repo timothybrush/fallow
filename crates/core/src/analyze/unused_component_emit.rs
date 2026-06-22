@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use fallow_types::extract::ModuleInfo;
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::results::UnusedComponentEmit;
 
 use super::{LineOffsetsMap, byte_offset_to_line_col};
@@ -61,35 +61,7 @@ pub fn find_unused_component_emits(
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.component_emits.is_empty() {
-            continue;
-        }
-        // Whole-file abstain ladder: any signal that an event could be emitted
-        // indirectly skips the file (zero-FP doctrine). `defineModel` creates
-        // implicit `update:x` emits.
-        if module.has_unharvestable_emits
-            || module.has_dynamic_emit
-            || module.has_emit_whole_object_use
-            || module.has_define_model
-        {
-            continue;
-        }
-
-        let component_name = component_name_for(&node.path);
-        for emit in &module.component_emits {
-            if emit.used {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, emit.span_start);
-            findings.push(UnusedComponentEmit {
-                path: node.path.clone(),
-                component_name: component_name.clone(),
-                emit_name: emit.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_component_emits(node, module, line_offsets_by_file, &mut findings);
     }
 
     findings.sort_by(|a, b| {
@@ -99,6 +71,41 @@ pub fn find_unused_component_emits(
             .then(a.emit_name.cmp(&b.emit_name))
     });
     findings
+}
+
+fn collect_module_unused_component_emits(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<UnusedComponentEmit>,
+) {
+    if module.component_emits.is_empty() || component_abstains_emits(module) {
+        return;
+    }
+
+    let component_name = component_name_for(&node.path);
+    for emit in &module.component_emits {
+        if emit.used {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, emit.span_start);
+        findings.push(UnusedComponentEmit {
+            path: node.path.clone(),
+            component_name: component_name.clone(),
+            emit_name: emit.name.clone(),
+            line,
+            col,
+        });
+    }
+}
+
+fn component_abstains_emits(module: &ModuleInfo) -> bool {
+    // Any signal that an event could be emitted indirectly skips the file.
+    module.has_unharvestable_emits
+        || module.has_dynamic_emit
+        || module.has_emit_whole_object_use
+        || module.has_define_model
 }
 
 /// Whether the path is a Vue SFC (`.vue`).

@@ -128,7 +128,20 @@ pub enum UnresolvedReason {
     MemberOrDynamic,
 }
 
-/// Trace the symbol-level call chain for `symbol` in `file`.
+/// Target + traversal parameters for a symbol-chain trace.
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolChainQuery<'a> {
+    /// File path of the target symbol (root-relative or absolute).
+    pub file: &'a str,
+    /// The exported symbol name to trace.
+    pub symbol: &'a str,
+    /// Maximum traversal depth in each direction.
+    pub depth: u32,
+    /// Which directions to walk (callers UP / callees DOWN).
+    pub directions: TraceDirections,
+}
+
+/// Trace the symbol-level call chain for `query.symbol` in `query.file`.
 ///
 /// `modules` is the parsed `ModuleInfo` set (retained from the pipeline) used to
 /// surface unresolved callees; pass an empty slice to skip unresolved-callee
@@ -138,11 +151,14 @@ pub fn trace_symbol_chain(
     graph: &ModuleGraph,
     modules: &[ModuleInfo],
     root: &Path,
-    file: &str,
-    symbol: &str,
-    depth: u32,
-    directions: TraceDirections,
+    query: SymbolChainQuery<'_>,
 ) -> Option<SymbolChainTrace> {
+    let SymbolChainQuery {
+        file,
+        symbol,
+        depth,
+        directions,
+    } = query;
     let module = graph
         .modules
         .iter()

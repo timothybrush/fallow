@@ -12,6 +12,8 @@
 //! has no special meaning and these export names are perfectly legal, so firing
 //! would be a false positive.
 
+use std::path::Path;
+
 use rustc_hash::FxHashMap;
 
 use fallow_types::extract::{ExportName, ModuleInfo};
@@ -89,54 +91,76 @@ pub fn find_invalid_client_exports(
         return Vec::new();
     }
 
-    let path_by_id: FxHashMap<FileId, &std::path::Path> = graph
-        .modules
-        .iter()
-        .map(|module| (module.file_id, module.path.as_path()))
-        .collect();
+    let path_by_id = path_by_file_id(graph);
 
     let mut findings = Vec::new();
     for module in modules {
-        if !module
-            .directives
-            .iter()
-            .any(|directive| directive == USE_CLIENT_DIRECTIVE)
-        {
+        if !module_uses_client_directive(module) {
             continue;
         }
         let Some(path) = path_by_id.get(&module.file_id) else {
             continue;
         };
-
-        for export in &module.exports {
-            if export.is_type_only {
-                continue;
-            }
-            // The default export is the client component itself; always valid.
-            let ExportName::Named(name) = &export.name else {
-                continue;
-            };
-            if !ILLEGAL_CLIENT_EXPORTS.contains(&name.as_str()) {
-                continue;
-            }
-
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, module.file_id, export.span.start);
-            if suppressions.is_suppressed(module.file_id, line, IssueKind::InvalidClientExport) {
-                continue;
-            }
-
-            findings.push(InvalidClientExport {
-                path: path.to_path_buf(),
-                export_name: name.clone(),
-                directive: USE_CLIENT_DIRECTIVE.to_string(),
-                line,
-                col,
-            });
-        }
+        append_invalid_client_exports_for_module(
+            module,
+            path,
+            suppressions,
+            line_offsets_by_file,
+            &mut findings,
+        );
     }
 
     findings
+}
+
+fn path_by_file_id(graph: &ModuleGraph) -> FxHashMap<FileId, &Path> {
+    graph
+        .modules
+        .iter()
+        .map(|module| (module.file_id, module.path.as_path()))
+        .collect()
+}
+
+fn module_uses_client_directive(module: &ModuleInfo) -> bool {
+    module
+        .directives
+        .iter()
+        .any(|directive| directive == USE_CLIENT_DIRECTIVE)
+}
+
+fn append_invalid_client_exports_for_module(
+    module: &ModuleInfo,
+    path: &Path,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<InvalidClientExport>,
+) {
+    for export in &module.exports {
+        if export.is_type_only {
+            continue;
+        }
+        // The default export is the client component itself; always valid.
+        let ExportName::Named(name) = &export.name else {
+            continue;
+        };
+        if !ILLEGAL_CLIENT_EXPORTS.contains(&name.as_str()) {
+            continue;
+        }
+
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, module.file_id, export.span.start);
+        if suppressions.is_suppressed(module.file_id, line, IssueKind::InvalidClientExport) {
+            continue;
+        }
+
+        findings.push(InvalidClientExport {
+            path: path.to_path_buf(),
+            export_name: name.clone(),
+            directive: USE_CLIENT_DIRECTIVE.to_string(),
+            line,
+            col,
+        });
+    }
 }
 
 #[cfg(test)]

@@ -440,44 +440,63 @@ fn collect_tsconfig_workspaces(
     let mut workspaces = Vec::new();
 
     for dir in parse_tsconfig_references_with_diagnostics(root, ignore_patterns, diagnostics) {
-        let canonical_dir = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-        if canonical_dir == *canonical_root || !canonical_dir.starts_with(canonical_root) {
-            continue;
+        if let Some(workspace) = tsconfig_workspace_from_dir(root, dir, canonical_root, diagnostics)
+        {
+            workspaces.push(workspace);
         }
-
-        let ws_pkg_path = dir.join("package.json");
-        let (name, dep_names) = if ws_pkg_path.exists() {
-            match PackageJson::load(&ws_pkg_path) {
-                Ok(pkg) => {
-                    let deps = pkg.all_dependency_names();
-                    let n = pkg.name.unwrap_or_else(|| dir_name(&dir));
-                    (n, deps)
-                }
-                Err(error) => {
-                    let diag = WorkspaceDiagnostic::new(
-                        root,
-                        dir.clone(),
-                        WorkspaceDiagnosticKind::MalformedPackageJson { error },
-                    );
-                    diagnostics.push(diag);
-                    (dir_name(&dir), Vec::new())
-                }
-            }
-        } else {
-            (dir_name(&dir), Vec::new())
-        };
-
-        workspaces.push((
-            WorkspaceInfo {
-                root: dir,
-                name,
-                is_internal_dependency: false,
-            },
-            dep_names,
-        ));
     }
 
     workspaces
+}
+
+fn tsconfig_workspace_from_dir(
+    root: &Path,
+    dir: PathBuf,
+    canonical_root: &Path,
+    diagnostics: &mut Vec<WorkspaceDiagnostic>,
+) -> Option<(WorkspaceInfo, Vec<String>)> {
+    let canonical_dir = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+    if canonical_dir == *canonical_root || !canonical_dir.starts_with(canonical_root) {
+        return None;
+    }
+
+    let (name, dep_names) = load_tsconfig_workspace_package(root, &dir, diagnostics);
+    Some((
+        WorkspaceInfo {
+            root: dir,
+            name,
+            is_internal_dependency: false,
+        },
+        dep_names,
+    ))
+}
+
+fn load_tsconfig_workspace_package(
+    root: &Path,
+    dir: &Path,
+    diagnostics: &mut Vec<WorkspaceDiagnostic>,
+) -> (String, Vec<String>) {
+    let ws_pkg_path = dir.join("package.json");
+    if !ws_pkg_path.exists() {
+        return (dir_name(dir), Vec::new());
+    }
+
+    match PackageJson::load(&ws_pkg_path) {
+        Ok(pkg) => {
+            let deps = pkg.all_dependency_names();
+            let name = pkg.name.unwrap_or_else(|| dir_name(dir));
+            (name, deps)
+        }
+        Err(error) => {
+            let diag = WorkspaceDiagnostic::new(
+                root,
+                dir.to_path_buf(),
+                WorkspaceDiagnosticKind::MalformedPackageJson { error },
+            );
+            diagnostics.push(diag);
+            (dir_name(dir), Vec::new())
+        }
+    }
 }
 
 /// Discover shallow package workspaces when no explicit workspace config exists.
@@ -502,23 +521,30 @@ fn collect_shallow_package_workspaces(
         }
 
         collect_shallow_workspace_candidate(&path, canonical_root, &mut workspaces);
-
-        let Ok(child_entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        for child in child_entries.filter_map(Result::ok) {
-            let child_path = child.path();
-            if !child_path.is_dir()
-                || should_skip_workspace_scan_dir(&child.file_name().to_string_lossy())
-            {
-                continue;
-            }
-
-            collect_shallow_workspace_candidate(&child_path, canonical_root, &mut workspaces);
-        }
+        collect_shallow_child_workspaces(&path, canonical_root, &mut workspaces);
     }
 
     workspaces
+}
+
+fn collect_shallow_child_workspaces(
+    parent: &Path,
+    canonical_root: &Path,
+    workspaces: &mut Vec<(WorkspaceInfo, Vec<String>)>,
+) {
+    let Ok(child_entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for child in child_entries.filter_map(Result::ok) {
+        let child_path = child.path();
+        if !child_path.is_dir()
+            || should_skip_workspace_scan_dir(&child.file_name().to_string_lossy())
+        {
+            continue;
+        }
+
+        collect_shallow_workspace_candidate(&child_path, canonical_root, workspaces);
+    }
 }
 
 fn collect_shallow_workspace_candidate(

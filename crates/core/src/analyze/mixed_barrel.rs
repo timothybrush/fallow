@@ -32,7 +32,7 @@ use fallow_types::extract::ModuleInfo;
 
 use crate::discover::FileId;
 use crate::graph::ModuleGraph;
-use crate::resolve::ResolvedModule;
+use crate::resolve::{ResolvedModule, ResolvedReExport};
 use crate::results::MixedClientServerBarrel;
 use crate::suppress::{IssueKind, SuppressionContext};
 
@@ -81,72 +81,110 @@ pub fn find_mixed_client_server_barrels(
 
     let mut findings = Vec::new();
     for resolved in resolved_modules {
-        if resolved.re_exports.is_empty() {
-            continue;
+        if let Some(finding) = mixed_barrel_finding(
+            resolved,
+            &modules_by_id,
+            &path_by_id,
+            suppressions,
+            line_offsets_by_file,
+        ) {
+            findings.push(finding);
         }
-
-        // Walk the barrel's DIRECT re-export origins in source order, capturing
-        // the FIRST client origin and the FIRST server-only origin plus the
-        // offending re-export span (the earlier of the two, so the finding
-        // anchors at the first re-export that participates in the mix).
-        let mut client: Option<OffendingOrigin<'_>> = None;
-        let mut server: Option<OffendingOrigin<'_>> = None;
-        for re in &resolved.re_exports {
-            // Type-only re-exports are erased and carry no directive context.
-            if re.info.is_type_only {
-                continue;
-            }
-            // Only DIRECT origins that resolve to a LOCAL source module are
-            // classified; npm packages and unresolved sources are ignored.
-            let Some(origin_id) = re.target.internal_file_id() else {
-                continue;
-            };
-            let Some(origin) = modules_by_id.get(&origin_id) else {
-                continue;
-            };
-            let span_start = re.info.span.start;
-            if client.is_none() && origin.directives.iter().any(|d| d == USE_CLIENT) {
-                client = Some(OffendingOrigin {
-                    source: re.info.source.as_str(),
-                    span_start,
-                });
-            } else if server.is_none() && is_server_only_module(origin) {
-                // `else if` so a single origin that is somehow both client and
-                // server-only counts as the client origin only (a client
-                // boundary cannot also be a server-only module in practice).
-                server = Some(OffendingOrigin {
-                    source: re.info.source.as_str(),
-                    span_start,
-                });
-            }
-        }
-
-        let (Some(client), Some(server)) = (client, server) else {
-            continue;
-        };
-
-        let barrel_id = resolved.file_id;
-        let Some(path) = path_by_id.get(&barrel_id) else {
-            continue;
-        };
-
-        // Anchor at the earlier of the two offending re-exports.
-        let anchor_span = client.span_start.min(server.span_start);
-        let (line, col) = byte_offset_to_line_col(line_offsets_by_file, barrel_id, anchor_span);
-        if suppressions.is_suppressed(barrel_id, line, IssueKind::MixedClientServerBarrel) {
-            continue;
-        }
-
-        findings.push(MixedClientServerBarrel {
-            path: path.to_path_buf(),
-            client_origin: client.source.to_string(),
-            server_origin: server.source.to_string(),
-            line,
-            col,
-        });
     }
 
     findings
+}
+
+fn mixed_barrel_finding(
+    resolved: &ResolvedModule,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+    path_by_id: &FxHashMap<FileId, &std::path::Path>,
+    suppressions: &SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Option<MixedClientServerBarrel> {
+    if resolved.re_exports.is_empty() {
+        return None;
+    }
+
+    let MixedOrigins { client, server } = classify_mixed_barrel_origins(resolved, modules_by_id)?;
+    let barrel_id = resolved.file_id;
+    let path = path_by_id.get(&barrel_id)?;
+
+    // Anchor at the earlier of the two offending re-exports.
+    let anchor_span = client.span_start.min(server.span_start);
+    let (line, col) = byte_offset_to_line_col(line_offsets_by_file, barrel_id, anchor_span);
+    if suppressions.is_suppressed(barrel_id, line, IssueKind::MixedClientServerBarrel) {
+        return None;
+    }
+
+    Some(MixedClientServerBarrel {
+        path: path.to_path_buf(),
+        client_origin: client.source.to_string(),
+        server_origin: server.source.to_string(),
+        line,
+        col,
+    })
+}
+
+fn classify_mixed_barrel_origins<'a>(
+    resolved: &'a ResolvedModule,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+) -> Option<MixedOrigins<'a>> {
+    // Walk the barrel's DIRECT re-export origins in source order, capturing
+    // the FIRST client origin and the FIRST server-only origin plus the
+    // offending re-export span.
+    let mut client: Option<OffendingOrigin<'_>> = None;
+    let mut server: Option<OffendingOrigin<'_>> = None;
+
+    for re in &resolved.re_exports {
+        classify_re_export_origin(re, modules_by_id, &mut client, &mut server);
+    }
+
+    Some(MixedOrigins {
+        client: client?,
+        server: server?,
+    })
+}
+
+fn classify_re_export_origin<'a>(
+    re: &'a ResolvedReExport,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+    client: &mut Option<OffendingOrigin<'a>>,
+    server: &mut Option<OffendingOrigin<'a>>,
+) {
+    // Type-only re-exports are erased and carry no directive context.
+    if re.info.is_type_only {
+        return;
+    }
+    // Only DIRECT origins that resolve to a LOCAL source module are
+    // classified; npm packages and unresolved sources are ignored.
+    let Some(origin_id) = re.target.internal_file_id() else {
+        return;
+    };
+    let Some(origin) = modules_by_id.get(&origin_id) else {
+        return;
+    };
+
+    let span_start = re.info.span.start;
+    if client.is_none() && origin.directives.iter().any(|d| d == USE_CLIENT) {
+        *client = Some(OffendingOrigin {
+            source: re.info.source.as_str(),
+            span_start,
+        });
+    } else if server.is_none() && is_server_only_module(origin) {
+        // `else if` so a single origin that is somehow both client and
+        // server-only counts as the client origin only (a client boundary
+        // cannot also be a server-only module in practice).
+        *server = Some(OffendingOrigin {
+            source: re.info.source.as_str(),
+            span_start,
+        });
+    }
+}
+
+struct MixedOrigins<'a> {
+    client: OffendingOrigin<'a>,
+    server: OffendingOrigin<'a>,
 }
 
 /// A re-export entry that participates in the client/server mix: the source

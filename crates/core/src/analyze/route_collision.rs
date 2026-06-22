@@ -62,10 +62,23 @@ pub fn find_route_collisions(
 
     let pkg_roots = collect_pkg_roots(config, workspaces);
     let pkg_root_refs: Vec<&Path> = pkg_roots.iter().map(PathBuf::as_path).collect();
+    let buckets = collect_route_collision_buckets(graph, &pkg_root_refs);
 
+    let mut findings = Vec::new();
+    for ((_, _, url), files) in buckets {
+        append_route_collision_bucket(&mut findings, &url, files, suppressions);
+    }
+
+    findings
+}
+
+fn collect_route_collision_buckets<'a>(
+    graph: &'a ModuleGraph,
+    pkg_root_refs: &[&Path],
+) -> FxHashMap<BucketKey, Vec<(FileId, &'a Path)>> {
     let mut buckets: FxHashMap<BucketKey, Vec<(FileId, &Path)>> = FxHashMap::default();
     for module in &graph.modules {
-        let Some(classified) = classify_route_file(module.path.as_path(), &pkg_root_refs) else {
+        let Some(classified) = classify_route_file(module.path.as_path(), pkg_root_refs) else {
             continue;
         };
         if !classified.is_url_leaf() {
@@ -77,34 +90,37 @@ pub fn find_route_collisions(
             .or_default()
             .push((module.file_id, module.path.as_path()));
     }
+    buckets
+}
 
-    let mut findings = Vec::new();
-    for ((_, _, url), mut files) in buckets {
-        if files.len() < 2 {
+fn append_route_collision_bucket(
+    findings: &mut Vec<RouteCollision>,
+    url: &str,
+    mut files: Vec<(FileId, &Path)>,
+    suppressions: &SuppressionContext<'_>,
+) {
+    if files.len() < 2 {
+        return;
+    }
+    // Path-sort for stable `conflicting_paths` / fingerprints (ADR-004).
+    files.sort_by(|a, b| a.1.cmp(b.1));
+    for &(file_id, path) in &files {
+        if suppressions.is_file_suppressed(file_id, IssueKind::RouteCollision) {
             continue;
         }
-        // Path-sort for stable `conflicting_paths` / fingerprints (ADR-004).
-        files.sort_by(|a, b| a.1.cmp(b.1));
-        for &(file_id, path) in &files {
-            if suppressions.is_file_suppressed(file_id, IssueKind::RouteCollision) {
-                continue;
-            }
-            let conflicting_paths: Vec<PathBuf> = files
-                .iter()
-                .filter(|(_, p)| *p != path)
-                .map(|(_, p)| p.to_path_buf())
-                .collect();
-            findings.push(RouteCollision {
-                path: path.to_path_buf(),
-                url: url.clone(),
-                conflicting_paths,
-                line: 1,
-                col: 0,
-            });
-        }
+        let conflicting_paths: Vec<PathBuf> = files
+            .iter()
+            .filter(|(_, p)| *p != path)
+            .map(|(_, p)| p.to_path_buf())
+            .collect();
+        findings.push(RouteCollision {
+            path: path.to_path_buf(),
+            url: url.to_string(),
+            conflicting_paths,
+            line: 1,
+            col: 0,
+        });
     }
-
-    findings
 }
 
 /// Package roots to anchor app-roots on: the project root plus every discovered

@@ -146,6 +146,8 @@ fn cache_store_insert_and_get() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -226,6 +228,8 @@ fn cache_store_hash_mismatch_returns_none() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -242,6 +246,10 @@ fn cache_store_missing_key_returns_none() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+)]
 fn cache_store_overwrite_entry() {
     let mut store = CacheStore::new();
     let m1 = CachedModule {
@@ -310,6 +318,8 @@ fn cache_store_overwrite_entry() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -381,6 +391,8 @@ fn cache_store_overwrite_entry() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -394,6 +406,10 @@ fn cache_store_overwrite_entry() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+)]
 fn module_to_cached_roundtrip_named_export() {
     let module = ModuleInfo {
         file_id: FileId(0),
@@ -471,6 +487,8 @@ fn module_to_cached_roundtrip_named_export() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -581,6 +599,8 @@ fn module_to_cached_roundtrip_side_effect_used_export() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -676,6 +696,8 @@ fn module_to_cached_roundtrip_default_export() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -689,6 +711,10 @@ fn module_to_cached_roundtrip_default_export() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+)]
 fn module_to_cached_roundtrip_imports() {
     let module = ModuleInfo {
         file_id: FileId(0),
@@ -793,6 +819,8 @@ fn module_to_cached_roundtrip_imports() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -894,6 +922,8 @@ fn module_to_cached_roundtrip_re_exports() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -911,6 +941,10 @@ fn module_to_cached_roundtrip_re_exports() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive ModuleInfo round-trip fixture literal"
+)]
 fn module_to_cached_roundtrip_dynamic_imports() {
     let module = ModuleInfo {
         file_id: FileId(0),
@@ -993,6 +1027,8 @@ fn module_to_cached_roundtrip_dynamic_imports() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1017,6 +1053,10 @@ fn module_to_cached_roundtrip_dynamic_imports() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+)]
 fn module_to_cached_roundtrip_members() {
     let module = ModuleInfo {
         file_id: FileId(0),
@@ -1122,6 +1162,8 @@ fn module_to_cached_roundtrip_members() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1227,6 +1269,8 @@ fn cache_save_and_load_roundtrip() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1318,6 +1362,8 @@ fn cache_version_mismatch_returns_none() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1416,6 +1462,8 @@ fn module_to_cached_roundtrip_type_only_import() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1499,6 +1547,8 @@ fn get_by_path_only_returns_entry_regardless_of_hash() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1593,6 +1643,8 @@ fn retain_paths_removes_stale_entries() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1693,6 +1745,8 @@ fn retain_paths_with_empty_files_clears_cache() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1774,6 +1828,8 @@ fn get_by_metadata_returns_entry_on_match() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1855,6 +1911,8 @@ fn get_by_metadata_returns_none_on_mtime_mismatch() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -1938,6 +1996,8 @@ fn get_by_metadata_returns_none_on_size_mismatch() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2021,6 +2081,8 @@ fn get_by_metadata_returns_none_for_zero_mtime() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2113,6 +2175,8 @@ fn module_to_cached_stores_mtime_and_size() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2193,6 +2257,8 @@ fn module_to_cached_roundtrip_line_offsets() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2278,6 +2344,8 @@ fn module_to_cached_roundtrip_suppressions_with_kinds() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2391,6 +2459,8 @@ fn module_to_cached_roundtrip_unknown_suppression_kinds() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2490,6 +2560,8 @@ fn module_to_cached_roundtrip_visibility() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2580,6 +2652,8 @@ fn module_to_cached_roundtrip_visibility_internal() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2670,6 +2744,8 @@ fn module_to_cached_roundtrip_visibility_beta() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2760,6 +2836,8 @@ fn module_to_cached_roundtrip_visibility_alpha() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2851,6 +2929,8 @@ fn module_to_cached_roundtrip_dynamic_import_patterns() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2940,6 +3020,8 @@ fn module_to_cached_roundtrip_unused_import_bindings() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -2964,6 +3046,10 @@ fn module_to_cached_roundtrip_unused_import_bindings() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+)]
 fn module_to_cached_roundtrip_complexity() {
     use fallow_types::extract::FunctionComplexity;
 
@@ -3062,6 +3148,8 @@ fn module_to_cached_roundtrip_complexity() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -3155,6 +3243,8 @@ fn module_to_cached_roundtrip_require_with_destructured() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -3247,6 +3337,8 @@ fn module_to_cached_roundtrip_dynamic_import_with_local() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -3338,6 +3430,8 @@ fn module_to_cached_roundtrip_source_span() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -3437,6 +3531,8 @@ fn module_to_cached_roundtrip_member_decorators() {
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,
@@ -3522,6 +3618,8 @@ fn synthetic_module(content_hash: u64, last_access_secs: u64, payload_kb: usize)
         svelte_dispatched_events: Vec::new(),
         svelte_listened_events: Vec::new(),
         angular_component_selectors: Vec::new(),
+        registered_custom_elements: Vec::new(),
+        used_custom_element_tags: Vec::new(),
         angular_used_selectors: Vec::new(),
         angular_entry_component_refs: Vec::new(),
         has_dynamic_component_render: false,

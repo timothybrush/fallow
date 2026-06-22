@@ -38,7 +38,7 @@ use fallow_extract::ANGULAR_TPL_SENTINEL;
 use fallow_types::extract::ModuleInfo;
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::results::UnusedComponentOutput;
 
 use super::{LineOffsetsMap, byte_offset_to_line_col};
@@ -67,48 +67,14 @@ pub fn find_unused_component_outputs(
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.angular_outputs.is_empty() {
-            continue;
-        }
-        // Whole-component abstain: a base class in another file may emit the
-        // output through `this.bar.emit()` (zero-FP doctrine).
-        if component_has_extends(module) {
-            continue;
-        }
-        // Whole-component abstain: `{ ...this }` forwards every output opaquely
-        // into a behavior pattern (the Angular headless-pattern convention).
-        if super::unused_component_input::component_spreads_this(module) {
-            continue;
-        }
-
-        // Linked external `templateUrl` module(s): a `(click)="bar.emit()"`
-        // handler in the `.html` file emits the output too.
-        let external_templates = external_template_modules(graph, &modules_by_id, node.file_id);
-        let template_emitted = template_emitted_outputs(module, &external_templates);
-
-        let component_name = component_name_for(&node.path);
-        for output in &module.angular_outputs {
-            if output_is_emitted(module, &output.name)
-                || template_emitted.contains(output.name.as_str())
-            {
-                continue;
-            }
-            // A template emit off a JS reserved word (`(delete)="..."` ->
-            // `delete.emit(...)`) is invisible to the JS-based expression scanner,
-            // which reads `delete` as the operator. Abstain to stay zero-FP.
-            if super::unused_component_input::is_js_reserved_word(&output.name) {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, output.span_start);
-            findings.push(UnusedComponentOutput {
-                path: node.path.clone(),
-                component_name: component_name.clone(),
-                output_name: output.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_component_outputs(
+            node,
+            module,
+            graph,
+            &modules_by_id,
+            line_offsets_by_file,
+            &mut findings,
+        );
     }
 
     findings.sort_by(|a, b| {
@@ -118,6 +84,53 @@ pub fn find_unused_component_outputs(
             .then(a.output_name.cmp(&b.output_name))
     });
     findings
+}
+
+fn collect_module_unused_component_outputs(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    graph: &ModuleGraph,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<UnusedComponentOutput>,
+) {
+    if module.angular_outputs.is_empty() || component_abstains_outputs(module) {
+        return;
+    }
+
+    // Linked external `templateUrl` module(s): a `(click)="bar.emit()"`
+    // handler in the `.html` file emits the output too.
+    let external_templates = external_template_modules(graph, modules_by_id, node.file_id);
+    let template_emitted = template_emitted_outputs(module, &external_templates);
+
+    let component_name = component_name_for(&node.path);
+    for output in &module.angular_outputs {
+        if output_is_emitted(module, &output.name)
+            || template_emitted.contains(output.name.as_str())
+            || super::unused_component_input::is_js_reserved_word(&output.name)
+        {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, output.span_start);
+        findings.push(UnusedComponentOutput {
+            path: node.path.clone(),
+            component_name: component_name.clone(),
+            output_name: output.name.clone(),
+            line,
+            col,
+        });
+    }
+}
+
+fn component_abstains_outputs(module: &ModuleInfo) -> bool {
+    // A base class in another file may emit the output through `this.bar.emit()`.
+    if component_has_extends(module) {
+        return true;
+    }
+
+    // `{ ...this }` forwards every output opaquely into a behavior pattern.
+    super::unused_component_input::component_spreads_this(module)
 }
 
 /// Whether the output `name` is emitted (or forwarded) somewhere in its own

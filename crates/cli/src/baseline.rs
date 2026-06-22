@@ -35,6 +35,21 @@ fn baseline_contains_dependency(
     baseline_keys.contains(path_key) || baseline_keys.contains(package_name)
 }
 
+fn retain_new_by_keys<T>(
+    items: &mut Vec<T>,
+    baseline_keys: &[String],
+    root: &Path,
+    key_builder: fn(&[T], &Path) -> Vec<String>,
+) {
+    let baseline_keys: FxHashSet<&str> = baseline_keys.iter().map(String::as_str).collect();
+    let item_keys = key_builder(items, root);
+    let mut key_iter = item_keys.into_iter();
+    items.retain(|_| match key_iter.next() {
+        Some(key) => !baseline_keys.contains(key.as_str()),
+        None => true,
+    });
+}
+
 /// Baseline data for comparison.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BaselineData {
@@ -1004,110 +1019,48 @@ impl BaselineFilterContext<'_> {
         &self,
         results: &mut fallow_core::results::AnalysisResults,
     ) {
-        let baseline_unprovided_injects: FxHashSet<&str> = self
-            .baseline
-            .unprovided_injects
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unprovided_injects.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.inject.path, self.root),
-                finding.inject.key_name
-            );
-            !baseline_unprovided_injects.contains(key.as_str())
-        });
-
-        let baseline_unrendered_components: FxHashSet<&str> = self
-            .baseline
-            .unrendered_components
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unrendered_components.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.component.path, self.root),
-                finding.component.component_name
-            );
-            !baseline_unrendered_components.contains(key.as_str())
-        });
-
-        let baseline_unused_component_props: FxHashSet<&str> = self
-            .baseline
-            .unused_component_props
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unused_component_props.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.prop.path, self.root),
-                finding.prop.prop_name
-            );
-            !baseline_unused_component_props.contains(key.as_str())
-        });
-
-        let baseline_unused_component_emits: FxHashSet<&str> = self
-            .baseline
-            .unused_component_emits
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unused_component_emits.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.emit.path, self.root),
-                finding.emit.emit_name
-            );
-            !baseline_unused_component_emits.contains(key.as_str())
-        });
-
-        let baseline_unused_component_inputs: FxHashSet<&str> = self
-            .baseline
-            .unused_component_inputs
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unused_component_inputs.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.input.path, self.root),
-                finding.input.input_name
-            );
-            !baseline_unused_component_inputs.contains(key.as_str())
-        });
-
-        let baseline_unused_component_outputs: FxHashSet<&str> = self
-            .baseline
-            .unused_component_outputs
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unused_component_outputs.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.output.path, self.root),
-                finding.output.output_name
-            );
-            !baseline_unused_component_outputs.contains(key.as_str())
-        });
-
-        let baseline_unused_svelte_events: FxHashSet<&str> = self
-            .baseline
-            .unused_svelte_events
-            .iter()
-            .map(String::as_str)
-            .collect();
-        results.unused_svelte_events.retain(|finding| {
-            let key = format!(
-                "{}:{}",
-                relative_path(&finding.event.path, self.root),
-                finding.event.event_name
-            );
-            !baseline_unused_svelte_events.contains(key.as_str())
-        });
+        retain_new_by_keys(
+            &mut results.unprovided_injects,
+            &self.baseline.unprovided_injects,
+            self.root,
+            inject_baseline_keys,
+        );
+        retain_new_by_keys(
+            &mut results.unrendered_components,
+            &self.baseline.unrendered_components,
+            self.root,
+            component_baseline_keys,
+        );
+        retain_new_by_keys(
+            &mut results.unused_component_props,
+            &self.baseline.unused_component_props,
+            self.root,
+            component_prop_baseline_keys,
+        );
+        retain_new_by_keys(
+            &mut results.unused_component_emits,
+            &self.baseline.unused_component_emits,
+            self.root,
+            component_emit_baseline_keys,
+        );
+        retain_new_by_keys(
+            &mut results.unused_component_inputs,
+            &self.baseline.unused_component_inputs,
+            self.root,
+            component_input_baseline_keys,
+        );
+        retain_new_by_keys(
+            &mut results.unused_component_outputs,
+            &self.baseline.unused_component_outputs,
+            self.root,
+            component_output_baseline_keys,
+        );
+        retain_new_by_keys(
+            &mut results.unused_svelte_events,
+            &self.baseline.unused_svelte_events,
+            self.root,
+            svelte_event_baseline_keys,
+        );
     }
 
     fn filter_route_action_members(&self, results: &mut fallow_core::results::AnalysisResults) {
@@ -2994,6 +2947,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn make_full_results() -> AnalysisResults {
         use fallow_core::extract::MemberKind;
         use fallow_core::results::*;

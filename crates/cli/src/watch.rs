@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
@@ -11,7 +11,7 @@ use notify::{RecommendedWatcher, Watcher};
 use rustc_hash::FxHashSet;
 
 use crate::report;
-use crate::runtime_support::load_config;
+use crate::runtime_support::{LoadConfigArgs, load_config};
 
 /// ANSI escape: clear screen + scrollback + move cursor home.
 const CLEAR_SCREEN: &str = "\x1B[2J\x1B[3J\x1B[H";
@@ -36,11 +36,7 @@ pub struct WatchOptions<'a> {
 type LoadConfigFn = fn(
     root: &Path,
     config_path: &Option<PathBuf>,
-    output: OutputFormat,
-    no_cache: bool,
-    threads: usize,
-    production: bool,
-    quiet: bool,
+    args: LoadConfigArgs,
 ) -> Result<fallow_config::ResolvedConfig, ExitCode>;
 
 fn is_relevant_source(path: &Path) -> bool {
@@ -341,11 +337,13 @@ fn reload_config_or_keep_previous(
     match load(
         opts.root,
         opts.config_path,
-        opts.output,
-        opts.no_cache,
-        opts.threads,
-        opts.production,
-        opts.quiet,
+        LoadConfigArgs {
+            output: opts.output,
+            no_cache: opts.no_cache,
+            threads: opts.threads,
+            production: opts.production,
+            quiet: opts.quiet,
+        },
     ) {
         Ok(mut reloaded) => {
             if opts.include_entry_exports {
@@ -360,36 +358,78 @@ fn reload_config_or_keep_previous(
 }
 
 pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
-    use std::sync::mpsc;
-
     let _ = crate::signal::install_handlers();
     let _graceful = crate::signal::GracefulModeGuard::new();
 
-    let mut config = match load_watch_config(opts) {
+    let config = match load_watch_config(opts) {
         Ok(config) => config,
         Err(code) => return code,
     };
+    if let Err(code) = run_initial_watch_analysis(&config, opts) {
+        return code;
+    }
 
-    let initial_status = analyze_and_report(&config, opts);
+    let mut state = match WatchLoopState::new(opts, config) {
+        Ok(state) => state,
+        Err(code) => return code,
+    };
+    run_watch_loop(opts, &mut state)
+}
+
+fn run_initial_watch_analysis(
+    config: &fallow_config::ResolvedConfig,
+    opts: &WatchOptions<'_>,
+) -> Result<(), ExitCode> {
+    let initial_status = analyze_and_report(config, opts);
     if initial_status != ExitCode::SUCCESS {
-        return initial_status;
+        return Err(initial_status);
     }
     print_waiting(opts);
+    Ok(())
+}
 
-    let (tx, rx) = mpsc::channel();
-    let filter = Arc::new(Mutex::new(WatchFilter::new(&config)));
-    let mut watcher = match create_watcher(opts.root, Arc::clone(&filter), tx.clone()) {
-        Ok(w) => Some(w),
-        Err(e) => {
-            eprintln!("Failed to create file watcher: {e}");
-            return ExitCode::from(2);
-        }
-    };
+struct WatchLoopState {
+    config: fallow_config::ResolvedConfig,
+    filter: Arc<Mutex<WatchFilter>>,
+    watcher: Option<RecommendedWatcher>,
+    tx: mpsc::Sender<WatchEvent>,
+    rx: mpsc::Receiver<WatchEvent>,
+    debouncer: PathDebouncer,
+    detached: bool,
+    next_root_check: Instant,
+    last_reattach_error: Option<Instant>,
+}
 
-    let mut debouncer = PathDebouncer::default();
-    let mut detached = false;
-    let mut next_root_check = Instant::now() + ROOT_POLL_INTERVAL;
-    let mut last_reattach_error = None;
+impl WatchLoopState {
+    fn new(
+        opts: &WatchOptions<'_>,
+        config: fallow_config::ResolvedConfig,
+    ) -> Result<Self, ExitCode> {
+        let (tx, rx) = mpsc::channel();
+        let filter = Arc::new(Mutex::new(WatchFilter::new(&config)));
+        let watcher = match create_watcher(opts.root, Arc::clone(&filter), tx.clone()) {
+            Ok(watcher) => Some(watcher),
+            Err(e) => {
+                eprintln!("Failed to create file watcher: {e}");
+                return Err(ExitCode::from(2));
+            }
+        };
+
+        Ok(Self {
+            config,
+            filter,
+            watcher,
+            tx,
+            rx,
+            debouncer: PathDebouncer::default(),
+            detached: false,
+            next_root_check: Instant::now() + ROOT_POLL_INTERVAL,
+            last_reattach_error: None,
+        })
+    }
+}
+
+fn run_watch_loop(opts: &WatchOptions<'_>, state: &mut WatchLoopState) -> ExitCode {
     loop {
         if crate::signal::is_shutting_down() {
             eprintln!("Watch stopped.");
@@ -397,23 +437,23 @@ pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
         }
 
         let now = Instant::now();
-        if now >= next_root_check {
-            next_root_check = now + ROOT_POLL_INTERVAL;
+        if now >= state.next_root_check {
+            state.next_root_check = now + ROOT_POLL_INTERVAL;
             handle_root_lifecycle(
                 opts,
                 RootLifecycleState {
-                    config: &mut config,
-                    filter: &filter,
-                    watcher: &mut watcher,
-                    tx: &tx,
-                    debouncer: &mut debouncer,
-                    detached: &mut detached,
-                    last_reattach_error: &mut last_reattach_error,
+                    config: &mut state.config,
+                    filter: &state.filter,
+                    watcher: &mut state.watcher,
+                    tx: &state.tx,
+                    debouncer: &mut state.debouncer,
+                    detached: &mut state.detached,
+                    last_reattach_error: &mut state.last_reattach_error,
                 },
             );
         }
 
-        match receive_watch_event(&rx, &mut debouncer, detached) {
+        match receive_watch_event(&state.rx, &mut state.debouncer, state.detached) {
             WatchPoll::Continue => continue,
             WatchPoll::Disconnected => {
                 eprintln!("Channel error: notify sender disconnected");
@@ -422,8 +462,8 @@ pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
             WatchPoll::Idle => {}
         }
 
-        if !detached {
-            run_ready_reanalysis(&mut config, opts, &mut debouncer);
+        if !state.detached {
+            run_ready_reanalysis(&mut state.config, opts, &mut state.debouncer);
         }
     }
 }
@@ -469,11 +509,13 @@ fn load_watch_config(opts: &WatchOptions<'_>) -> Result<fallow_config::ResolvedC
     let mut config = load_config(
         opts.root,
         opts.config_path,
-        opts.output,
-        opts.no_cache,
-        opts.threads,
-        opts.production,
-        opts.quiet,
+        LoadConfigArgs {
+            output: opts.output,
+            no_cache: opts.no_cache,
+            threads: opts.threads,
+            production: opts.production,
+            quiet: opts.quiet,
+        },
     )?;
     if opts.include_entry_exports {
         config.include_entry_exports = true;
@@ -1022,13 +1064,14 @@ mod tests {
         let mut config = make_config(root, OutputFormat::Human, 1, false);
         let opts = make_watch_options(root, OutputFormat::Json, 8, true);
 
-        reload_config_or_keep_previous(
-            &mut config,
-            &opts,
-            |_root, _config_path, output, _no_cache, threads, _production, quiet| {
-                Ok(make_config(Path::new("/project"), output, threads, quiet))
-            },
-        );
+        reload_config_or_keep_previous(&mut config, &opts, |_root, _config_path, args| {
+            Ok(make_config(
+                Path::new("/project"),
+                args.output,
+                args.threads,
+                args.quiet,
+            ))
+        });
 
         assert!(matches!(config.output, OutputFormat::Json));
         assert_eq!(config.threads, 8);
@@ -1044,13 +1087,14 @@ mod tests {
         let mut opts = make_watch_options(root, OutputFormat::Json, 8, true);
         opts.include_entry_exports = true;
 
-        reload_config_or_keep_previous(
-            &mut config,
-            &opts,
-            |_root, _config_path, output, _no_cache, threads, _production, quiet| {
-                Ok(make_config(Path::new("/project"), output, threads, quiet))
-            },
-        );
+        reload_config_or_keep_previous(&mut config, &opts, |_root, _config_path, args| {
+            Ok(make_config(
+                Path::new("/project"),
+                args.output,
+                args.threads,
+                args.quiet,
+            ))
+        });
 
         assert!(
             config.include_entry_exports,
@@ -1064,13 +1108,9 @@ mod tests {
         let mut config = make_config(root, OutputFormat::Human, 1, false);
         let opts = make_watch_options(root, OutputFormat::Json, 8, true);
 
-        reload_config_or_keep_previous(
-            &mut config,
-            &opts,
-            |_root, _config_path, _output, _no_cache, _threads, _production, _quiet| {
-                Err(ExitCode::from(2))
-            },
-        );
+        reload_config_or_keep_previous(&mut config, &opts, |_root, _config_path, _args| {
+            Err(ExitCode::from(2))
+        });
 
         assert!(matches!(config.output, OutputFormat::Human));
         assert_eq!(config.threads, 1);

@@ -343,16 +343,27 @@ fn coordination_question(changed_file: &str, symbols: &[String], consumers: u64)
     )
 }
 
-/// Build one decision, resolving its routed expert and suppression state.
-fn build_decision(
+/// The per-decision fields for [`build_decision`], distinct from the shared
+/// run context carried in [`DecisionInputs`].
+struct DecisionSpec {
     category: DecisionCategory,
     candidate_key: String,
     question: String,
     anchor_file: String,
     anchor_line: u32,
     blast: u64,
-    inputs: &DecisionInputs<'_>,
-) -> Decision {
+}
+
+/// Build one decision, resolving its routed expert and suppression state.
+fn build_decision(spec: DecisionSpec, inputs: &DecisionInputs<'_>) -> Decision {
+    let DecisionSpec {
+        category,
+        candidate_key,
+        question,
+        anchor_file,
+        anchor_line,
+        blast,
+    } = spec;
     let signal_id = derive_signal_id(category, &candidate_key);
     // Rename-durable review memory: if any path embedded in the candidate key was
     // renamed, derive the signal_id this decision WOULD have had under the old
@@ -430,12 +441,14 @@ fn classify_candidates(inputs: &DecisionInputs<'_>) -> Vec<Decision> {
             },
         );
         decisions.push(build_decision(
-            DecisionCategory::CouplingBoundary,
-            key.clone(),
-            boundary_question(&from_zone, &to_zone),
-            anchor_file,
-            anchor_line,
-            inputs.affected_not_shown,
+            DecisionSpec {
+                category: DecisionCategory::CouplingBoundary,
+                candidate_key: key.clone(),
+                question: boundary_question(&from_zone, &to_zone),
+                anchor_file,
+                anchor_line,
+                blast: inputs.affected_not_shown,
+            },
             inputs,
         ));
     }
@@ -453,12 +466,14 @@ fn classify_candidates(inputs: &DecisionInputs<'_>) -> Vec<Decision> {
             .map(str::to_string)
             .unwrap_or_default();
         decisions.push(build_decision(
-            DecisionCategory::PublicApiContract,
-            key,
-            public_api_question(inputs.deltas.public_api_added.len()),
-            anchor_file,
-            inputs.public_api_anchor_line,
-            inputs.affected_not_shown,
+            DecisionSpec {
+                category: DecisionCategory::PublicApiContract,
+                candidate_key: key,
+                question: public_api_question(inputs.deltas.public_api_added.len()),
+                anchor_file,
+                anchor_line: inputs.public_api_anchor_line,
+                blast: inputs.affected_not_shown,
+            },
             inputs,
         ));
     }
@@ -468,12 +483,18 @@ fn classify_candidates(inputs: &DecisionInputs<'_>) -> Vec<Decision> {
     for gap in inputs.coordination {
         let key = format!("contract:{}", gap.changed_file);
         decisions.push(build_decision(
-            DecisionCategory::PublicApiContract,
-            key,
-            coordination_question(&gap.changed_file, &gap.consumed_symbols, gap.consumer_count),
-            gap.changed_file.clone(),
-            gap.line,
-            gap.consumer_count,
+            DecisionSpec {
+                category: DecisionCategory::PublicApiContract,
+                candidate_key: key,
+                question: coordination_question(
+                    &gap.changed_file,
+                    &gap.consumed_symbols,
+                    gap.consumer_count,
+                ),
+                anchor_file: gap.changed_file.clone(),
+                anchor_line: gap.line,
+                blast: gap.consumer_count,
+            },
             inputs,
         ));
     }

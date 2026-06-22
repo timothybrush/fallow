@@ -2386,65 +2386,98 @@ fn blind_spot_suggestion(
 }
 
 fn security_summary(output: &SecurityOutput) -> SecuritySummary {
-    let mut by_severity = SecuritySeverityCounts::default();
-    let mut by_reachability = SecurityReachabilityCounts::default();
-    let mut by_runtime_state = SecurityRuntimeStateCounts::default();
-    let mut by_category = BTreeMap::new();
+    let mut counts = SecuritySummaryCounts::default();
 
     for finding in &output.security_findings {
-        match finding.severity {
-            SecuritySeverity::High => by_severity.high += 1,
-            SecuritySeverity::Medium => by_severity.medium += 1,
-            SecuritySeverity::Low => by_severity.low += 1,
-        }
-        let category = finding
-            .category
-            .clone()
-            .unwrap_or_else(|| security_kind_key(finding.kind).to_owned());
-        *by_category.entry(category).or_insert(0) += 1;
-
-        if finding.source_backed {
-            by_reachability.source_backed += 1;
-        }
-        if let Some(reachability) = &finding.reachability {
-            if reachability.reachable_from_entry {
-                by_reachability.entry_reachable += 1;
-            }
-            if reachability.reachable_from_untrusted_source {
-                by_reachability.untrusted_source_reachable += 1;
-            }
-            if reachability.crosses_boundary {
-                by_reachability.crosses_boundary += 1;
-            }
-            match reachability.taint_confidence {
-                Some(TaintConfidence::ArgLevel) => by_reachability.arg_level += 1,
-                Some(TaintConfidence::ModuleLevel) => by_reachability.module_level += 1,
-                None => {}
-            }
-        }
-
-        match finding.runtime.as_ref().map(|runtime| runtime.state) {
-            Some(SecurityRuntimeState::RuntimeHot) => by_runtime_state.runtime_hot += 1,
-            Some(SecurityRuntimeState::RuntimeCold) => by_runtime_state.runtime_cold += 1,
-            Some(SecurityRuntimeState::NeverExecuted) => by_runtime_state.never_executed += 1,
-            Some(SecurityRuntimeState::LowTraffic) => by_runtime_state.low_traffic += 1,
-            Some(SecurityRuntimeState::CoverageUnavailable) => {
-                by_runtime_state.coverage_unavailable += 1;
-            }
-            Some(SecurityRuntimeState::RuntimeUnknown) => by_runtime_state.runtime_unknown += 1,
-            None => by_runtime_state.not_collected += 1,
-        }
+        counts.record(finding);
     }
 
     SecuritySummary {
         security_findings: output.security_findings.len(),
-        by_severity,
-        by_category,
-        by_reachability,
-        by_runtime_state,
+        by_severity: counts.severity,
+        by_category: counts.category,
+        by_reachability: counts.reachability,
+        by_runtime_state: counts.runtime_state,
         unresolved_edge_files: output.unresolved_edge_files,
         unresolved_callee_sites: output.unresolved_callee_sites,
         attack_surface_entries: output.attack_surface.as_ref().map_or(0, Vec::len),
+    }
+}
+
+#[derive(Default)]
+struct SecuritySummaryCounts {
+    severity: SecuritySeverityCounts,
+    category: BTreeMap<String, usize>,
+    reachability: SecurityReachabilityCounts,
+    runtime_state: SecurityRuntimeStateCounts,
+}
+
+impl SecuritySummaryCounts {
+    fn record(&mut self, finding: &SecurityFinding) {
+        record_security_severity(finding.severity, &mut self.severity);
+        record_security_category(finding, &mut self.category);
+        record_security_reachability(finding, &mut self.reachability);
+        record_security_runtime_state(finding, &mut self.runtime_state);
+    }
+}
+
+fn record_security_severity(severity: SecuritySeverity, by_severity: &mut SecuritySeverityCounts) {
+    match severity {
+        SecuritySeverity::High => by_severity.high += 1,
+        SecuritySeverity::Medium => by_severity.medium += 1,
+        SecuritySeverity::Low => by_severity.low += 1,
+    }
+}
+
+fn record_security_category(finding: &SecurityFinding, by_category: &mut BTreeMap<String, usize>) {
+    let category = finding
+        .category
+        .clone()
+        .unwrap_or_else(|| security_kind_key(finding.kind).to_owned());
+    *by_category.entry(category).or_insert(0) += 1;
+}
+
+fn record_security_reachability(
+    finding: &SecurityFinding,
+    by_reachability: &mut SecurityReachabilityCounts,
+) {
+    if finding.source_backed {
+        by_reachability.source_backed += 1;
+    }
+    let Some(reachability) = &finding.reachability else {
+        return;
+    };
+
+    if reachability.reachable_from_entry {
+        by_reachability.entry_reachable += 1;
+    }
+    if reachability.reachable_from_untrusted_source {
+        by_reachability.untrusted_source_reachable += 1;
+    }
+    if reachability.crosses_boundary {
+        by_reachability.crosses_boundary += 1;
+    }
+    match reachability.taint_confidence {
+        Some(TaintConfidence::ArgLevel) => by_reachability.arg_level += 1,
+        Some(TaintConfidence::ModuleLevel) => by_reachability.module_level += 1,
+        None => {}
+    }
+}
+
+fn record_security_runtime_state(
+    finding: &SecurityFinding,
+    by_runtime_state: &mut SecurityRuntimeStateCounts,
+) {
+    match finding.runtime.as_ref().map(|runtime| runtime.state) {
+        Some(SecurityRuntimeState::RuntimeHot) => by_runtime_state.runtime_hot += 1,
+        Some(SecurityRuntimeState::RuntimeCold) => by_runtime_state.runtime_cold += 1,
+        Some(SecurityRuntimeState::NeverExecuted) => by_runtime_state.never_executed += 1,
+        Some(SecurityRuntimeState::LowTraffic) => by_runtime_state.low_traffic += 1,
+        Some(SecurityRuntimeState::CoverageUnavailable) => {
+            by_runtime_state.coverage_unavailable += 1;
+        }
+        Some(SecurityRuntimeState::RuntimeUnknown) => by_runtime_state.runtime_unknown += 1,
+        None => by_runtime_state.not_collected += 1,
     }
 }
 

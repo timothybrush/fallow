@@ -399,34 +399,13 @@ fn collect_extended_groups(
         length,
     );
 
-    let mut first_child: Option<(u32, Occurrence)> = None;
-    let mut children: Option<FxHashMap<u32, SeedOccurrences>> = None;
-    for &occurrence in occurrences {
-        let tokens = &ranked_files[occurrence.file_id];
-        if occurrence.offset + length >= tokens.len()
-            || (has_boundaries
-                && range_contains_boundary(
-                    boundary_prefixes[occurrence.file_id].as_ref(),
-                    occurrence.offset,
-                    length + 1,
-                ))
-        {
-            continue;
-        }
-
-        let token = tokens[occurrence.offset + length];
-        if let Some(children) = children.as_mut() {
-            insert_child_occurrence(children, token, occurrence);
-        } else if let Some((first_token, first_occurrence)) = first_child.take() {
-            let mut child_map = FxHashMap::default();
-            child_map.reserve(occurrences.len().min(CHILD_BUCKET_PREALLOC_LIMIT));
-            insert_child_occurrence(&mut child_map, first_token, first_occurrence);
-            insert_child_occurrence(&mut child_map, token, occurrence);
-            children = Some(child_map);
-        } else {
-            first_child = Some((token, occurrence));
-        }
-    }
+    let children = collect_child_occurrences(
+        ranked_files,
+        boundary_prefixes,
+        has_boundaries,
+        occurrences,
+        length,
+    );
 
     push_raw_group(occurrences, length, groups);
 
@@ -455,6 +434,64 @@ fn collect_extended_groups(
             );
         }
     }
+}
+
+fn collect_child_occurrences(
+    ranked_files: &[Vec<u32>],
+    boundary_prefixes: &[Option<Vec<u32>>],
+    has_boundaries: bool,
+    occurrences: &[Occurrence],
+    length: usize,
+) -> Option<FxHashMap<u32, SeedOccurrences>> {
+    let mut first_child: Option<(u32, Occurrence)> = None;
+    let mut children: Option<FxHashMap<u32, SeedOccurrences>> = None;
+    for &occurrence in occurrences {
+        let Some(token) = child_token_after_range(
+            ranked_files,
+            boundary_prefixes,
+            has_boundaries,
+            occurrence,
+            length,
+        ) else {
+            continue;
+        };
+
+        if let Some(children) = children.as_mut() {
+            insert_child_occurrence(children, token, occurrence);
+        } else if let Some((first_token, first_occurrence)) = first_child.take() {
+            let mut child_map = FxHashMap::default();
+            child_map.reserve(occurrences.len().min(CHILD_BUCKET_PREALLOC_LIMIT));
+            insert_child_occurrence(&mut child_map, first_token, first_occurrence);
+            insert_child_occurrence(&mut child_map, token, occurrence);
+            children = Some(child_map);
+        } else {
+            first_child = Some((token, occurrence));
+        }
+    }
+
+    children
+}
+
+fn child_token_after_range(
+    ranked_files: &[Vec<u32>],
+    boundary_prefixes: &[Option<Vec<u32>>],
+    has_boundaries: bool,
+    occurrence: Occurrence,
+    length: usize,
+) -> Option<u32> {
+    let tokens = &ranked_files[occurrence.file_id];
+    if occurrence.offset + length >= tokens.len()
+        || (has_boundaries
+            && range_contains_boundary(
+                boundary_prefixes[occurrence.file_id].as_ref(),
+                occurrence.offset,
+                length + 1,
+            ))
+    {
+        return None;
+    }
+
+    Some(tokens[occurrence.offset + length])
 }
 
 fn insert_child_occurrence(

@@ -137,11 +137,44 @@ fn analysis_count_vitals(
     )
 }
 
+struct SelectedModuleMetrics {
+    total_loc: u64,
+    line_counts: Vec<u32>,
+    param_counts: Vec<u8>,
+}
+
+fn selected_module_metrics(input: &VitalSignsInput<'_>) -> SelectedModuleMetrics {
+    let mut total_loc = 0;
+    let mut line_counts = Vec::new();
+    let mut param_counts = Vec::new();
+
+    for module in input.selected_modules() {
+        total_loc += module.line_offsets.len() as u64;
+        line_counts.extend(module.complexity.iter().map(|c| c.line_count));
+        param_counts.extend(module.complexity.iter().map(|c| c.param_count));
+    }
+
+    SelectedModuleMetrics {
+        total_loc,
+        line_counts,
+        param_counts,
+    }
+}
+
+fn vital_sign_counts(input: &VitalSignsInput<'_>, total_loc: u64) -> Option<VitalSignsCounts> {
+    input.analysis_counts.as_ref().map(|ac| VitalSignsCounts {
+        total_files: input.total_files,
+        total_exports: ac.total_exports,
+        dead_files: ac.dead_files,
+        dead_exports: ac.dead_exports,
+        duplicated_lines: None,
+        total_lines: Some(total_loc as usize),
+        files_scored: input.file_scores.map(<[_]>::len),
+        total_deps: ac.total_deps,
+    })
+}
+
 /// Compute vital signs from available health data.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "remaining count conversions are bounded by project size"
-)]
 pub fn compute_vital_signs(input: &VitalSignsInput<'_>) -> VitalSigns {
     let all_cyclomatic = collect_sorted_cyclomatic(input);
     let avg_cyclomatic = average_cyclomatic(&all_cyclomatic);
@@ -159,30 +192,13 @@ pub fn compute_vital_signs(input: &VitalSignsInput<'_>) -> VitalSigns {
 
     let (hotspot_count, hotspot_top_pct_count) = hotspot_vitals(input.hotspots, input.total_files);
 
-    let total_loc: u64 = input
-        .selected_modules()
-        .map(|m| m.line_offsets.len() as u64)
-        .sum();
+    let module_metrics = selected_module_metrics(input);
+    let counts = vital_sign_counts(input, module_metrics.total_loc);
+    let functions_over_60_loc_per_k = functions_over_60_loc_per_k(&module_metrics.line_counts);
+    let unit_size_profile = unit_size_profile(&module_metrics.line_counts);
 
-    let counts = input.analysis_counts.as_ref().map(|ac| VitalSignsCounts {
-        total_files: input.total_files,
-        total_exports: ac.total_exports,
-        dead_files: ac.dead_files,
-        dead_exports: ac.dead_exports,
-        duplicated_lines: None,
-        total_lines: Some(total_loc as usize),
-        files_scored: input.file_scores.map(<[_]>::len),
-        total_deps: ac.total_deps,
-    });
-
-    let all_line_counts: Vec<u32> = input
-        .selected_modules()
-        .flat_map(|m| m.complexity.iter().map(|c| c.line_count))
-        .collect();
-    let functions_over_60_loc_per_k = functions_over_60_loc_per_k(&all_line_counts);
-    let unit_size_profile = unit_size_profile(&all_line_counts);
-
-    let unit_interfacing_profile = unit_interfacing_profile(input, &all_cyclomatic);
+    let unit_interfacing_profile =
+        unit_interfacing_profile(&module_metrics.param_counts, &all_cyclomatic);
 
     let (p95_fan_in, coupling_high_pct) = if let Some(scores) = input.file_scores {
         compute_coupling_concentration(scores)
@@ -222,7 +238,7 @@ pub fn compute_vital_signs(input: &VitalSignsInput<'_>) -> VitalSigns {
         render_fan_in_high_pct: None,
         max_render_fan_in: None,
         top_render_fan_in: Vec::new(),
-        total_loc,
+        total_loc: module_metrics.total_loc,
     }
 }
 
@@ -288,18 +304,11 @@ fn unit_size_profile(line_counts: &[u32]) -> Option<RiskProfile> {
     (!line_counts.is_empty()).then(|| compute_size_risk_profile(line_counts))
 }
 
-fn unit_interfacing_profile(
-    input: &VitalSignsInput<'_>,
-    all_cyclomatic: &[u16],
-) -> Option<RiskProfile> {
+fn unit_interfacing_profile(param_counts: &[u8], all_cyclomatic: &[u16]) -> Option<RiskProfile> {
     if all_cyclomatic.is_empty() {
         return None;
     }
-    let all_param_counts: Vec<u8> = input
-        .selected_modules()
-        .flat_map(|m| m.complexity.iter().map(|c| c.param_count))
-        .collect();
-    Some(compute_interfacing_risk_profile(&all_param_counts))
+    Some(compute_interfacing_risk_profile(param_counts))
 }
 
 /// Compute unit size risk profile from function line counts.
@@ -403,74 +412,64 @@ fn compute_coupling_concentration(scores: &[FileHealthScore]) -> (Option<u32>, O
 /// Missing metrics (from pipelines that didn't run) don't penalize.
 /// `total_files` is used to normalize the hotspot count penalty.
 pub fn compute_health_score(vs: &VitalSigns, total_files: usize) -> HealthScore {
-    let mut score = 100.0_f64;
-
-    let dead_files_penalty = vs.dead_file_pct.map(|pct| round1((pct * 0.2).min(15.0)));
-    subtract_optional_penalty(&mut score, dead_files_penalty);
-
-    let dead_exports_penalty = vs.dead_export_pct.map(|pct| round1((pct * 0.2).min(15.0)));
-    subtract_optional_penalty(&mut score, dead_exports_penalty);
-
-    let complexity_penalty = complexity_penalty(vs);
-    score -= complexity_penalty;
-
-    let p90_penalty = p90_complexity_penalty(vs);
-    score -= p90_penalty;
-
-    let maintainability_penalty = maintainability_penalty(vs);
-    subtract_optional_penalty(&mut score, maintainability_penalty);
-
-    let hotspot_penalty = hotspot_penalty(vs, total_files);
-    subtract_optional_penalty(&mut score, hotspot_penalty);
-
-    let unused_deps_penalty =
-        dependency_count_penalty(vs.unused_deps_per_k_files, vs.unused_dep_count, 25.0, 10.0);
-    subtract_optional_penalty(&mut score, unused_deps_penalty);
-
-    let circular_deps_penalty = dependency_count_penalty(
-        vs.circular_deps_per_k_files,
-        vs.circular_dep_count,
-        25.0,
-        10.0,
-    );
-    subtract_optional_penalty(&mut score, circular_deps_penalty);
-
-    let unit_size_penalty = unit_size_penalty(vs);
-    subtract_optional_penalty(&mut score, unit_size_penalty);
-
-    let coupling_penalty = coupling_penalty(vs);
-    subtract_optional_penalty(&mut score, coupling_penalty);
-
-    let duplication_penalty = vs
-        .duplication_pct
-        .map(|dp| round1((dp - 5.0).clamp(0.0, 10.0)));
-    subtract_optional_penalty(&mut score, duplication_penalty);
-
-    let prop_drilling_penalty = prop_drilling_penalty(vs);
-    subtract_optional_penalty(&mut score, prop_drilling_penalty);
-
-    let score = round1(score).clamp(0.0, 100.0);
+    let penalties = compute_health_score_penalties(vs, total_files);
+    let score = apply_health_score_penalties(&penalties);
     let grade = letter_grade(score);
 
     HealthScore {
         formula_version: HEALTH_SCORE_FORMULA_VERSION,
         score,
         grade,
-        penalties: HealthScorePenalties {
-            dead_files: dead_files_penalty,
-            dead_exports: dead_exports_penalty,
-            complexity: complexity_penalty,
-            p90_complexity: p90_penalty,
-            maintainability: maintainability_penalty,
-            hotspots: hotspot_penalty,
-            unused_deps: unused_deps_penalty,
-            circular_deps: circular_deps_penalty,
-            unit_size: unit_size_penalty,
-            coupling: coupling_penalty,
-            duplication: duplication_penalty,
-            prop_drilling: prop_drilling_penalty,
-        },
+        penalties,
     }
+}
+
+fn compute_health_score_penalties(vs: &VitalSigns, total_files: usize) -> HealthScorePenalties {
+    HealthScorePenalties {
+        dead_files: vs.dead_file_pct.map(|pct| round1((pct * 0.2).min(15.0))),
+        dead_exports: vs.dead_export_pct.map(|pct| round1((pct * 0.2).min(15.0))),
+        complexity: complexity_penalty(vs),
+        p90_complexity: p90_complexity_penalty(vs),
+        maintainability: maintainability_penalty(vs),
+        hotspots: hotspot_penalty(vs, total_files),
+        unused_deps: dependency_count_penalty(
+            vs.unused_deps_per_k_files,
+            vs.unused_dep_count,
+            25.0,
+            10.0,
+        ),
+        circular_deps: dependency_count_penalty(
+            vs.circular_deps_per_k_files,
+            vs.circular_dep_count,
+            25.0,
+            10.0,
+        ),
+        unit_size: unit_size_penalty(vs),
+        coupling: coupling_penalty(vs),
+        duplication: vs
+            .duplication_pct
+            .map(|dp| round1((dp - 5.0).clamp(0.0, 10.0))),
+        prop_drilling: prop_drilling_penalty(vs),
+    }
+}
+
+fn apply_health_score_penalties(penalties: &HealthScorePenalties) -> f64 {
+    let mut score = 100.0_f64;
+
+    subtract_optional_penalty(&mut score, penalties.dead_files);
+    subtract_optional_penalty(&mut score, penalties.dead_exports);
+    score -= penalties.complexity;
+    score -= penalties.p90_complexity;
+    subtract_optional_penalty(&mut score, penalties.maintainability);
+    subtract_optional_penalty(&mut score, penalties.hotspots);
+    subtract_optional_penalty(&mut score, penalties.unused_deps);
+    subtract_optional_penalty(&mut score, penalties.circular_deps);
+    subtract_optional_penalty(&mut score, penalties.unit_size);
+    subtract_optional_penalty(&mut score, penalties.coupling);
+    subtract_optional_penalty(&mut score, penalties.duplication);
+    subtract_optional_penalty(&mut score, penalties.prop_drilling);
+
+    round1(score).clamp(0.0, 100.0)
 }
 
 /// Small capped penalty for prop-drilling chains, sized like the coupling
@@ -1174,6 +1173,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,

@@ -125,67 +125,13 @@ pub fn find_duplicate_prop_shapes(
     declared_deps: &FxHashSet<String>,
     line_offsets_by_file: &LineOffsetsMap<'_>,
 ) -> DuplicatePropShapeScan {
-    let gated = declared_deps.contains("react")
-        || declared_deps.contains("react-dom")
-        || declared_deps.contains("next")
-        || declared_deps.contains("preact");
-    if !gated {
+    if !declares_react_runtime(declared_deps) {
         return DuplicatePropShapeScan::default();
     }
 
     let modules_by_id: FxHashMap<FileId, &ModuleInfo> =
         modules.iter().map(|m| (m.file_id, m)).collect();
-
-    // Bucket eligible components by their significant prop-name vector. The key
-    // is the sorted+deduped `Vec<String>` of declared names surviving the
-    // denylist; FxHashMap gives deterministic iteration, and the key vectors are
-    // sorted, so emit order is stable after the final member path-sort (ADR-004).
-    let mut buckets: FxHashMap<Vec<String>, Vec<Member>> = FxHashMap::default();
-    let mut components_scanned = 0usize;
-
-    for node in &graph.modules {
-        if !node.is_reachable() || !is_react_file(&node.path) {
-            continue;
-        }
-        let Some(module) = modules_by_id.get(&node.file_id) else {
-            continue;
-        };
-        if module.component_functions.is_empty() {
-            continue;
-        }
-        components_scanned += module.component_functions.len();
-
-        // Index harvested props by the component they were declared on.
-        let mut props_by_comp: FxHashMap<&str, Vec<&str>> = FxHashMap::default();
-        for prop in &module.react_props {
-            props_by_comp
-                .entry(prop.component.as_str())
-                .or_default()
-                .push(prop.name.as_str());
-        }
-
-        for func in &module.component_functions {
-            // A partially-known prop set can never be PROVEN identical to
-            // another: abstain (ADR-001). The flag already implies zero
-            // rest/spread.
-            if func.has_unharvestable_props {
-                continue;
-            }
-            let Some(names) = props_by_comp.get(func.name.as_str()) else {
-                continue;
-            };
-            let significant = significant_prop_set(names);
-            if significant.len() < MIN_SIGNIFICANT_PROPS {
-                continue;
-            }
-            buckets.entry(significant).or_default().push(Member {
-                file: node.file_id,
-                span_start: func.span_start,
-                component_name: func.name.clone(),
-                path: node.path.clone(),
-            });
-        }
-    }
+    let (buckets, components_scanned) = collect_shape_buckets(graph, &modules_by_id);
 
     let mut groups = Vec::new();
     for (shape, mut members) in buckets {
@@ -220,6 +166,81 @@ pub fn find_duplicate_prop_shapes(
         groups,
         components_scanned,
     }
+}
+
+fn declares_react_runtime(declared_deps: &FxHashSet<String>) -> bool {
+    declared_deps.contains("react")
+        || declared_deps.contains("react-dom")
+        || declared_deps.contains("next")
+        || declared_deps.contains("preact")
+}
+
+/// Bucket eligible components by their significant prop-name vector. The key is
+/// the sorted+deduped `Vec<String>` of declared names surviving the denylist;
+/// FxHashMap gives deterministic iteration, and the key vectors are sorted, so
+/// emit order is stable after the final member path-sort (ADR-004).
+fn collect_shape_buckets(
+    graph: &ModuleGraph,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+) -> (FxHashMap<Vec<String>, Vec<Member>>, usize) {
+    let mut buckets: FxHashMap<Vec<String>, Vec<Member>> = FxHashMap::default();
+    let mut components_scanned = 0usize;
+
+    for node in &graph.modules {
+        if !node.is_reachable() || !is_react_file(&node.path) {
+            continue;
+        }
+        let Some(module) = modules_by_id.get(&node.file_id) else {
+            continue;
+        };
+        if module.component_functions.is_empty() {
+            continue;
+        }
+        components_scanned += module.component_functions.len();
+        collect_module_shape_buckets(node.file_id, &node.path, module, &mut buckets);
+    }
+
+    (buckets, components_scanned)
+}
+
+fn collect_module_shape_buckets(
+    file: FileId,
+    path: &Path,
+    module: &ModuleInfo,
+    buckets: &mut FxHashMap<Vec<String>, Vec<Member>>,
+) {
+    let props_by_comp = props_by_component(module);
+    for func in &module.component_functions {
+        // A partially-known prop set can never be PROVEN identical to another:
+        // abstain (ADR-001). The flag already implies zero rest/spread.
+        if func.has_unharvestable_props {
+            continue;
+        }
+        let Some(names) = props_by_comp.get(func.name.as_str()) else {
+            continue;
+        };
+        let significant = significant_prop_set(names);
+        if significant.len() < MIN_SIGNIFICANT_PROPS {
+            continue;
+        }
+        buckets.entry(significant).or_default().push(Member {
+            file,
+            span_start: func.span_start,
+            component_name: func.name.clone(),
+            path: path.to_path_buf(),
+        });
+    }
+}
+
+fn props_by_component(module: &ModuleInfo) -> FxHashMap<&str, Vec<&str>> {
+    let mut props_by_comp: FxHashMap<&str, Vec<&str>> = FxHashMap::default();
+    for prop in &module.react_props {
+        props_by_comp
+            .entry(prop.component.as_str())
+            .or_default()
+            .push(prop.name.as_str());
+    }
+    props_by_comp
 }
 
 /// Emit one [`DuplicatePropShape`] per member of a surviving group. Each

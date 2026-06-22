@@ -111,6 +111,12 @@ enum SideEffectRegistrationTarget {
 struct LitCustomElementCandidate {
     decorator: LitCustomElementDecorator,
     target: SideEffectRegistrationTarget,
+    /// The `@customElement('x-foo')` tag literal, if statically recoverable.
+    /// `None` for a computed / non-literal tag argument (which the Lit
+    /// `unrendered-component` arm cannot key on, so no registration is recorded).
+    tag: Option<String>,
+    /// Start byte offset of the decorated class (anchors the finding).
+    span_start: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +167,8 @@ pub(crate) struct ModuleInfoExtractor {
     pub(crate) inline_template_findings: Vec<InlineTemplateFinding>,
     pub(crate) side_effect_registered_class_names: FxHashSet<String>,
     lit_custom_element_candidates: Vec<LitCustomElementCandidate>,
+    pub(crate) registered_custom_elements: Vec<fallow_types::extract::RegisteredCustomElement>,
+    pub(crate) used_custom_element_tags: FxHashSet<String>,
     pub(crate) factory_call_candidates: Vec<FactoryCallCandidate>,
     pub(crate) node_module_register_url_bindings: FxHashMap<String, Vec<String>>,
     pub(crate) child_process_fork_bindings: FxHashSet<String>,
@@ -628,9 +636,24 @@ impl ModuleInfoExtractor {
 
         let mut class_names = Vec::new();
         let mut anonymous_default_indices = Vec::new();
+        let mut registrations = Vec::new();
         for candidate in &self.lit_custom_element_candidates {
             if !self.is_lit_custom_element_decorator(&candidate.decorator) {
                 continue;
+            }
+            // Record the registration for the Lit `unrendered-component` arm, but
+            // only when a static tag literal was recoverable (a computed tag is
+            // not flaggable). The class-local name drives the public-API abstain.
+            if let Some(tag) = &candidate.tag {
+                let class_local_name = match &candidate.target {
+                    SideEffectRegistrationTarget::LocalClass(name) => name.clone(),
+                    SideEffectRegistrationTarget::AnonymousDefaultExport(_) => String::new(),
+                };
+                registrations.push(fallow_types::extract::RegisteredCustomElement {
+                    tag: tag.clone(),
+                    class_local_name,
+                    span_start: candidate.span_start,
+                });
             }
             match &candidate.target {
                 SideEffectRegistrationTarget::LocalClass(class_name) => {
@@ -642,6 +665,7 @@ impl ModuleInfoExtractor {
             }
         }
 
+        self.registered_custom_elements.extend(registrations);
         self.side_effect_registered_class_names.extend(class_names);
         for index in anonymous_default_indices {
             if let Some(export) = self.exports.get_mut(index) {
@@ -654,9 +678,16 @@ impl ModuleInfoExtractor {
         &mut self,
         decorator: LitCustomElementDecorator,
         target: SideEffectRegistrationTarget,
+        tag: Option<String>,
+        span_start: u32,
     ) {
         self.lit_custom_element_candidates
-            .push(LitCustomElementCandidate { decorator, target });
+            .push(LitCustomElementCandidate {
+                decorator,
+                target,
+                tag,
+                span_start,
+            });
     }
 
     fn apply_side_effect_registrations(&mut self) {
@@ -1121,6 +1152,12 @@ impl ModuleInfoExtractor {
             angular_inputs: self.angular_inputs,
             angular_outputs: self.angular_outputs,
             angular_component_selectors: self.angular_component_selectors,
+            registered_custom_elements: self.registered_custom_elements,
+            used_custom_element_tags: {
+                let mut tags: Vec<String> = self.used_custom_element_tags.into_iter().collect();
+                tags.sort_unstable();
+                tags
+            },
             angular_used_selectors: self.angular_used_selectors,
             angular_entry_component_refs: self.angular_entry_component_refs,
             has_dynamic_component_render: self.has_dynamic_component_render,
@@ -1151,60 +1188,77 @@ impl ModuleInfoExtractor {
              merge step before relying on this assertion"
         );
         let namespace_object_aliases = self.finalize_resolution_phase();
-        info.imports.extend(self.imports);
-        info.exports.extend(self.exports);
-        info.re_exports.extend(self.re_exports);
-        info.dynamic_imports.extend(self.dynamic_imports);
+        self.merge_module_graph(info, namespace_object_aliases);
+        self.merge_security_info(info);
+        self.merge_framework_info(info);
+    }
+
+    fn merge_module_graph(
+        &mut self,
+        info: &mut ModuleInfo,
+        mut namespace_object_aliases: Vec<fallow_types::extract::NamespaceObjectAlias>,
+    ) {
+        info.imports.append(&mut self.imports);
+        info.exports.append(&mut self.exports);
+        info.re_exports.append(&mut self.re_exports);
+        info.dynamic_imports.append(&mut self.dynamic_imports);
         info.dynamic_import_patterns
-            .extend(self.dynamic_import_patterns);
-        info.require_calls.extend(self.require_calls);
+            .append(&mut self.dynamic_import_patterns);
+        info.require_calls.append(&mut self.require_calls);
         info.package_path_references
-            .extend(self.package_path_references);
-        info.member_accesses.extend(self.member_accesses);
-        info.whole_object_uses.extend(self.whole_object_uses);
+            .append(&mut self.package_path_references);
+        info.member_accesses.append(&mut self.member_accesses);
+        info.whole_object_uses.append(&mut self.whole_object_uses);
         info.has_cjs_exports |= self.has_cjs_exports;
         info.has_angular_component_template_url |= self.has_angular_component_template_url;
-        info.class_heritage.extend(self.class_heritage);
-        info.injection_tokens.extend(self.injection_tokens);
+        info.class_heritage.append(&mut self.class_heritage);
+        info.injection_tokens.append(&mut self.injection_tokens);
         info.local_type_declarations
-            .extend(self.local_type_declarations);
+            .append(&mut self.local_type_declarations);
         info.public_signature_type_references
-            .extend(self.public_signature_type_references);
+            .append(&mut self.public_signature_type_references);
         info.namespace_object_aliases
-            .extend(namespace_object_aliases);
-        info.directives.extend(self.directives);
+            .append(&mut namespace_object_aliases);
+        info.directives.append(&mut self.directives);
         info.client_only_dynamic_import_spans
-            .extend(self.client_only_dynamic_import_spans);
-        info.security_sinks.extend(self.security_sinks);
+            .append(&mut self.client_only_dynamic_import_spans);
+        info.callee_uses.append(&mut self.callee_uses);
+    }
+
+    fn merge_security_info(&mut self, info: &mut ModuleInfo) {
+        info.security_sinks.append(&mut self.security_sinks);
         info.security_sinks_skipped += self.security_sinks_skipped;
         info.security_unresolved_callee_sites
-            .extend(self.security_unresolved_callee_sites);
-        info.tainted_bindings.extend(self.tainted_bindings);
-        info.sanitized_sink_args.extend(self.sanitized_sink_args);
+            .append(&mut self.security_unresolved_callee_sites);
+        info.tainted_bindings.append(&mut self.tainted_bindings);
+        info.sanitized_sink_args
+            .append(&mut self.sanitized_sink_args);
         info.security_control_sites
-            .extend(self.security_control_sites);
-        info.callee_uses.extend(self.callee_uses);
-        info.misplaced_directives.extend(self.misplaced_directives);
+            .append(&mut self.security_control_sites);
+    }
+
+    fn merge_framework_info(&mut self, info: &mut ModuleInfo) {
+        info.misplaced_directives
+            .append(&mut self.misplaced_directives);
         info.inline_server_action_exports
-            .extend(self.inline_server_action_exports);
-        info.di_key_sites.extend(self.di_key_sites);
-        info.has_dynamic_provide = info.has_dynamic_provide || self.has_dynamic_provide;
-        info.load_return_keys.extend(self.load_return_keys);
-        info.has_unharvestable_load = info.has_unharvestable_load || self.has_unharvestable_load;
-        info.has_load_data_whole_use = info.has_load_data_whole_use || self.has_load_data_whole_use;
-        info.angular_inputs.extend(self.angular_inputs);
-        info.angular_outputs.extend(self.angular_outputs);
+            .append(&mut self.inline_server_action_exports);
+        info.di_key_sites.append(&mut self.di_key_sites);
+        info.has_dynamic_provide |= self.has_dynamic_provide;
+        info.load_return_keys.append(&mut self.load_return_keys);
+        info.has_unharvestable_load |= self.has_unharvestable_load;
+        info.has_load_data_whole_use |= self.has_load_data_whole_use;
+        info.angular_inputs.append(&mut self.angular_inputs);
+        info.angular_outputs.append(&mut self.angular_outputs);
         info.angular_component_selectors
-            .extend(self.angular_component_selectors);
+            .append(&mut self.angular_component_selectors);
         info.angular_used_selectors
-            .extend(self.angular_used_selectors);
+            .append(&mut self.angular_used_selectors);
         info.angular_entry_component_refs
-            .extend(self.angular_entry_component_refs);
-        info.has_dynamic_component_render =
-            info.has_dynamic_component_render || self.has_dynamic_component_render;
+            .append(&mut self.angular_entry_component_refs);
+        info.has_dynamic_component_render |= self.has_dynamic_component_render;
         info.svelte_dispatched_events
-            .extend(self.svelte_dispatched_events);
-        info.has_dynamic_dispatch = info.has_dynamic_dispatch || self.has_dynamic_dispatch;
+            .append(&mut self.svelte_dispatched_events);
+        info.has_dynamic_dispatch |= self.has_dynamic_dispatch;
     }
 }
 

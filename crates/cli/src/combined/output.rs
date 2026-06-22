@@ -1,5 +1,6 @@
 use crate::report::sink::outln;
 use std::io::IsTerminal;
+use std::path::Path;
 use std::process::ExitCode;
 
 use colored::Colorize;
@@ -334,26 +335,31 @@ pub(super) fn handle_regression_and_summary(
 
 /// Print a summary line listing which analyses had failures.
 fn print_failure_summary(
-    root: &std::path::Path,
+    root: &Path,
     check_result: Option<&CheckResult>,
     dupes_result: Option<&DupesResult>,
     health_result: Option<&HealthResult>,
 ) {
+    let parts = failure_summary_parts(check_result, dupes_result, health_result);
+    if parts.is_empty() {
+        return;
+    }
+
+    let nudge = health_failure_nudge(root, health_result);
+    eprintln!("\nFailed: {}{nudge}", parts.join(", "));
+    print_failure_followups(root);
+}
+
+fn failure_summary_parts(
+    check_result: Option<&CheckResult>,
+    dupes_result: Option<&DupesResult>,
+    health_result: Option<&HealthResult>,
+) -> Vec<String> {
     let mut parts = Vec::new();
-    if let Some(r) = check_result {
-        let issues = r.results.total_issues();
-        if issues > 0 {
-            let delta_suffix = r.baseline_deltas.as_ref().map_or_else(String::new, |d| {
-                match d.total_delta.cmp(&0) {
-                    std::cmp::Ordering::Greater => {
-                        format!(", +{} since baseline", d.total_delta)
-                    }
-                    std::cmp::Ordering::Less => format!(", {} since baseline", d.total_delta),
-                    std::cmp::Ordering::Equal => ", \u{00b1}0 since baseline".to_string(),
-                }
-            });
-            parts.push(format!("dead-code ({issues} issues{delta_suffix})"));
-        }
+    if let Some(r) = check_result
+        && let Some(part) = check_failure_summary_part(r)
+    {
+        parts.push(part);
     }
     if let Some(r) = dupes_result {
         let groups = r.report.clone_groups.len();
@@ -367,43 +373,63 @@ fn print_failure_summary(
             parts.push(format!("health ({above} above threshold)"));
         }
     }
-    if !parts.is_empty() {
-        let nudge = health_result
-            .filter(|r| !r.report.targets.is_empty())
-            .map(|r| {
-                if let Some(top) = r.report.targets.iter().find(|t| !is_test_path(&t.path)) {
-                    let name = report::format_display_path(&top.path, root);
-                    format!(": start with {name}")
-                } else {
-                    String::new()
-                }
-            })
-            .unwrap_or_default();
-        eprintln!("\nFailed: {}{nudge}", parts.join(", "));
+    parts
+}
 
-        // Periodic value digest: prose counterpart of the `impact-report`
-        // next-step, at most weekly (the cadence stamp lives in the impact
-        // store) and only with non-zero numbers. Shares the caller's quiet
-        // gate; CI and disabled suggestions suppress it inside the peek.
-        if let Some(digest) = crate::report::suggestions::due_impact_digest(root) {
-            eprintln!(
-                "{}",
-                crate::report::suggestions::impact_digest_line(digest).dimmed()
-            );
-        }
+fn check_failure_summary_part(result: &CheckResult) -> Option<String> {
+    let issues = result.results.total_issues();
+    if issues == 0 {
+        return None;
+    }
 
-        // First-contact setup hint: prose counterpart of the `setup`
-        // next-step, printed after the failure summary so it is the last
-        // thing a human reads on a big first run instead of scrolling away
-        // with the header. Deliberately not TTY-gated (agents reading piped
-        // human output are a primary audience); quiet is gated by the caller,
-        // and CI, configured projects, suggestions off, and a recorded
-        // decline (`fallow init --decline`) suppress it here.
-        if crate::report::suggestions::suggestions_enabled()
-            && crate::report::suggestions::setup_pointer_applicable(root)
-        {
-            eprintln!("{}", crate::report::suggestions::SETUP_HINT.dimmed());
-        }
+    let delta_suffix = result
+        .baseline_deltas
+        .as_ref()
+        .map_or_else(String::new, |d| match d.total_delta.cmp(&0) {
+            std::cmp::Ordering::Greater => format!(", +{} since baseline", d.total_delta),
+            std::cmp::Ordering::Less => format!(", {} since baseline", d.total_delta),
+            std::cmp::Ordering::Equal => ", \u{00b1}0 since baseline".to_string(),
+        });
+    Some(format!("dead-code ({issues} issues{delta_suffix})"))
+}
+
+fn health_failure_nudge(root: &Path, health_result: Option<&HealthResult>) -> String {
+    health_result
+        .filter(|r| !r.report.targets.is_empty())
+        .map(|r| {
+            if let Some(top) = r.report.targets.iter().find(|t| !is_test_path(&t.path)) {
+                let name = report::format_display_path(&top.path, root);
+                format!(": start with {name}")
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn print_failure_followups(root: &Path) {
+    // Periodic value digest: prose counterpart of the `impact-report`
+    // next-step, at most weekly (the cadence stamp lives in the impact
+    // store) and only with non-zero numbers. Shares the caller's quiet
+    // gate; CI and disabled suggestions suppress it inside the peek.
+    if let Some(digest) = crate::report::suggestions::due_impact_digest(root) {
+        eprintln!(
+            "{}",
+            crate::report::suggestions::impact_digest_line(digest).dimmed()
+        );
+    }
+
+    // First-contact setup hint: prose counterpart of the `setup`
+    // next-step, printed after the failure summary so it is the last
+    // thing a human reads on a big first run instead of scrolling away
+    // with the header. Deliberately not TTY-gated (agents reading piped
+    // human output are a primary audience); quiet is gated by the caller,
+    // and CI, configured projects, suggestions off, and a recorded
+    // decline (`fallow init --decline`) suppress it here.
+    if crate::report::suggestions::suggestions_enabled()
+        && crate::report::suggestions::setup_pointer_applicable(root)
+    {
+        eprintln!("{}", crate::report::suggestions::SETUP_HINT.dimmed());
     }
 }
 

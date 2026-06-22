@@ -330,33 +330,12 @@ pub fn scan_theme_blocks(source: &str) -> ThemeScan {
     if !source.contains("@theme") {
         return ThemeScan::default();
     }
-    // Mask comments AND strings/url() so a brace or semicolon inside either does
-    // not break the block boundary. Both masks preserve byte length, so offsets in the
-    // masked buffer line up 1:1 with the original (line numbers are counted in
-    // the original below).
-    let masked = mask_with_whitespace(&mask_css_comments(source, false), &CSS_NON_SELECTOR_RE);
-    let bytes = masked.as_bytes();
+    let masked = mask_theme_source(source);
     let mut out = ThemeScan::default();
     let mut seen: FxHashSet<String> = FxHashSet::default();
     for open in CSS_THEME_OPEN_RE.find_iter(&masked) {
         let body_start = open.end();
-        // Brace-match from just after the opening `{` to its partner.
-        let mut depth = 1usize;
-        let mut i = body_start;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        let body_end = i.min(bytes.len());
+        let body_end = find_theme_body_end(&masked, body_start);
         collect_theme_declarations(
             source,
             &masked,
@@ -365,15 +344,52 @@ pub fn scan_theme_blocks(source: &str) -> ThemeScan {
             &mut out.tokens,
             &mut seen,
         );
-        if let Some(body) = masked.get(body_start..body_end) {
-            for cap in CSS_VAR_REF_RE.captures_iter(body) {
-                if let Some(name) = cap.get(1) {
-                    out.theme_var_reads.push(name.as_str().to_owned());
-                }
-            }
-        }
+        collect_theme_var_reads(&masked, body_start, body_end, &mut out.theme_var_reads);
     }
     out
+}
+
+/// Mask comments, strings, and `url(...)` while preserving byte offsets so
+/// braces inside those regions never affect `@theme` block matching.
+fn mask_theme_source(source: &str) -> String {
+    mask_with_whitespace(&mask_css_comments(source, false), &CSS_NON_SELECTOR_RE)
+}
+
+/// Brace-match from just after a `@theme {` opener to its partner.
+fn find_theme_body_end(masked: &str, body_start: usize) -> usize {
+    let bytes = masked.as_bytes();
+    let mut depth = 1usize;
+    let mut i = body_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i.min(bytes.len())
+}
+
+fn collect_theme_var_reads(
+    masked: &str,
+    body_start: usize,
+    body_end: usize,
+    out: &mut Vec<String>,
+) {
+    let Some(body) = masked.get(body_start..body_end) else {
+        return;
+    };
+    for cap in CSS_VAR_REF_RE.captures_iter(body) {
+        if let Some(name) = cap.get(1) {
+            out.push(name.as_str().to_owned());
+        }
+    }
 }
 
 /// Walk a masked `@theme` body collecting top-level `--ident: value` declarations
@@ -671,44 +687,61 @@ fn scan_css_module_exports(
     is_scss: bool,
     class_filter: Option<&FxHashSet<String>>,
 ) -> Vec<ExportInfo> {
+    let masked = mask_css_module_class_candidates(source, is_scss, class_filter.is_some());
+    let mut seen = FxHashSet::default();
+    let mut exports = Vec::new();
+    for cap in CSS_CLASS_RE.captures_iter(&masked) {
+        if let Some(m) = cap.get(1) {
+            push_css_class_export(m, class_filter, &mut seen, &mut exports);
+        }
+    }
+    exports
+}
+
+fn mask_css_module_class_candidates(source: &str, is_scss: bool, has_class_filter: bool) -> String {
     let mut masked = mask_with_whitespace(source, &CSS_COMMENT_RE);
     if is_scss {
         masked = mask_with_whitespace(&masked, &SCSS_LINE_COMMENT_RE);
     }
     masked = mask_with_whitespace(&masked, &CSS_NON_SELECTOR_RE);
-    if class_filter.is_none() {
+    if !has_class_filter {
         masked = mask_with_whitespace(&masked, &CSS_AT_RULE_PRELUDE_RE);
     }
+    masked
+}
 
-    let mut seen = FxHashSet::default();
-    let mut exports = Vec::new();
-    for cap in CSS_CLASS_RE.captures_iter(&masked) {
-        if let Some(m) = cap.get(1) {
-            let class_name = m.as_str().to_string();
-            if class_filter.is_some_and(|filter| !filter.contains(&class_name)) {
-                continue;
-            }
-            if seen.insert(class_name.clone()) {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "CSS files exceeding u32::MAX bytes are not a realistic input"
-                )]
-                let span = Span::new(m.start() as u32, m.end() as u32);
-                exports.push(ExportInfo {
-                    name: ExportName::Named(class_name),
-                    local_name: None,
-                    is_type_only: false,
-                    visibility: VisibilityTag::None,
-                    expected_unused_reason: None,
-                    span,
-                    members: Vec::new(),
-                    is_side_effect_used: false,
-                    super_class: None,
-                });
-            }
-        }
+fn push_css_class_export(
+    class_match: regex::Match<'_>,
+    class_filter: Option<&FxHashSet<String>>,
+    seen: &mut FxHashSet<String>,
+    exports: &mut Vec<ExportInfo>,
+) {
+    let class_name = class_match.as_str().to_string();
+    if class_filter.is_some_and(|filter| !filter.contains(&class_name)) {
+        return;
     }
-    exports
+    if seen.insert(class_name.clone()) {
+        exports.push(css_class_export(class_name, class_match));
+    }
+}
+
+fn css_class_export(class_name: String, class_match: regex::Match<'_>) -> ExportInfo {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CSS files exceeding u32::MAX bytes are not a realistic input"
+    )]
+    let span = Span::new(class_match.start() as u32, class_match.end() as u32);
+    ExportInfo {
+        name: ExportName::Named(class_name),
+        local_name: None,
+        is_type_only: false,
+        visibility: VisibilityTag::None,
+        expected_unused_reason: None,
+        span,
+        members: Vec::new(),
+        is_side_effect_used: false,
+        super_class: None,
+    }
 }
 
 /// Build the import edges for a CSS/SCSS source: every `@import`/`@use`/etc.
@@ -1665,6 +1698,21 @@ mod tests {
     fn theme_token_backs_token_via_var() {
         let scan = scan_theme_blocks(
             "@theme {\n  --color-brand: #f00;\n  --color-button: var(--color-brand);\n}",
+        );
+        assert!(scan.theme_var_reads.contains(&"color-brand".to_string()));
+    }
+
+    #[test]
+    fn theme_string_braces_do_not_truncate_block() {
+        let scan = scan_theme_blocks(
+            "@theme {\n  --font-label: \"}\";\n  --color-brand: #f00;\n  --color-button: var(--color-brand);\n}",
+        );
+        assert_eq!(
+            scan.tokens
+                .iter()
+                .map(|token| token.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["font-label", "color-brand", "color-button"]
         );
         assert!(scan.theme_var_reads.contains(&"color-brand".to_string()));
     }

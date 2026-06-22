@@ -6,6 +6,7 @@
 //! in [`engine`] and is shared by all three scanners. This module hosts the
 //! Angular outer scanner; [`vue`] and [`svelte`] host the SFC scanners.
 
+mod astro;
 mod engine;
 mod svelte;
 mod vue;
@@ -17,6 +18,7 @@ use engine::{
     is_identifier_before, read_attribute_value, read_identifier, skip_quoted, skip_whitespace,
 };
 
+pub use astro::compute_astro_template_complexity;
 pub use svelte::compute_svelte_template_complexity;
 pub use vue::compute_vue_template_complexity;
 
@@ -38,49 +40,7 @@ impl<'a> TemplateScanner<'a> {
     fn scan(mut self) -> Result<TemplateComplexity, ScanError> {
         let mut offset = 0;
         while offset < self.source.len() {
-            if self.source[offset..].starts_with("<!--") {
-                offset = self.find_required(offset + 4, "-->")? + 3;
-                continue;
-            }
-            if self.source[offset..].starts_with("{{") {
-                let end = self.find_required(offset + 2, "}}")?;
-                self.complexity.add_expression(
-                    &self.source[offset + 2..end],
-                    offset + 2,
-                    self.block_depth,
-                )?;
-                offset = end + 2;
-                continue;
-            }
-
-            match self.source.as_bytes()[offset] {
-                b'\'' | b'"' => offset = skip_quoted(self.source, offset)?,
-                b'<' => offset = self.scan_element(offset)?,
-                b'@' if !is_identifier_before(self.source, offset) => {
-                    if let Some(next) = self.scan_block_keyword(offset)? {
-                        offset = next;
-                    } else {
-                        offset += 1;
-                    }
-                }
-                b'{' => {
-                    self.block_depth = self.block_depth.saturating_add(1);
-                    offset += 1;
-                }
-                b'}' => {
-                    if self.block_depth == 0 {
-                        return Err(ScanError);
-                    }
-                    self.block_depth -= 1;
-                    offset += 1;
-                }
-                _ => {
-                    offset += self.source[offset..]
-                        .chars()
-                        .next()
-                        .map_or(1, char::len_utf8);
-                }
-            }
+            offset = self.scan_next(offset)?;
         }
 
         if self.block_depth == 0 {
@@ -88,6 +48,62 @@ impl<'a> TemplateScanner<'a> {
         } else {
             Err(ScanError)
         }
+    }
+
+    fn scan_next(&mut self, offset: usize) -> Result<usize, ScanError> {
+        if self.source[offset..].starts_with("<!--") {
+            return self.scan_comment(offset);
+        }
+        if self.source[offset..].starts_with("{{") {
+            return self.scan_interpolation(offset);
+        }
+
+        match self.source.as_bytes()[offset] {
+            b'\'' | b'"' => skip_quoted(self.source, offset),
+            b'<' => self.scan_element(offset),
+            b'@' if !is_identifier_before(self.source, offset) => self
+                .scan_block_keyword(offset)
+                .map(|next| next.unwrap_or(offset + 1)),
+            b'{' => Ok(self.push_block_depth(offset)),
+            b'}' => self.pop_block_depth(offset),
+            _ => Ok(self.advance_char(offset)),
+        }
+    }
+
+    fn scan_comment(&self, offset: usize) -> Result<usize, ScanError> {
+        self.find_required(offset + 4, "-->").map(|end| end + 3)
+    }
+
+    fn scan_interpolation(&mut self, offset: usize) -> Result<usize, ScanError> {
+        let expr_start = offset + 2;
+        let end = self.find_required(expr_start, "}}")?;
+        self.complexity.add_expression(
+            &self.source[expr_start..end],
+            expr_start,
+            self.block_depth,
+        )?;
+        Ok(end + 2)
+    }
+
+    fn push_block_depth(&mut self, offset: usize) -> usize {
+        self.block_depth = self.block_depth.saturating_add(1);
+        offset + 1
+    }
+
+    fn pop_block_depth(&mut self, offset: usize) -> Result<usize, ScanError> {
+        if self.block_depth == 0 {
+            return Err(ScanError);
+        }
+        self.block_depth -= 1;
+        Ok(offset + 1)
+    }
+
+    fn advance_char(&self, offset: usize) -> usize {
+        offset
+            + self.source[offset..]
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8)
     }
 
     fn find_required(&self, offset: usize, needle: &str) -> Result<usize, ScanError> {

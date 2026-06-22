@@ -485,73 +485,89 @@ fn append_ownership_hotspot_actions(
     path: &str,
 ) {
     if ownership.bus_factor == 1 {
-        let top = &ownership.top_contributor;
-        let owner = top.identifier.as_str();
-        let commits = top.commits;
-        let suggested: Vec<&str> = ownership
-            .suggested_reviewers
-            .iter()
-            .map(|r| r.identifier.as_str())
-            .collect();
-        let note = if suggested.is_empty() {
-            if commits < 5 {
-                Some(
-                    "Single recent contributor on a low-commit file. Consider a pair review for major changes."
-                        .to_string(),
-                )
-            } else {
-                None
-            }
-        } else {
-            let list = suggested
-                .iter()
-                .map(|s| format!("@{s}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            Some(format!("Candidate reviewers: {list}"))
-        };
-        actions.push(HotspotAction {
-            kind: HotspotActionType::LowBusFactor,
-            auto_fixable: false,
-            description: format!(
-                "{owner} is the sole recent contributor to `{path}`; adding a second reviewer reduces knowledge-loss risk"
-            ),
-            note,
-            suggested_pattern: None,
-            heuristic: None,
-        });
+        actions.push(low_bus_factor_action(ownership, path));
     }
 
     if ownership.unowned == Some(true) {
-        actions.push(HotspotAction {
-            kind: HotspotActionType::UnownedHotspot,
-            auto_fixable: false,
-            description: format!("Add a CODEOWNERS entry for `{path}`"),
-            note: Some(
-                "Frequently-changed files without declared owners create review bottlenecks"
-                    .to_string(),
-            ),
-            suggested_pattern: Some(suggest_codeowners_pattern(path)),
-            heuristic: Some(HotspotActionHeuristic::DirectoryDeepest),
-        });
+        actions.push(unowned_hotspot_action(path));
     }
 
     if ownership.ownership_state == OwnershipState::Drifting && ownership.drift {
-        let reason = ownership
-            .drift_reason
-            .as_deref()
-            .unwrap_or("ownership has shifted from the original author");
-        actions.push(HotspotAction {
-            kind: HotspotActionType::OwnershipDrift,
-            auto_fixable: false,
-            description: format!("Update CODEOWNERS for `{path}`: {reason}"),
-            note: Some(
-                "Drift suggests the declared or original owner is no longer the right reviewer"
-                    .to_string(),
-            ),
-            suggested_pattern: None,
-            heuristic: None,
+        actions.push(ownership_drift_action(ownership, path));
+    }
+}
+
+fn low_bus_factor_action(
+    ownership: &crate::health_types::OwnershipMetrics,
+    path: &str,
+) -> HotspotAction {
+    let top = &ownership.top_contributor;
+    let owner = top.identifier.as_str();
+    HotspotAction {
+        kind: HotspotActionType::LowBusFactor,
+        auto_fixable: false,
+        description: format!(
+            "{owner} is the sole recent contributor to `{path}`; adding a second reviewer reduces knowledge-loss risk"
+        ),
+        note: low_bus_factor_note(ownership),
+        suggested_pattern: None,
+        heuristic: None,
+    }
+}
+
+fn low_bus_factor_note(ownership: &crate::health_types::OwnershipMetrics) -> Option<String> {
+    let suggested: Vec<&str> = ownership
+        .suggested_reviewers
+        .iter()
+        .map(|r| r.identifier.as_str())
+        .collect();
+    if suggested.is_empty() {
+        return (ownership.top_contributor.commits < 5).then(|| {
+            "Single recent contributor on a low-commit file. Consider a pair review for major changes."
+                .to_string()
         });
+    }
+
+    let list = suggested
+        .iter()
+        .map(|s| format!("@{s}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("Candidate reviewers: {list}"))
+}
+
+fn unowned_hotspot_action(path: &str) -> HotspotAction {
+    HotspotAction {
+        kind: HotspotActionType::UnownedHotspot,
+        auto_fixable: false,
+        description: format!("Add a CODEOWNERS entry for `{path}`"),
+        note: Some(
+            "Frequently-changed files without declared owners create review bottlenecks"
+                .to_string(),
+        ),
+        suggested_pattern: Some(suggest_codeowners_pattern(path)),
+        heuristic: Some(HotspotActionHeuristic::DirectoryDeepest),
+    }
+}
+
+fn ownership_drift_action(
+    ownership: &crate::health_types::OwnershipMetrics,
+    path: &str,
+) -> HotspotAction {
+    let reason = ownership
+        .drift_reason
+        .as_deref()
+        .unwrap_or("ownership has shifted from the original author");
+    HotspotAction {
+        kind: HotspotActionType::OwnershipDrift,
+        auto_fixable: false,
+        description: format!("Update CODEOWNERS for `{path}`: {reason}"),
+        note: Some(
+            "Drift suggests the declared or original owner is no longer the right reviewer"
+                .to_string(),
+        ),
+        suggested_pattern: None,
+        heuristic: None,
     }
 }
 

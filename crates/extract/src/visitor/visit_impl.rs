@@ -28,10 +28,11 @@ use crate::html::is_remote_url;
 use super::helpers::{
     extract_angular_component_metadata, extract_angular_inputs_outputs,
     extract_angular_signal_query, extract_class_members, extract_concat_parts,
-    extract_custom_elements_define, extract_implemented_interface_names,
-    extract_nested_type_bindings, extract_query_list_element_type, extract_super_class_name,
-    extract_type_annotation_name, has_angular_class_decorator, has_angular_plural_query_decorator,
-    is_meta_url_arg, lit_custom_element_decorator, regex_pattern_to_suffix,
+    extract_custom_element_tag_reference, extract_custom_elements_define,
+    extract_implemented_interface_names, extract_nested_type_bindings,
+    extract_query_list_element_type, extract_super_class_name, extract_type_annotation_name,
+    has_angular_class_decorator, has_angular_plural_query_decorator, is_meta_url_arg,
+    lit_custom_element_decorator, lit_custom_element_tag, regex_pattern_to_suffix,
     ts_import_type_qualifier_root,
 };
 use super::{
@@ -52,6 +53,21 @@ struct ArgSinkSiteInput<'site, 'ast> {
     arg_expr: &'site Expression<'ast>,
     arg_literal: Option<SinkLiteralValue>,
     arg_is_non_literal: bool,
+    url_arg_literal: Option<String>,
+    span: Span,
+}
+
+/// Per-argument inputs to [`ModuleInfoExtractor::push_security_sink_arg`].
+///
+/// Bundles the cohesive call-/new-expression argument context (the callee path,
+/// sink shape, argument index and expression, the call-level arg-0 URL literal,
+/// and the owning span) that `capture_call_sink_args` and
+/// `capture_new_expression_sink` both assemble per argument.
+struct PushSinkArgInput<'site, 'ast> {
+    callee_path: &'site str,
+    sink_shape: SinkShape,
+    arg_index: u32,
+    arg_expr: &'site Expression<'ast>,
     url_arg_literal: Option<String>,
     span: Span,
 }
@@ -3575,10 +3591,16 @@ impl<'a> ModuleInfoExtractor {
         let Some(decorator) = lit_custom_element_decorator(class) else {
             return;
         };
+        // The registered tag (`@customElement('x-foo')`) and the class span anchor
+        // the Lit `unrendered-component` finding at the element, not line 1.
+        let tag = lit_custom_element_tag(class);
+        let span_start = class.span.start;
         if let Some(id) = class.id.as_ref() {
             self.record_lit_custom_element_candidate(
                 decorator,
                 SideEffectRegistrationTarget::LocalClass(id.name.to_string()),
+                tag,
+                span_start,
             );
         } else if let Some(export) = self.exports.last()
             && matches!(export.name, crate::ExportName::Default)
@@ -3588,6 +3610,8 @@ impl<'a> ModuleInfoExtractor {
             self.record_lit_custom_element_candidate(
                 decorator,
                 SideEffectRegistrationTarget::AnonymousDefaultExport(export_index),
+                tag,
+                span_start,
             );
         }
     }
@@ -4114,8 +4138,25 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                 ));
         }
 
-        if let Some((_tag, class_name)) = extract_custom_elements_define(expr) {
+        if let Some((tag, class_name)) = extract_custom_elements_define(expr) {
+            // Record the registration for the Lit `unrendered-component` arm
+            // (anchored at the `customElements.define(...)` call), then keep the
+            // class credited as side-effect-used.
+            self.registered_custom_elements
+                .push(fallow_types::extract::RegisteredCustomElement {
+                    tag,
+                    class_local_name: class_name.clone(),
+                    span_start: expr.span.start,
+                });
             self.side_effect_registered_class_names.insert(class_name);
+        }
+
+        // Imperative element render / lookup (`document.createElement('x-foo')`,
+        // `customElements.get('x-foo')`): credit the tag as rendered so the Lit
+        // `unrendered-component` arm does not flag an element created without an
+        // `html` template.
+        if let Some(tag) = extract_custom_element_tag_reference(expr) {
+            self.used_custom_element_tags.insert(tag);
         }
 
         self.bind_iterable_callback_parameter(expr);
@@ -4422,6 +4463,39 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
                     .map_or_else(|| quasi.value.raw.as_str(), |c| c.as_str());
                 for raw in crate::html::collect_asset_refs(text) {
                     self.push_html_template_asset_import(&raw);
+                }
+                // Record custom-element tags rendered in the template
+                // (`<x-foo>`), feeding the Lit `unrendered-component` arm's
+                // project-wide rendered-tag union.
+                for tag in crate::html::collect_custom_element_tags(text) {
+                    self.used_custom_element_tags.insert(tag);
+                }
+            }
+            // Detect a dynamic tag interpolation (`` html`<${tag}>` ``): a quasi
+            // that ends at a tag-open boundary (`<` / `</`) right before an
+            // expression renders an unknowable element, so mark the project
+            // dynamic (the Lit arm then abstains on every element).
+            //
+            // The bare `<` / `</` test is intentionally broad: in Lit's own
+            // template grammar a quasi ending in `<` immediately before an
+            // interpolation is a tag-open position, so a false trigger only
+            // over-abstains (suppresses Lit findings) while a missed trigger
+            // would risk a false `unrendered-component`. Over-abstain is the
+            // zero-FP-safe direction, so do not narrow this to require a
+            // preceding space.
+            let quasis = &expr.quasi.quasis;
+            for (i, quasi) in quasis.iter().enumerate() {
+                if i + 1 >= quasis.len() {
+                    break;
+                }
+                let text = quasi
+                    .value
+                    .cooked
+                    .as_ref()
+                    .map_or_else(|| quasi.value.raw.as_str(), |c| c.as_str());
+                if text.ends_with('<') || text.ends_with("</") {
+                    self.used_custom_element_tags
+                        .insert(fallow_types::extract::DYNAMIC_CUSTOM_ELEMENT_TAG.to_string());
                 }
             }
         }
@@ -6004,6 +6078,17 @@ fn object_key_metadata(expr: &Expression<'_>) -> ObjectKeyMetadata {
         }
     }
     ObjectKeyMetadata { keys, complete }
+}
+
+fn should_capture_member_assign_sink(
+    callee_path: &str,
+    arg_literal: Option<&SinkLiteralValue>,
+    arg_is_non_literal: bool,
+) -> bool {
+    arg_is_non_literal
+        || arg_literal.is_some_and(|literal| {
+            should_capture_literal_sink_value(callee_path, SinkShape::MemberAssign, 0, literal)
+        })
 }
 
 fn should_capture_literal_sink_value(
@@ -7823,17 +7908,18 @@ impl ModuleInfoExtractor {
     /// Shared by `capture_call_sink` and `capture_new_expression_sink` (oxc
     /// represents `new X(...)` as a distinct `NewExpression`), keeping the
     /// per-argument `SinkSite` construction byte-identical across both shapes.
-    /// `url_arg_literal` is the call-level arg-0 URL signal (always `None` for
-    /// new-expressions). `span` is the owning call / new expression's span.
-    fn push_security_sink_arg(
-        &mut self,
-        callee_path: &str,
-        sink_shape: SinkShape,
-        arg_index: u32,
-        arg_expr: &Expression<'_>,
-        url_arg_literal: Option<String>,
-        span: Span,
-    ) {
+    /// `input.url_arg_literal` is the call-level arg-0 URL signal (always `None`
+    /// for new-expressions). `input.span` is the owning call / new expression's
+    /// span.
+    fn push_security_sink_arg(&mut self, input: PushSinkArgInput<'_, '_>) {
+        let PushSinkArgInput {
+            callee_path,
+            sink_shape,
+            arg_index,
+            arg_expr,
+            url_arg_literal,
+            span,
+        } = input;
         let arg_literal = self.static_sink_literal_value(arg_expr);
         let arg_is_non_literal = arg_literal.is_none() && is_non_literal_arg(arg_expr);
         if arg_is_non_literal
@@ -7923,15 +8009,7 @@ impl ModuleInfoExtractor {
 
     fn capture_call_sink(&mut self, expr: &CallExpression<'_>) {
         let Some(callee_path) = flatten_callee_path(&expr.callee) else {
-            if self.redos_regex_application(expr).is_some() {
-                return;
-            }
-            let reason = if contains_computed_member(&expr.callee) {
-                SkippedSecurityCalleeReason::ComputedMember
-            } else {
-                SkippedSecurityCalleeReason::DynamicDispatch
-            };
-            self.record_skipped_security_callee(&expr.callee, reason);
+            self.record_unresolved_call_sink(expr);
             return;
         };
         self.capture_security_control_call(&callee_path, expr.span);
@@ -7940,25 +8018,7 @@ impl ModuleInfoExtractor {
         } else {
             SinkShape::Call
         };
-        // The arg-0 URL literal, captured once per call so the secret-to-network
-        // category (#890) can carry a destination-host signal on the arg-1 sink.
-        let url_arg_literal = call_url_arg_literal(expr);
-        for (index, arg) in expr.arguments.iter().enumerate() {
-            let Some(arg_expr) = arg.as_expression() else {
-                continue;
-            };
-            let Ok(arg_index) = u32::try_from(index) else {
-                continue;
-            };
-            self.push_security_sink_arg(
-                &callee_path,
-                sink_shape,
-                arg_index,
-                arg_expr,
-                url_arg_literal.clone(),
-                expr.span,
-            );
-        }
+        self.capture_call_sink_args(expr, &callee_path, sink_shape);
         if should_capture_missing_jwt_verify_options(&callee_path, sink_shape, expr.arguments.len())
         {
             self.security_sinks.push(SinkSite {
@@ -7982,6 +8042,45 @@ impl ModuleInfoExtractor {
         }
     }
 
+    fn record_unresolved_call_sink(&mut self, expr: &CallExpression<'_>) {
+        if self.redos_regex_application(expr).is_some() {
+            return;
+        }
+        let reason = if contains_computed_member(&expr.callee) {
+            SkippedSecurityCalleeReason::ComputedMember
+        } else {
+            SkippedSecurityCalleeReason::DynamicDispatch
+        };
+        self.record_skipped_security_callee(&expr.callee, reason);
+    }
+
+    fn capture_call_sink_args(
+        &mut self,
+        expr: &CallExpression<'_>,
+        callee_path: &str,
+        sink_shape: SinkShape,
+    ) {
+        // The arg-0 URL literal is captured once per call so secret-to-network
+        // findings can carry a destination-host signal on the arg-1 sink.
+        let url_arg_literal = call_url_arg_literal(expr);
+        for (index, arg) in expr.arguments.iter().enumerate() {
+            let Some(arg_expr) = arg.as_expression() else {
+                continue;
+            };
+            let Ok(arg_index) = u32::try_from(index) else {
+                continue;
+            };
+            self.push_security_sink_arg(PushSinkArgInput {
+                callee_path,
+                sink_shape,
+                arg_index,
+                arg_expr,
+                url_arg_literal: url_arg_literal.clone(),
+                span: expr.span,
+            });
+        }
+    }
+
     /// Capture constructor-call sink sites. This is intentionally separate from
     /// call capture because oxc represents `new Function("...")` as a
     /// `NewExpression`, not a `CallExpression`.
@@ -7996,14 +8095,14 @@ impl ModuleInfoExtractor {
             let Ok(arg_index) = u32::try_from(index) else {
                 continue;
             };
-            self.push_security_sink_arg(
-                &callee_path,
-                SinkShape::NewExpression,
+            self.push_security_sink_arg(PushSinkArgInput {
+                callee_path: &callee_path,
+                sink_shape: SinkShape::NewExpression,
                 arg_index,
                 arg_expr,
-                None,
-                expr.span,
-            );
+                url_arg_literal: None,
+                span: expr.span,
+            });
         }
     }
 
@@ -8078,23 +8177,39 @@ impl ModuleInfoExtractor {
         let AssignmentTarget::StaticMemberExpression(member) = &expr.left else {
             return;
         };
+        let Some(callee_path) = self.member_assign_callee_path(member) else {
+            return;
+        };
+        let arg_literal = self.static_sink_literal_value(&expr.right);
+        let arg_is_non_literal = arg_literal.is_none() && is_non_literal_arg(&expr.right);
+        if !should_capture_member_assign_sink(
+            &callee_path,
+            arg_literal.as_ref(),
+            arg_is_non_literal,
+        ) {
+            return;
+        }
+        self.record_member_assign_sink(expr, callee_path, arg_literal, arg_is_non_literal);
+    }
+
+    fn member_assign_callee_path(&mut self, member: &StaticMemberExpression<'_>) -> Option<String> {
         let Some(object_path) = flatten_callee_path(&member.object) else {
             self.record_skipped_security_callee(
                 &member.object,
                 SkippedSecurityCalleeReason::UnsupportedAssignmentObject,
             );
-            return;
+            return None;
         };
-        let callee_path = format!("{}.{}", object_path, member.property.name);
-        let arg_literal = self.static_sink_literal_value(&expr.right);
-        let arg_is_non_literal = arg_literal.is_none() && is_non_literal_arg(&expr.right);
-        if !arg_is_non_literal
-            && !arg_literal.as_ref().is_some_and(|literal| {
-                should_capture_literal_sink_value(&callee_path, SinkShape::MemberAssign, 0, literal)
-            })
-        {
-            return;
-        }
+        Some(format!("{}.{}", object_path, member.property.name))
+    }
+
+    fn record_member_assign_sink(
+        &mut self,
+        expr: &AssignmentExpression<'_>,
+        callee_path: String,
+        arg_literal: Option<SinkLiteralValue>,
+        arg_is_non_literal: bool,
+    ) {
         if arg_is_non_literal {
             self.record_sanitized_sink_arg(expr.span.start, 0, &expr.right);
         }

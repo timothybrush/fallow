@@ -148,50 +148,77 @@ static CONTROL_FOR_RE: LazyLock<regex::Regex> =
 /// represent potential component class member references.
 pub fn collect_angular_template_refs(source: &str) -> AngularTemplateRefs {
     let source = strip_html_comments_preserve_offsets(source);
-    let bytes = source.as_bytes();
-    let mut refs = AngularTemplateRefs::default();
-    let mut scopes: Vec<Vec<String>> = vec![Vec::new()];
-    let mut index = 0;
+    AngularTemplateScanner::new(&source).scan()
+}
 
-    while index < bytes.len() {
-        if index + 1 < bytes.len() && bytes[index] == b'{' && bytes[index + 1] == b'{' {
-            let Some((expr, next_index)) = scan_curly_section(&source, index, 2, 2) else {
-                break;
-            };
-            collect_expression_refs(expr.trim(), &current_locals(&scopes), &mut refs);
-            index = next_index;
-            continue;
+struct AngularTemplateScanner<'a> {
+    source: &'a str,
+    refs: AngularTemplateRefs,
+    scopes: Vec<Vec<String>>,
+}
+
+impl<'a> AngularTemplateScanner<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            refs: AngularTemplateRefs::default(),
+            scopes: vec![Vec::new()],
         }
-
-        if bytes[index] == b'@'
-            && let Some(next_index) = handle_control_flow(&source, index, &mut scopes, &mut refs)
-        {
-            index = next_index;
-            continue;
-        }
-
-        if bytes[index] == b'}' {
-            if scopes.len() > 1 {
-                scopes.pop();
-            }
-            index += 1;
-            continue;
-        }
-
-        if bytes[index] == b'<' {
-            if let Some((tag, next_index)) = scan_html_tag(&source, index) {
-                process_tag(tag, index, &mut scopes, &mut refs);
-                index = next_index;
-                continue;
-            }
-            index += 1;
-            continue;
-        }
-
-        index += 1;
     }
 
-    refs
+    fn scan(mut self) -> AngularTemplateRefs {
+        let mut index = 0;
+        while index < self.source.len() {
+            index = self.scan_next(index);
+        }
+        self.refs
+    }
+
+    fn scan_next(&mut self, index: usize) -> usize {
+        let bytes = self.source.as_bytes();
+        if starts_interpolation(bytes, index) {
+            return self.scan_interpolation(index);
+        }
+
+        match bytes[index] {
+            b'@' => self.scan_control_flow(index),
+            b'}' => self.close_scope(index),
+            b'<' => self.scan_tag(index),
+            _ => index + 1,
+        }
+    }
+
+    fn scan_interpolation(&mut self, index: usize) -> usize {
+        let Some((expr, next_index)) = scan_curly_section(self.source, index, 2, 2) else {
+            return self.source.len();
+        };
+        collect_expression_refs(expr.trim(), &current_locals(&self.scopes), &mut self.refs);
+        next_index
+    }
+
+    fn scan_control_flow(&mut self, index: usize) -> usize {
+        handle_control_flow(self.source, index, &mut self.scopes, &mut self.refs)
+            .unwrap_or(index + 1)
+    }
+
+    fn close_scope(&mut self, index: usize) -> usize {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+        index + 1
+    }
+
+    fn scan_tag(&mut self, index: usize) -> usize {
+        let Some((tag, next_index)) = scan_html_tag(self.source, index) else {
+            return index + 1;
+        };
+        process_tag(tag, index, &mut self.scopes, &mut self.refs);
+        next_index
+    }
+}
+
+fn starts_interpolation(bytes: &[u8], index: usize) -> bool {
+    index + 1 < bytes.len() && bytes[index] == b'{' && bytes[index + 1] == b'{'
 }
 
 fn strip_html_comments_preserve_offsets(source: &str) -> String {

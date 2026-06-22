@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use fallow_config::OutputFormat;
+use fallow_config::{DuplicatesConfig, OutputFormat};
 
 use crate::check::{CheckOptions, CheckResult, IssueFilters, TraceOptions};
 use crate::dupes::{DupesMode, DupesOptions, DupesResult};
@@ -275,7 +275,20 @@ fn run_combined_dupes(
     opts: &CombinedOptions<'_>,
     check_result: Option<&CheckResult>,
 ) -> Result<Option<DupesResult>, ExitCode> {
-    let dupes_cfg = load_config_for_analysis(
+    let dupes_cfg = load_combined_dupes_config(opts)?;
+    let dupes_opts = build_combined_dupes_options(opts, &dupes_cfg);
+    let dupes_files = shared_dupes_files(opts, check_result);
+
+    let dupes_run = if let Some(files) = dupes_files {
+        crate::dupes::execute_dupes_with_files(&dupes_opts, files)
+    } else {
+        crate::dupes::execute_dupes(&dupes_opts)
+    };
+    dupes_run.map(Some)
+}
+
+fn load_combined_dupes_config(opts: &CombinedOptions<'_>) -> Result<DuplicatesConfig, ExitCode> {
+    Ok(load_config_for_analysis(
         opts.root,
         opts.config_path,
         crate::ConfigLoadOptions {
@@ -289,9 +302,14 @@ fn run_combined_dupes(
         },
         fallow_config::ProductionAnalysis::Dupes,
     )?
-    .duplicates;
+    .duplicates)
+}
 
-    let dupes_opts = DupesOptions {
+fn build_combined_dupes_options<'a>(
+    opts: &'a CombinedOptions<'a>,
+    dupes_cfg: &DuplicatesConfig,
+) -> DupesOptions<'a> {
+    DupesOptions {
         root: opts.root,
         config_path: opts.config_path,
         output: opts.output,
@@ -331,26 +349,24 @@ fn run_combined_dupes(
         summary: opts.summary,
         group_by: opts.group_by,
         performance: false,
-    };
+    }
+}
 
+fn shared_dupes_files(
+    opts: &CombinedOptions<'_>,
+    check_result: Option<&CheckResult>,
+) -> Option<Vec<fallow_core::discover::DiscoveredFile>> {
     let check_production = opts.production_dead_code.unwrap_or(opts.production);
     let health_production = opts.production_health.unwrap_or(opts.production);
     let dupes_production = opts.production_dupes.unwrap_or(opts.production);
     let share_files_with_dupes = opts.run_health
         && check_production == health_production
         && check_production == dupes_production;
-    let dupes_files = if share_files_with_dupes {
+    if share_files_with_dupes {
         check_result.and_then(|r| r.shared_parse.as_ref().map(|sp| sp.files.clone()))
     } else {
         None
-    };
-
-    let dupes_run = if let Some(files) = dupes_files {
-        crate::dupes::execute_dupes_with_files(&dupes_opts, files)
-    } else {
-        crate::dupes::execute_dupes(&dupes_opts)
-    };
-    dupes_run.map(Some)
+    }
 }
 
 fn build_health_opts<'a>(opts: &'a CombinedOptions<'a>) -> HealthOptions<'a> {

@@ -168,17 +168,43 @@ fn build_render_fan_in_metric(
     graph: &ModuleGraph,
     counts: FxHashMap<CompKey, FanInAccum>,
 ) -> Option<RenderFanInMetric> {
-    // Build the per-component detail (keyed back to file paths for the hotspot
-    // surface) and the distinct-parents distribution for the percentile.
     let path_by_id: FxHashMap<FileId, &Path> = graph
         .modules
         .iter()
         .map(|node| (node.file_id, node.path.as_path()))
         .collect();
+    let parts = collect_render_fan_in_components(&path_by_id, counts);
 
-    let mut per_component: Vec<RenderFanInComponent> = Vec::with_capacity(counts.len());
-    let mut distinct_parents_dist: Vec<u32> = Vec::with_capacity(counts.len());
-    let mut max_distinct_parents: u32 = 0;
+    if parts.per_component.is_empty() {
+        // React declared but no inspectable components: nothing to surface.
+        return None;
+    }
+
+    let (p95_distinct_parents, high_pct) = concentration(&parts.distinct_parents_dist);
+
+    Some(RenderFanInMetric {
+        per_component: parts.per_component,
+        p95_distinct_parents,
+        high_pct,
+        max_distinct_parents: Some(parts.max_distinct_parents),
+    })
+}
+
+struct RenderFanInMetricParts {
+    per_component: Vec<RenderFanInComponent>,
+    distinct_parents_dist: Vec<u32>,
+    max_distinct_parents: u32,
+}
+
+fn collect_render_fan_in_components(
+    path_by_id: &FxHashMap<FileId, &Path>,
+    counts: FxHashMap<CompKey, FanInAccum>,
+) -> RenderFanInMetricParts {
+    // Build the per-component detail (keyed back to file paths for the hotspot
+    // surface) and the distinct-parents distribution for the percentile.
+    let mut per_component = Vec::with_capacity(counts.len());
+    let mut distinct_parents_dist = Vec::with_capacity(counts.len());
+    let mut max_distinct_parents = 0;
     for (key, accum) in counts {
         let Some(path) = path_by_id.get(&key.file) else {
             continue;
@@ -197,11 +223,6 @@ fn build_render_fan_in_metric(
         });
     }
 
-    if per_component.is_empty() {
-        // React declared but no inspectable components: nothing to surface.
-        return None;
-    }
-
     // Deterministic ordering (path, component) so the carrier is stable across
     // runs (FxHashMap iteration order is not).
     per_component.sort_by(|a, b| {
@@ -210,14 +231,11 @@ fn build_render_fan_in_metric(
             .then_with(|| a.component.cmp(&b.component))
     });
 
-    let (p95_distinct_parents, high_pct) = concentration(&distinct_parents_dist);
-
-    Some(RenderFanInMetric {
+    RenderFanInMetricParts {
         per_component,
-        p95_distinct_parents,
-        high_pct,
-        max_distinct_parents: Some(max_distinct_parents),
-    })
+        distinct_parents_dist,
+        max_distinct_parents,
+    }
 }
 
 // The test-file predicate must run on the project-relative path, not the

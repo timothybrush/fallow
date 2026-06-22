@@ -203,6 +203,28 @@ fn evaluate_inject_site(
     local_to_export_keys: &FxHashMap<&str, Vec<ExportKey>>,
     site: &fallow_types::extract::DiKeySite,
 ) -> Option<UnprovidedInject> {
+    if !inject_site_has_unprovided_key(scan, resolved, local_to_export_keys, site) {
+        return None;
+    }
+
+    let (line, col) = byte_offset_to_line_col(
+        scan.input.line_offsets_by_file,
+        resolved.file_id,
+        site.span_start,
+    );
+    if inject_site_suppressed(scan, resolved.file_id, line) {
+        return None;
+    }
+    let path = scan.path_by_id.get(&resolved.file_id)?;
+    Some(build_unprovided_inject(path, site, line, col))
+}
+
+fn inject_site_has_unprovided_key(
+    scan: &InjectScanContext<'_>,
+    resolved: &ResolvedModule,
+    local_to_export_keys: &FxHashMap<&str, Vec<ExportKey>>,
+    site: &fallow_types::extract::DiKeySite,
+) -> bool {
     let canonical = match resolve_key(
         resolved,
         scan.input.graph,
@@ -210,11 +232,11 @@ fn evaluate_inject_site(
         &site.key_local,
     ) {
         // External: the provide may live inside the package; abstain.
-        KeyResolution::External => return None,
+        KeyResolution::External => return false,
         KeyResolution::Internal(keys) | KeyResolution::LocalOnly(keys) => keys,
     };
     if canonical.is_empty() {
-        return None;
+        return false;
     }
     // Angular InjectionToken FP gate: only a USER `InjectionToken` is in scope. A
     // class / framework token (`inject(MyService)`) is FP-prone via
@@ -226,11 +248,11 @@ fn evaluate_inject_site(
             .iter()
             .any(|key| is_known_injection_token(scan.modules_by_id, key))
     {
-        return None;
+        return false;
     }
     // Matched by a provide somewhere in the project.
     if canonical.iter().any(|key| scan.provided.contains(key)) {
-        return None;
+        return false;
     }
     // Public-API abstain: the consumer of this package provides the key.
     if canonical.iter().any(|key| {
@@ -241,33 +263,35 @@ fn evaluate_inject_site(
             scan.entry_star_targets,
         )
     }) {
-        return None;
+        return false;
     }
 
-    let (line, col) = byte_offset_to_line_col(
-        scan.input.line_offsets_by_file,
-        resolved.file_id,
-        site.span_start,
-    );
-    if scan
-        .input
+    true
+}
+
+fn inject_site_suppressed(scan: &InjectScanContext<'_>, file_id: FileId, line: u32) -> bool {
+    scan.input
         .suppressions
-        .is_suppressed(resolved.file_id, line, IssueKind::UnprovidedInject)
+        .is_suppressed(file_id, line, IssueKind::UnprovidedInject)
         || scan
             .input
             .suppressions
-            .is_file_suppressed(resolved.file_id, IssueKind::UnprovidedInject)
-    {
-        return None;
-    }
-    let path = scan.path_by_id.get(&resolved.file_id)?;
-    Some(UnprovidedInject {
+            .is_file_suppressed(file_id, IssueKind::UnprovidedInject)
+}
+
+fn build_unprovided_inject(
+    path: &std::path::Path,
+    site: &fallow_types::extract::DiKeySite,
+    line: u32,
+    col: u32,
+) -> UnprovidedInject {
+    UnprovidedInject {
         path: path.to_path_buf(),
         key_name: site.key_local.clone(),
         framework: framework_str(site.framework).to_string(),
         line,
         col,
-    })
+    }
 }
 
 /// Resolve a key identifier to its cross-file identity, distinguishing an

@@ -106,6 +106,7 @@ struct MemberSkipContext<'a> {
     super_class: Option<&'a str>,
     implemented_interfaces: &'a [String],
     is_public_api_class_export: bool,
+    lit_active: bool,
 }
 
 impl<'a> ClassMemberAllowlist<'a> {
@@ -1844,50 +1845,13 @@ fn propagate_class_inheritance(
     let mut propagations: Vec<(FileId, Vec<String>)> = Vec::new();
 
     for (parent_key, children) in parent_to_children {
-        if let Some(parent_self_accesses) = self_accessed_members.get(&parent_key.file_id) {
-            let accesses: Vec<String> = parent_self_accesses.iter().cloned().collect();
-            for child_key in children {
-                propagations.push((child_key.file_id, accesses.clone()));
-            }
-        }
-
-        let mut child_self_accesses_for_parent: FxHashSet<String> = FxHashSet::default();
-        for child_key in children {
-            if let Some(child_self_accesses) = self_accessed_members.get(&child_key.file_id) {
-                child_self_accesses_for_parent.extend(child_self_accesses.iter().cloned());
-            }
-        }
-        if !child_self_accesses_for_parent.is_empty() {
-            propagations.push((
-                parent_key.file_id,
-                child_self_accesses_for_parent.into_iter().collect(),
-            ));
-        }
-
-        let parent_accesses = accessed_members.get(parent_key).cloned();
-        let mut child_accesses_to_propagate: FxHashSet<String> = FxHashSet::default();
-
-        for child_key in children {
-            if let Some(child_accesses) = accessed_members.get(child_key) {
-                child_accesses_to_propagate.extend(child_accesses.iter().cloned());
-            }
-        }
-
-        if let Some(ref parent_acc) = parent_accesses {
-            for child_key in children {
-                accessed_members
-                    .entry(child_key.clone())
-                    .or_default()
-                    .extend(parent_acc.iter().cloned());
-            }
-        }
-
-        if !child_accesses_to_propagate.is_empty() {
-            accessed_members
-                .entry(parent_key.clone())
-                .or_default()
-                .extend(child_accesses_to_propagate);
-        }
+        collect_self_access_inheritance_propagations(
+            parent_key,
+            children,
+            self_accessed_members,
+            &mut propagations,
+        );
+        propagate_member_accesses_through_inheritance(parent_key, children, accessed_members);
     }
 
     for (file_id, members) in propagations {
@@ -1898,11 +1862,73 @@ fn propagate_class_inheritance(
     }
 }
 
+fn collect_self_access_inheritance_propagations(
+    parent_key: &ExportKey,
+    children: &[ExportKey],
+    self_accessed_members: &FxHashMap<FileId, FxHashSet<String>>,
+    propagations: &mut Vec<(FileId, Vec<String>)>,
+) {
+    if let Some(parent_self_accesses) = self_accessed_members.get(&parent_key.file_id) {
+        let accesses: Vec<String> = parent_self_accesses.iter().cloned().collect();
+        for child_key in children {
+            propagations.push((child_key.file_id, accesses.clone()));
+        }
+    }
+
+    let mut child_self_accesses_for_parent: FxHashSet<String> = FxHashSet::default();
+    for child_key in children {
+        if let Some(child_self_accesses) = self_accessed_members.get(&child_key.file_id) {
+            child_self_accesses_for_parent.extend(child_self_accesses.iter().cloned());
+        }
+    }
+    if !child_self_accesses_for_parent.is_empty() {
+        propagations.push((
+            parent_key.file_id,
+            child_self_accesses_for_parent.into_iter().collect(),
+        ));
+    }
+}
+
+fn propagate_member_accesses_through_inheritance(
+    parent_key: &ExportKey,
+    children: &[ExportKey],
+    accessed_members: &mut FxHashMap<ExportKey, FxHashSet<String>>,
+) {
+    let parent_accesses = accessed_members.get(parent_key).cloned();
+    let mut child_accesses_to_propagate: FxHashSet<String> = FxHashSet::default();
+
+    for child_key in children {
+        if let Some(child_accesses) = accessed_members.get(child_key) {
+            child_accesses_to_propagate.extend(child_accesses.iter().cloned());
+        }
+    }
+
+    if let Some(ref parent_acc) = parent_accesses {
+        for child_key in children {
+            accessed_members
+                .entry(child_key.clone())
+                .or_default()
+                .extend(parent_acc.iter().cloned());
+        }
+    }
+
+    if !child_accesses_to_propagate.is_empty() {
+        accessed_members
+            .entry(parent_key.clone())
+            .or_default()
+            .extend(child_accesses_to_propagate);
+    }
+}
+
 #[deprecated(
     since = "2.76.0",
     note = "fallow_core is internal; use fallow_cli::programmatic::detect_dead_code instead. NOTE: replacement returns serde_json::Value, not typed AnalysisResults. See docs/fallow-core-migration.md and ADR-008."
 )]
 #[allow(dead_code, reason = "kept for the deprecated fallow_core helper API")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "frozen deprecated public API (ADR-008); signature must not change"
+)]
 pub fn find_unused_members(
     graph: &ModuleGraph,
     resolved_modules: &[ResolvedModule],
@@ -1921,6 +1947,7 @@ pub fn find_unused_members(
         user_class_member_allowlist,
         ignore_decorators,
         public_api_entry_points: &FxHashSet::default(),
+        lit_active: false,
     });
     (results.enum_members, results.class_members)
 }
@@ -1952,6 +1979,12 @@ pub(super) struct UnusedMemberScanInput<'a> {
     pub(super) user_class_member_allowlist: &'a [UsedClassMemberRule],
     pub(super) ignore_decorators: &'a [String],
     pub(super) public_api_entry_points: &'a FxHashSet<FileId>,
+    /// Whether a Lit dependency is declared. When true, a `@state()`-decorated
+    /// member on a direct `LitElement` / `ReactiveElement` subclass is made
+    /// CHECKABLE (a never-read `@state` is dead internal reactive state). Other
+    /// decorated members, and `@property` (the public attribute API), stay
+    /// skipped.
+    pub(super) lit_active: bool,
 }
 
 struct PreparedMemberScan<'a> {
@@ -2053,11 +2086,13 @@ impl MemberReportContext<'_, '_> {
         }
 
         self.collect_export_members(
-            module,
+            &MemberScanTarget {
+                module,
+                export_name: &export_name,
+                store_only_scan,
+            },
             export,
-            &export_name,
             &export_key,
-            store_only_scan,
             buckets,
         );
     }
@@ -2083,13 +2118,12 @@ impl MemberReportContext<'_, '_> {
     /// Build the shared per-export skip context and scan each declared member.
     fn collect_export_members(
         &self,
-        module: &crate::graph::ModuleNode,
+        target: &MemberScanTarget<'_>,
         export: &crate::graph::ExportSymbol,
-        export_name: &str,
         export_key: &ExportKey,
-        store_only_scan: bool,
         buckets: &mut MemberScanBuckets,
     ) {
+        let module = target.module;
         let file_self_accesses = self.prepared.self_accessed_members.get(&module.file_id);
         let is_public_api_class_export = is_entry_point_public_class_export(
             self.input.graph,
@@ -2109,9 +2143,8 @@ impl MemberReportContext<'_, '_> {
 
         for member in &export.members {
             self.collect_member(
-                module,
+                target,
                 member,
-                export_name,
                 &MemberSkipContext {
                     export_key,
                     accessed_members: &self.prepared.accessed_members,
@@ -2122,8 +2155,8 @@ impl MemberReportContext<'_, '_> {
                     super_class,
                     implemented_interfaces,
                     is_public_api_class_export,
+                    lit_active: self.input.lit_active,
                 },
-                store_only_scan,
                 buckets,
             );
         }
@@ -2131,14 +2164,12 @@ impl MemberReportContext<'_, '_> {
 
     fn collect_member(
         &self,
-        module: &crate::graph::ModuleNode,
+        target: &MemberScanTarget<'_>,
         member: &MemberInfo,
-        export_name: &str,
         skip_context: &MemberSkipContext<'_>,
-        store_only_scan: bool,
         buckets: &mut MemberScanBuckets,
     ) {
-        if store_only_scan && member.kind != MemberKind::StoreMember {
+        if target.store_only_scan && member.kind != MemberKind::StoreMember {
             return;
         }
         if should_skip_member_for_unused_report(member, skip_context) {
@@ -2146,9 +2177,9 @@ impl MemberReportContext<'_, '_> {
         }
 
         let Some(unused) = build_unsuppressed_unused_member(
-            module.file_id,
-            &module.path,
-            export_name,
+            target.module.file_id,
+            &target.module.path,
+            target.export_name,
             member,
             self.input.suppressions,
             self.input.line_offsets_by_file,
@@ -2157,6 +2188,14 @@ impl MemberReportContext<'_, '_> {
         };
         push_unused_member(buckets, unused, member.kind);
     }
+}
+
+/// Shared per-export scan target: the module, the export's rendered name, and
+/// whether this is an entry-point store-only scan.
+struct MemberScanTarget<'a> {
+    module: &'a crate::graph::ModuleNode,
+    export_name: &'a str,
+    store_only_scan: bool,
 }
 
 fn push_unused_member(buckets: &mut MemberScanBuckets, unused: UnusedMember, kind: MemberKind) {
@@ -2212,29 +2251,7 @@ fn collect_propagated_member_accesses(
         mut whole_object_used_exports,
     } = collect_direct_member_accesses(input.resolved_modules);
 
-    propagate_playwright_fixture_accesses(
-        input.graph,
-        input.resolved_modules,
-        &mut accessed_members,
-    );
-    propagate_factory_call_accesses(input.graph, input.resolved_modules, &mut accessed_members);
-    propagate_fluent_chain_accesses(input.graph, input.resolved_modules, &mut accessed_members);
-    propagate_fluent_chain_new_accesses(input.graph, input.resolved_modules, &mut accessed_members);
-    propagate_accesses_through_typed_instance_bindings(
-        input.graph,
-        input.resolved_modules,
-        input.modules,
-        &mut accessed_members,
-        &mut whole_object_used_exports,
-    );
-    propagate_accesses_through_re_exports(input.graph, &mut accessed_members);
-    propagate_whole_object_through_re_exports(input.graph, &mut whole_object_used_exports);
-    let instance_targets = build_instance_export_targets(input.graph, input.resolved_modules);
-    propagate_accesses_through_instance_exports(
-        &instance_targets,
-        &mut accessed_members,
-        &mut whole_object_used_exports,
-    );
+    propagate_common_member_accesses(input, &mut accessed_members, &mut whole_object_used_exports);
 
     propagate_interface_member_accesses(
         &heritage_context.interface_to_implementers,
@@ -2260,6 +2277,32 @@ fn collect_propagated_member_accesses(
         self_accessed_members,
         whole_object_used_exports,
     }
+}
+
+fn propagate_common_member_accesses(
+    input: UnusedMemberScanInput<'_>,
+    accessed_members: &mut FxHashMap<ExportKey, FxHashSet<String>>,
+    whole_object_used_exports: &mut FxHashSet<ExportKey>,
+) {
+    propagate_playwright_fixture_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_factory_call_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_fluent_chain_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_fluent_chain_new_accesses(input.graph, input.resolved_modules, accessed_members);
+    propagate_accesses_through_typed_instance_bindings(
+        input.graph,
+        input.resolved_modules,
+        input.modules,
+        accessed_members,
+        whole_object_used_exports,
+    );
+    propagate_accesses_through_re_exports(input.graph, accessed_members);
+    propagate_whole_object_through_re_exports(input.graph, whole_object_used_exports);
+    let instance_targets = build_instance_export_targets(input.graph, input.resolved_modules);
+    propagate_accesses_through_instance_exports(
+        &instance_targets,
+        accessed_members,
+        whole_object_used_exports,
+    );
 }
 
 fn should_skip_export_member_scan(
@@ -2333,17 +2376,47 @@ fn should_skip_member_for_unused_report(member: &MemberInfo, ctx: &MemberSkipCon
         return true;
     }
 
-    if member.has_decorator
-        && (member.decorator_names.is_empty()
-            || ctx.ignore_decorators.is_empty()
-            || member
-                .decorator_names
-                .iter()
-                .any(|name| !ctx.ignore_decorators.matches(name)))
-    {
+    if member_decorator_requires_skip(member, ctx) {
         return true;
     }
 
+    class_member_runtime_credit_applies(member, ctx)
+}
+
+/// Whether a member is a Lit `@state()` reactive property that should be CHECKED
+/// for deadness (overriding the generic decorated-member skip). Lit `@state` is
+/// INTERNAL reactive state, not a framework-reflected public API like
+/// `@property` (which is settable via HTML attribute / parent property binding /
+/// `setAttribute` / CSS, all invisible here). Gated on a Lit dependency + a
+/// direct `LitElement` / `ReactiveElement` base, and requires `@state` to be the
+/// member's ONLY decorator (a `@state` combined with another framework decorator
+/// stays skipped).
+fn is_lit_checkable_state_member(member: &MemberInfo, ctx: &MemberSkipContext<'_>) -> bool {
+    ctx.lit_active
+        && matches!(ctx.super_class, Some("LitElement" | "ReactiveElement"))
+        && !member.decorator_names.is_empty()
+        && member.decorator_names.iter().all(|name| name == "state")
+}
+
+fn member_decorator_requires_skip(member: &MemberInfo, ctx: &MemberSkipContext<'_>) -> bool {
+    if is_lit_checkable_state_member(member, ctx) {
+        return false;
+    }
+    let ignore_decorators = ctx.ignore_decorators;
+    member.has_decorator
+        && (member.decorator_names.is_empty()
+            || ignore_decorators.is_empty()
+            || member
+                .decorator_names
+                .iter()
+                .any(|name| !ignore_decorators.matches(name)))
+}
+
+fn is_class_member_kind(kind: MemberKind) -> bool {
+    matches!(kind, MemberKind::ClassMethod | MemberKind::ClassProperty)
+}
+
+fn class_member_runtime_credit_applies(member: &MemberInfo, ctx: &MemberSkipContext<'_>) -> bool {
     is_class_member_kind(member.kind)
         && (is_react_lifecycle_method(&member.name)
             || is_angular_lifecycle_method(&member.name)
@@ -2358,10 +2431,6 @@ fn should_skip_member_for_unused_report(member: &MemberInfo, ctx: &MemberSkipCon
                 ctx.super_class,
                 ctx.implemented_interfaces,
             ))
-}
-
-fn is_class_member_kind(kind: MemberKind) -> bool {
-    matches!(kind, MemberKind::ClassMethod | MemberKind::ClassProperty)
 }
 
 fn record_seen_ignore_decorators(graph: &ModuleGraph, ignore_decorators: &IgnoreDecoratorSet) {
@@ -2642,6 +2711,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,
@@ -4118,6 +4189,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn interface_member_usage_propagates_to_implementers() {
         let mut graph = build_graph(&[
             ("/src/main.ts", true),
@@ -4236,6 +4311,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn same_named_interfaces_do_not_share_member_usage() {
         let mut graph = build_graph(&[
             ("/src/main.ts", true),

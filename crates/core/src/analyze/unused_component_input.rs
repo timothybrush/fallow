@@ -41,7 +41,7 @@ use fallow_extract::{ANGULAR_THIS_SPREAD_SENTINEL, ANGULAR_TPL_SENTINEL};
 use fallow_types::extract::ModuleInfo;
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::results::UnusedComponentInput;
 
 use super::{LineOffsetsMap, byte_offset_to_line_col};
@@ -70,48 +70,14 @@ pub fn find_unused_component_inputs(
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.angular_inputs.is_empty() {
-            continue;
-        }
-        // Whole-component abstain: a base class in another file may read the
-        // input through `this.foo` (zero-FP doctrine).
-        if component_has_extends(module) {
-            continue;
-        }
-        // Whole-component abstain: `{ ...this }` forwards every input opaquely
-        // into a behavior pattern (the Angular headless-pattern convention).
-        if component_spreads_this(module) {
-            continue;
-        }
-
-        // Collect the linked external `templateUrl` module(s) (if any) so the
-        // sentinel member accesses in the `.html` file credit the input too.
-        let external_templates = external_template_modules(graph, &modules_by_id, node.file_id);
-        let used = input_usage_set(module, &external_templates);
-
-        let component_name = component_name_for(&node.path);
-        for input in &module.angular_inputs {
-            if used.contains(input.name.as_str()) {
-                continue;
-            }
-            // Angular templates allow JS reserved words as member names
-            // (`{{ delete }}`, `[in]="..."`), but fallow's JS-based template
-            // expression scanner reads `delete.foo` as the `delete`
-            // operator, so a template read of such a name is invisible. Abstain
-            // on these names rather than risk a false positive.
-            if is_js_reserved_word(&input.name) {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, input.span_start);
-            findings.push(UnusedComponentInput {
-                path: node.path.clone(),
-                component_name: component_name.clone(),
-                input_name: input.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_component_inputs(
+            node,
+            module,
+            graph,
+            &modules_by_id,
+            line_offsets_by_file,
+            &mut findings,
+        );
     }
 
     findings.sort_by(|a, b| {
@@ -121,6 +87,50 @@ pub fn find_unused_component_inputs(
             .then(a.input_name.cmp(&b.input_name))
     });
     findings
+}
+
+fn collect_module_unused_component_inputs(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    graph: &ModuleGraph,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<UnusedComponentInput>,
+) {
+    if module.angular_inputs.is_empty() || component_abstains_inputs(module) {
+        return;
+    }
+
+    // Collect the linked external `templateUrl` module(s) (if any) so the
+    // sentinel member accesses in the `.html` file credit the input too.
+    let external_templates = external_template_modules(graph, modules_by_id, node.file_id);
+    let used = input_usage_set(module, &external_templates);
+
+    let component_name = component_name_for(&node.path);
+    for input in &module.angular_inputs {
+        if used.contains(input.name.as_str()) || is_js_reserved_word(&input.name) {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, input.span_start);
+        findings.push(UnusedComponentInput {
+            path: node.path.clone(),
+            component_name: component_name.clone(),
+            input_name: input.name.clone(),
+            line,
+            col,
+        });
+    }
+}
+
+fn component_abstains_inputs(module: &ModuleInfo) -> bool {
+    // A base class in another file may read the input through `this.foo`.
+    if component_has_extends(module) {
+        return true;
+    }
+
+    // `{ ...this }` forwards every input opaquely into a behavior pattern.
+    component_spreads_this(module)
 }
 
 /// Build the set of input names that are USED by the component, unioning the

@@ -8,7 +8,9 @@
 //! where `audit_focus` is defined.)
 
 use super::common::{create_config, fixture_path};
-use fallow_core::trace_chain::{TraceDirections, UnresolvedReason, trace_symbol_chain};
+use fallow_core::trace_chain::{
+    SymbolChainQuery, TraceDirections, UnresolvedReason, trace_symbol_chain,
+};
 
 /// Run the pipeline retaining the graph + modules so the symbol-chain walk has
 /// both the import-symbol edges and the parsed module info it needs.
@@ -35,10 +37,12 @@ fn trace_fixture(
         graph,
         modules,
         &config.root,
-        file,
-        symbol,
-        depth,
-        directions,
+        SymbolChainQuery {
+            file,
+            symbol,
+            depth,
+            directions,
+        },
     )
     .expect("symbol should be found in the graph")
 }

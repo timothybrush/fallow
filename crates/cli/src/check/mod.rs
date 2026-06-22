@@ -626,61 +626,22 @@ fn resolve_check_regression(
     regression::compare_check_regression(results, &opts.regression_opts, config_baseline)
 }
 
-/// Run analysis, filtering, and baseline handling. Returns results without printing.
-pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
-    let start = Instant::now();
-
-    let config = prepare_check_config(opts)?;
-
-    let ws_roots = filtering::resolve_workspace_scope(
-        opts.root,
-        opts.workspace,
-        opts.changed_workspaces,
-        opts.output,
-    )?;
-
-    let changed_files: Option<rustc_hash::FxHashSet<std::path::PathBuf>> = opts
-        .changed_since
-        .and_then(|git_ref| filtering::get_changed_files(opts.root, git_ref));
-
+fn complete_check_execution(
+    opts: &CheckOptions<'_>,
+    config: ResolvedConfig,
+    data: CheckAnalysisData,
+    elapsed: Duration,
+    regression_outcome: Option<RegressionOutcome>,
+    baseline_matched: Option<(usize, usize)>,
+) -> CheckResult {
     let CheckAnalysisData {
-        mut results,
+        results,
         trace_graph,
         trace_timings,
         retained_modules,
         retained_files,
         script_used_packages,
-    } = run_check_analysis(opts, &config)?;
-    let elapsed = start.elapsed();
-
-    handle_trace_side_effects(
-        opts,
-        &config,
-        trace_graph.as_ref(),
-        trace_timings.as_ref(),
-        &script_used_packages,
-    )?;
-
-    apply_scope_filters(
-        opts,
-        &mut results,
-        ws_roots.as_ref(),
-        changed_files.as_ref(),
-    );
-    apply_file_filter(opts, &mut results);
-
-    apply_rules_and_filters(opts, &config, &mut results);
-
-    let baseline_matched = handle_baseline(
-        &mut results,
-        opts.save_baseline,
-        opts.baseline,
-        &config.root,
-        opts.quiet,
-        opts.output,
-    )?;
-
-    let regression_outcome = resolve_check_regression(opts, &config, &results)?;
+    } = data;
 
     if let Some(sarif_path) = opts.sarif_file {
         output::write_sarif_file(&results, &config, sarif_path, opts.quiet);
@@ -700,7 +661,7 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
     // the exit-code gate. Exact counts are bucketed before serialization.
     crate::telemetry::note_result_count(results.total_issues());
 
-    Ok(CheckResult {
+    CheckResult {
         results,
         config,
         config_fixable,
@@ -716,7 +677,66 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         partition_order: None,
         focus_facts: None,
         export_lines: None,
-    })
+    }
+}
+
+/// Run analysis, filtering, and baseline handling. Returns results without printing.
+pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
+    let start = Instant::now();
+
+    let config = prepare_check_config(opts)?;
+
+    let ws_roots = filtering::resolve_workspace_scope(
+        opts.root,
+        opts.workspace,
+        opts.changed_workspaces,
+        opts.output,
+    )?;
+
+    let changed_files: Option<rustc_hash::FxHashSet<std::path::PathBuf>> = opts
+        .changed_since
+        .and_then(|git_ref| filtering::get_changed_files(opts.root, git_ref));
+
+    let mut data = run_check_analysis(opts, &config)?;
+    let elapsed = start.elapsed();
+
+    handle_trace_side_effects(
+        opts,
+        &config,
+        data.trace_graph.as_ref(),
+        data.trace_timings.as_ref(),
+        &data.script_used_packages,
+    )?;
+
+    apply_scope_filters(
+        opts,
+        &mut data.results,
+        ws_roots.as_ref(),
+        changed_files.as_ref(),
+    );
+    apply_file_filter(opts, &mut data.results);
+
+    apply_rules_and_filters(opts, &config, &mut data.results);
+
+    let baseline_matched = handle_baseline(
+        &mut data.results,
+        opts.save_baseline,
+        opts.baseline,
+        &config.root,
+        opts.quiet,
+        opts.output,
+    )?;
+
+    let regression_outcome = resolve_check_regression(opts, &config, &data.results)?;
+
+    Ok(complete_check_execution(
+        opts,
+        config,
+        data,
+        elapsed,
+        regression_outcome,
+        baseline_matched,
+    ))
 }
 
 pub struct PrintCheckOptions {
@@ -730,36 +750,54 @@ pub struct PrintCheckOptions {
     pub show_explain_tip: bool,
 }
 
-/// Print check results and return appropriate exit code.
-pub fn print_check_result(result: &CheckResult, opts: PrintCheckOptions) -> ExitCode {
-    let effective_rules = if result.fail_on_issues {
-        let mut r = result.config.rules.clone();
-        rules::promote_warns_to_errors(&mut r);
-        r
+struct PreparedPrintCheck<'a> {
+    effective_rules: RulesConfig,
+    report_ctx: report::ReportContext<'a>,
+    regression_json: bool,
+    quiet: bool,
+}
+
+fn prepare_print_check(result: &CheckResult, opts: PrintCheckOptions) -> PreparedPrintCheck<'_> {
+    PreparedPrintCheck {
+        effective_rules: effective_check_rules(result),
+        report_ctx: report::ReportContext {
+            root: &result.config.root,
+            rules: &result.config.rules,
+            elapsed: result.elapsed,
+            quiet: opts.quiet,
+            explain: opts.explain,
+            group_by: opts.group_by,
+            top: opts.top,
+            summary: opts.summary,
+            summary_heading: opts.summary_heading,
+            show_explain_tip: opts.show_explain_tip,
+            baseline_matched: result.baseline_matched,
+            config_fixable: result.config_fixable,
+            skip_score_and_trend: false,
+        },
+        regression_json: opts.regression_json,
+        quiet: opts.quiet,
+    }
+}
+
+fn effective_check_rules(result: &CheckResult) -> RulesConfig {
+    if result.fail_on_issues {
+        let mut rules = result.config.rules.clone();
+        rules::promote_warns_to_errors(&mut rules);
+        rules
     } else {
         result.config.rules.clone()
-    };
+    }
+}
 
-    let ctx = report::ReportContext {
-        root: &result.config.root,
-        rules: &result.config.rules,
-        elapsed: result.elapsed,
-        quiet: opts.quiet,
-        explain: opts.explain,
-        group_by: opts.group_by,
-        top: opts.top,
-        summary: opts.summary,
-        summary_heading: opts.summary_heading,
-        show_explain_tip: opts.show_explain_tip,
-        baseline_matched: result.baseline_matched,
-        config_fixable: result.config_fixable,
-        skip_score_and_trend: false,
-    };
+/// Print check results and return appropriate exit code.
+pub fn print_check_result(result: &CheckResult, opts: PrintCheckOptions) -> ExitCode {
+    let prepared = prepare_print_check(result, opts);
     let report_code = report::print_results(
         &result.results,
-        &ctx,
+        &prepared.report_ctx,
         result.config.output,
-        if opts.regression_json {
+        if prepared.regression_json {
             result.regression.as_ref()
         } else {
             None
@@ -769,29 +807,40 @@ pub fn print_check_result(result: &CheckResult, opts: PrintCheckOptions) -> Exit
         return report_code;
     }
 
-    if let Some(ref outcome) = result.regression {
-        if !opts.quiet {
-            regression::print_regression_outcome(outcome);
-        }
-        if outcome.is_failure() {
-            return ExitCode::from(1);
-        }
+    if let Some(exit) = check_regression_exit_code(result.regression.as_ref(), prepared.quiet) {
+        return exit;
     }
 
-    // S1 observability: when the load-data-key detector abstained project-wide
-    // (a whole-object use of page.data / $page.data was seen), a 0 finding count
-    // is NOT a clean bill, so say so on human output.
-    if result.results.unused_load_data_keys_global_abstain
-        && !opts.quiet
-        && matches!(result.config.output, OutputFormat::Human)
+    print_load_data_key_abstain_note(result, prepared.quiet);
+    issue_severity_exit_code(result, &prepared.effective_rules)
+}
+
+fn check_regression_exit_code(
+    outcome: Option<&RegressionOutcome>,
+    quiet: bool,
+) -> Option<ExitCode> {
+    let outcome = outcome?;
+    if !quiet {
+        regression::print_regression_outcome(outcome);
+    }
+    outcome.is_failure().then(|| ExitCode::from(1))
+}
+
+fn print_load_data_key_abstain_note(result: &CheckResult, quiet: bool) {
+    if !result.results.unused_load_data_keys_global_abstain
+        || quiet
+        || !matches!(result.config.output, OutputFormat::Human)
     {
-        eprintln!(
-            "Note: unused-load-data-key abstained project-wide (a whole-object use of \
-             page.data / $page.data was seen; any returned key could be read reflectively)."
-        );
+        return;
     }
+    eprintln!(
+        "Note: unused-load-data-key abstained project-wide (a whole-object use of \
+         page.data / $page.data was seen; any returned key could be read reflectively)."
+    );
+}
 
-    if rules::has_error_severity_issues(&result.results, &effective_rules, Some(&result.config)) {
+fn issue_severity_exit_code(result: &CheckResult, effective_rules: &RulesConfig) -> ExitCode {
+    if rules::has_error_severity_issues(&result.results, effective_rules, Some(&result.config)) {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
@@ -988,6 +1037,10 @@ mod tests {
         assert_eq!(rules.private_type_leaks, fallow_config::Severity::Warn);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn make_results() -> AnalysisResults {
         let mut r = AnalysisResults::default();
         r.unused_files

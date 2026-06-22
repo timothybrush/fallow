@@ -2103,6 +2103,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,
@@ -2182,6 +2184,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,
@@ -2211,6 +2215,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn aggregate_complexity_multiple_functions() {
         let module = fallow_core::extract::ModuleInfo {
             file_id: fallow_core::discover::FileId(0),
@@ -2276,6 +2284,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,
@@ -2596,6 +2606,8 @@ mod tests {
             svelte_dispatched_events: Vec::new(),
             svelte_listened_events: Vec::new(),
             angular_component_selectors: Vec::new(),
+            registered_custom_elements: Vec::new(),
+            used_custom_element_tags: Vec::new(),
             angular_used_selectors: Vec::new(),
             angular_entry_component_refs: Vec::new(),
             has_dynamic_component_render: false,
@@ -3201,6 +3213,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn compute_file_scores_tracks_top_complex_functions() {
         let path_a = std::path::PathBuf::from("/src/complex.ts");
         let files = vec![fallow_core::discover::DiscoveredFile {
@@ -3317,6 +3333,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn compute_file_scores_with_circular_deps() {
         let path_a = std::path::PathBuf::from("/src/a.ts");
         let path_b = std::path::PathBuf::from("/src/b.ts");
@@ -3437,6 +3457,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn compute_file_scores_analysis_counts_unused_exports_and_types() {
         let path_a = std::path::PathBuf::from("/src/a.ts");
         let files = vec![fallow_core::discover::DiscoveredFile {
@@ -3592,6 +3616,10 @@ mod tests {
 
     /// Regression: total_exports must count graph modules, not extraction modules.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture; linear setup/assert, length is not a maintainability concern"
+    )]
     fn total_exports_counts_graph_modules_not_extraction_modules() {
         let path_a = std::path::PathBuf::from("/src/a.ts");
         let files = vec![fallow_core::discover::DiscoveredFile {

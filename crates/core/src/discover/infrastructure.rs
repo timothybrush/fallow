@@ -11,18 +11,27 @@ use super::parse_scripts::{extract_script_file_refs, looks_like_script_file};
 /// the main JS/TS build pipeline (workers, migrations, cron jobs, etc.).
 pub fn discover_infrastructure_entry_points(root: &Path) -> Vec<EntryPoint> {
     let _span = tracing::info_span!("discover_infrastructure_entry_points").entered();
-    let mut file_refs: Vec<String> = Vec::new();
+    let file_refs = collect_infrastructure_file_refs(root);
 
-    let search_dirs: Vec<PathBuf> = std::iter::once(root.to_path_buf())
-        .chain(
-            ["config", "docker", "deploy", ".docker"]
-                .iter()
-                .map(|d| root.join(d)),
-        )
-        .filter(|d| d.is_dir())
-        .collect();
+    if file_refs.is_empty() {
+        return Vec::new();
+    }
 
-    for dir in &search_dirs {
+    let entries = resolve_infrastructure_file_refs(root, &file_refs);
+    log_infrastructure_entries(&entries);
+    entries
+}
+
+fn collect_infrastructure_file_refs(root: &Path) -> Vec<String> {
+    let mut file_refs = Vec::new();
+    collect_dockerfile_refs(root, &mut file_refs);
+    collect_procfile_refs(root, &mut file_refs);
+    collect_fly_toml_refs(root, &mut file_refs);
+    file_refs
+}
+
+fn collect_dockerfile_refs(root: &Path, file_refs: &mut Vec<String>) {
+    for dir in infrastructure_search_dirs(root) {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -33,11 +42,26 @@ pub fn discover_infrastructure_entry_points(root: &Path) -> Vec<EntryPoint> {
             }
         }
     }
+}
 
+fn infrastructure_search_dirs(root: &Path) -> Vec<PathBuf> {
+    std::iter::once(root.to_path_buf())
+        .chain(
+            ["config", "docker", "deploy", ".docker"]
+                .iter()
+                .map(|d| root.join(d)),
+        )
+        .filter(|d| d.is_dir())
+        .collect()
+}
+
+fn collect_procfile_refs(root: &Path, file_refs: &mut Vec<String>) {
     if let Ok(content) = std::fs::read_to_string(root.join("Procfile")) {
         file_refs.extend(extract_procfile_file_refs(&content));
     }
+}
 
+fn collect_fly_toml_refs(root: &Path, file_refs: &mut Vec<String>) {
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -47,11 +71,9 @@ pub fn discover_infrastructure_entry_points(root: &Path) -> Vec<EntryPoint> {
             file_refs.extend(extract_fly_toml_file_refs(&content));
         }
     }
+}
 
-    if file_refs.is_empty() {
-        return Vec::new();
-    }
-
+fn resolve_infrastructure_file_refs(root: &Path, file_refs: &[String]) -> Vec<EntryPoint> {
     let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut entries: Vec<EntryPoint> = file_refs
         .iter()
@@ -67,15 +89,16 @@ pub fn discover_infrastructure_entry_points(root: &Path) -> Vec<EntryPoint> {
 
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     entries.dedup_by(|a, b| a.path == b.path);
+    entries
+}
 
+fn log_infrastructure_entries(entries: &[EntryPoint]) {
     if !entries.is_empty() {
         tracing::info!(
             count = entries.len(),
             "infrastructure entry points discovered"
         );
     }
-
-    entries
 }
 
 /// Check if a filename is a Dockerfile.

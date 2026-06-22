@@ -116,56 +116,101 @@ fn extract_ci_signals(
 /// - Multi-line run blocks: `  run: |` followed by indented lines
 fn extract_ci_commands(content: &str) -> Vec<String> {
     let mut commands = Vec::new();
-    let mut in_multiline_run = false;
-    let mut multiline_indent = 0;
+    let mut multiline_run = MultilineRunState::default();
 
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if should_skip_ci_line(trimmed) {
             continue;
         }
 
-        if in_multiline_run {
-            let indent = line.len() - line.trim_start().len();
-            if indent > multiline_indent && !trimmed.is_empty() {
-                commands.push(trimmed.to_string());
-                continue;
-            }
-            in_multiline_run = false;
+        if push_multiline_run_command(line, trimmed, &mut multiline_run, &mut commands) {
+            continue;
         }
 
-        let run_value = strip_yaml_key(trimmed, "run")
-            .or_else(|| {
-                trimmed
-                    .strip_prefix("- ")
-                    .and_then(|rest| strip_yaml_key(rest.trim(), "run"))
-            })
-            .map(str::trim);
-
-        if let Some(rest) = run_value {
-            if rest == "|" || rest == "|-" || rest == "|+" {
-                in_multiline_run = true;
-                multiline_indent = line.len() - line.trim_start().len();
+        if let Some(rest) = yaml_run_value(trimmed) {
+            if is_multiline_run_marker(rest) {
+                multiline_run.start(line);
             } else if !rest.is_empty() {
                 commands.push(rest.to_string());
             }
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("- ") {
-            let rest = rest.trim();
-            if !rest.is_empty()
-                && !rest.starts_with('{')
-                && !rest.starts_with('[')
-                && !is_yaml_mapping(rest)
-            {
-                commands.push(rest.to_string());
-            }
-        }
+        push_yaml_list_command(trimmed, &mut commands);
     }
 
     commands
+}
+
+#[derive(Default)]
+struct MultilineRunState {
+    active: bool,
+    indent: usize,
+}
+
+impl MultilineRunState {
+    fn start(&mut self, line: &str) {
+        self.active = true;
+        self.indent = line.len() - line.trim_start().len();
+    }
+
+    fn stop(&mut self) {
+        self.active = false;
+    }
+}
+
+fn should_skip_ci_line(trimmed: &str) -> bool {
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
+fn push_multiline_run_command(
+    line: &str,
+    trimmed: &str,
+    state: &mut MultilineRunState,
+    commands: &mut Vec<String>,
+) -> bool {
+    if !state.active {
+        return false;
+    }
+
+    let indent = line.len() - line.trim_start().len();
+    if indent > state.indent && !trimmed.is_empty() {
+        commands.push(trimmed.to_string());
+        return true;
+    }
+
+    state.stop();
+    false
+}
+
+fn yaml_run_value(trimmed: &str) -> Option<&str> {
+    strip_yaml_key(trimmed, "run")
+        .or_else(|| {
+            trimmed
+                .strip_prefix("- ")
+                .and_then(|rest| strip_yaml_key(rest.trim(), "run"))
+        })
+        .map(str::trim)
+}
+
+fn is_multiline_run_marker(value: &str) -> bool {
+    matches!(value, "|" | "|-" | "|+")
+}
+
+fn push_yaml_list_command(trimmed: &str, commands: &mut Vec<String>) {
+    let Some(rest) = trimmed.strip_prefix("- ") else {
+        return;
+    };
+    let rest = rest.trim();
+    if !rest.is_empty()
+        && !rest.starts_with('{')
+        && !rest.starts_with('[')
+        && !is_yaml_mapping(rest)
+    {
+        commands.push(rest.to_string());
+    }
 }
 
 /// Strip a YAML key prefix from a line, returning the value part.

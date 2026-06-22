@@ -1,5 +1,7 @@
-//! Vue `<script setup>` `defineProps` harvesting for the `unused-component-prop`
-//! detector.
+//! Vue `<script setup>` `defineProps`, Svelte 5 `$props()`, and Astro
+//! `interface Props` harvesting for the `unused-component-prop` detector. All
+//! three populate the same [`ComponentProp`] IR + [`DefinePropsHarvest`] abstain
+//! flags so the shared detector treats them uniformly.
 //!
 //! Harvests declared prop names from a parsed `<script setup>` program, in both
 //! the runtime object form (`defineProps({ foo: {...} })`) and the inline TS
@@ -527,6 +529,306 @@ impl<'a> oxc_ast_visit::Visit<'a> for PropBindingVisitor<'a> {
         if ident.name.as_str() == self.binding {
             self.used_whole = true;
         }
+    }
+}
+
+/// Harvest an Astro component's `interface Props { ... }` (or
+/// `type Props = { ... }`) declaration plus its `Astro.props` consumption from
+/// the frontmatter program. Mirrors the Vue [`harvest_define_props`] contract
+/// (same [`ComponentProp`] IR, same [`DefinePropsHarvest`] abstain flags) so the
+/// shared `unused-component-prop` detector treats Astro like Vue/Svelte. The byte
+/// spans are RELATIVE to the frontmatter body; the caller remaps them onto the
+/// `.astro` source.
+///
+/// A prop's `used_in_script` is set when its destructured local is referenced
+/// (via [`resolve_used_locals`]), when it is read as `Astro.props.<name>`, or
+/// when it is read through a whole-object binding's `<binding>.<name>` member
+/// access. `used_in_template` is left `false` here; the caller sets it from the
+/// template-usage scan.
+///
+/// Abstains on the whole file (sets an abstain flag, no prop emitted) for: a
+/// `Props` interface with an `extends` clause or a `type Props = <reference>`
+/// alias (names unresolvable, `has_unharvestable_props`); a rest element in the
+/// `Astro.props` destructure, a whole-object use of `Astro.props` (`const p =
+/// Astro.props` then `p` passed/spread/returned, a bare `Astro.props` spread /
+/// call argument, or a computed `Astro.props[expr]` access), all
+/// `has_props_attrs_fallthrough`.
+/// Accumulators gathered while scanning the frontmatter top-level statements for
+/// the `Props` declaration and the `Astro.props` consumption.
+#[derive(Default)]
+struct AstroPropsScan {
+    prop_names: Vec<(String, u32)>,
+    destructured_locals: FxHashSet<String>,
+    /// Prop names consumed via a NESTED destructure (`const { post: { id } } =
+    /// Astro.props`): the outer key has no flat local binding, but decomposing it
+    /// IS a use, so it is credited directly without abstaining sibling props.
+    nested_consumed_props: FxHashSet<String>,
+    /// prop name -> local binding name (for `const { name: alias } = Astro.props`).
+    prop_aliases: FxHashMap<String, String>,
+    /// `const props = Astro.props`: the whole-object binding name, used for
+    /// `<binding>.<name>` member-access crediting.
+    props_binding: Option<String>,
+    /// Byte spans of the `Astro.props` occurrences that are destructure/binding
+    /// inits, so the whole-object-use visitor does not treat them as opaque uses.
+    handled_astro_props_spans: FxHashSet<u32>,
+}
+
+pub fn harvest_astro_props(program: &Program<'_>) -> DefinePropsHarvest {
+    let mut harvest = DefinePropsHarvest::default();
+    let mut scan = AstroPropsScan::default();
+
+    for stmt in &program.body {
+        scan_astro_props_statement(stmt, &mut scan, &mut harvest);
+    }
+
+    if scan.prop_names.is_empty() {
+        return harvest;
+    }
+
+    // Direct `Astro.props.<name>` reads + whole-object uses of `Astro.props`.
+    // Scoped so the visitor's borrow of `scan.handled_astro_props_spans` ends
+    // before `scan.prop_names` is consumed below.
+    let (member_used, whole_object_use) = {
+        let mut visitor = AstroPropsVisitor {
+            member_used: FxHashSet::default(),
+            whole_object_use: false,
+            handled_spans: &scan.handled_astro_props_spans,
+        };
+        oxc_ast_visit::Visit::visit_program(&mut visitor, program);
+        (visitor.member_used, visitor.whole_object_use)
+    };
+    if whole_object_use {
+        harvest.has_props_attrs_fallthrough = true;
+    }
+
+    // Script usage: resolved references for destructured locals, member access on
+    // a whole-object `const props = Astro.props` binding, plus direct
+    // `Astro.props.<name>` reads collected by the visitor.
+    let used_locals = resolve_used_locals(program, &scan.destructured_locals);
+    let (binding_member_used, binding_whole) = scan.props_binding.as_deref().map_or_else(
+        || (FxHashSet::default(), false),
+        |binding| collect_prop_binding_usage(program, binding),
+    );
+    if binding_whole {
+        harvest.has_props_attrs_fallthrough = true;
+    }
+
+    for (name, span_start) in scan.prop_names {
+        let local = scan
+            .prop_aliases
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| name.clone());
+        let used_in_script = used_locals.contains(&local)
+            || member_used.contains(&name)
+            || binding_member_used.contains(&name)
+            || scan.nested_consumed_props.contains(&name);
+        harvest.props.push(ComponentProp {
+            name,
+            local,
+            span_start,
+            used_in_script,
+            used_in_template: false,
+            // One component per `.astro` file; the detector derives the name from
+            // the file stem, so this stays empty (as for Vue/Svelte).
+            component: String::new(),
+            used_outside_forward: false,
+        });
+    }
+    harvest
+}
+
+/// Process one top-level frontmatter statement, folding any `Props`
+/// interface/type declaration or `Astro.props` consumption into the accumulators.
+fn scan_astro_props_statement(
+    stmt: &Statement<'_>,
+    scan: &mut AstroPropsScan,
+    harvest: &mut DefinePropsHarvest,
+) {
+    // The `Props` interface / type alias may be bare or `export`-wrapped.
+    if let Some(decl) = props_interface_declaration(stmt) {
+        if !decl.extends.is_empty() {
+            // `interface Props extends ImportedBase`: the inherited names require
+            // cross-file resolution. Abstain.
+            harvest.has_unharvestable_props = true;
+        } else {
+            collect_ts_signature_props(&decl.body.body, &mut scan.prop_names);
+        }
+        return;
+    }
+    if let Some(alias) = props_type_alias_declaration(stmt) {
+        match &alias.type_annotation {
+            TSType::TSTypeLiteral(lit) => {
+                collect_ts_signature_props(&lit.members, &mut scan.prop_names);
+            }
+            // `type Props = ImportedType` / union / intersection: unresolvable.
+            _ => harvest.has_unharvestable_props = true,
+        }
+        return;
+    }
+
+    if let Statement::VariableDeclaration(decl) = stmt {
+        for declarator in &decl.declarations {
+            let Some(init) = &declarator.init else {
+                continue;
+            };
+            let Some(astro_props) = unwrap_astro_props_expr(init) else {
+                continue;
+            };
+            // Mark this `Astro.props` occurrence as a destructure/binding init so
+            // the whole-object-use visitor does not treat it as an opaque use.
+            scan.handled_astro_props_spans
+                .insert(astro_props.span.start);
+            bind_astro_props_target(&declarator.id, scan, harvest);
+        }
+    }
+}
+
+/// The `Props` interface declaration of a top-level statement (bare or
+/// `export`-wrapped), or `None`.
+fn props_interface_declaration<'a, 'b>(
+    stmt: &'b Statement<'a>,
+) -> Option<&'b TSInterfaceDeclaration<'a>> {
+    let decl = match stmt {
+        Statement::TSInterfaceDeclaration(decl) => decl.as_ref(),
+        Statement::ExportNamedDeclaration(export) => match export.declaration.as_ref()? {
+            Declaration::TSInterfaceDeclaration(decl) => decl.as_ref(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (decl.id.name.as_str() == "Props").then_some(decl)
+}
+
+/// The `Props` type-alias declaration of a top-level statement (bare or
+/// `export`-wrapped), or `None`.
+fn props_type_alias_declaration<'a, 'b>(
+    stmt: &'b Statement<'a>,
+) -> Option<&'b TSTypeAliasDeclaration<'a>> {
+    let alias = match stmt {
+        Statement::TSTypeAliasDeclaration(alias) => alias.as_ref(),
+        Statement::ExportNamedDeclaration(export) => match export.declaration.as_ref()? {
+            Declaration::TSTypeAliasDeclaration(alias) => alias.as_ref(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (alias.id.name.as_str() == "Props").then_some(alias)
+}
+
+/// Push each property-signature name of an interface / type-literal member list
+/// onto `prop_names`. Method / index / call signatures are not props and are
+/// skipped.
+fn collect_ts_signature_props(members: &[TSSignature<'_>], prop_names: &mut Vec<(String, u32)>) {
+    for member in members {
+        if let TSSignature::TSPropertySignature(sig) = member
+            && let Some(name) = property_key_name(&sig.key)
+        {
+            prop_names.push((name, sig.span.start));
+        }
+    }
+}
+
+/// Whether a static-member expression is `Astro.props`.
+fn is_astro_props(member: &StaticMemberExpression<'_>) -> bool {
+    member.property.name.as_str() == "props"
+        && matches!(&member.object, Expression::Identifier(id) if id.name.as_str() == "Astro")
+}
+
+/// Unwrap an expression to the inner `Astro.props` member access, peeling `as` /
+/// `satisfies` / parentheses. Returns `None` for anything else.
+fn unwrap_astro_props_expr<'a, 'b>(
+    expr: &'b Expression<'a>,
+) -> Option<&'b StaticMemberExpression<'a>> {
+    match expr {
+        Expression::StaticMemberExpression(member) if is_astro_props(member) => Some(member),
+        Expression::TSAsExpression(as_expr) => unwrap_astro_props_expr(&as_expr.expression),
+        Expression::TSSatisfiesExpression(sat) => unwrap_astro_props_expr(&sat.expression),
+        Expression::ParenthesizedExpression(paren) => unwrap_astro_props_expr(&paren.expression),
+        _ => None,
+    }
+}
+
+/// Bind the `const PATTERN = Astro.props` target: an object pattern collects
+/// destructured locals (a rest element abstains); a simple identifier
+/// (`const props = Astro.props`) records the whole-object binding for later
+/// `<binding>.<name>` member-access crediting.
+fn bind_astro_props_target(
+    id: &BindingPattern<'_>,
+    scan: &mut AstroPropsScan,
+    harvest: &mut DefinePropsHarvest,
+) {
+    match id {
+        BindingPattern::BindingIdentifier(ident) => {
+            scan.props_binding = Some(ident.name.to_string());
+        }
+        BindingPattern::ObjectPattern(pattern) => {
+            for prop in &pattern.properties {
+                if let Some(local) = binding_local_name(&prop.value) {
+                    scan.destructured_locals.insert(local.to_string());
+                    if let Some(prop_name) = property_key_name(&prop.key) {
+                        scan.prop_aliases.insert(prop_name, local.to_string());
+                    }
+                } else if let Some(prop_name) = property_key_name(&prop.key) {
+                    // A nested object/array destructure (`{ post: { id, data } }`):
+                    // `binding_local_name` is `None` for non-flat patterns, but
+                    // decomposing the prop into sub-bindings consumes it. Credit
+                    // the outer key so sibling props stay checkable.
+                    scan.nested_consumed_props.insert(prop_name);
+                } else {
+                    // A computed key over a nested pattern (`{ [k]: { x } }`):
+                    // the declared prop name is unknowable. Abstain.
+                    harvest.has_unharvestable_props = true;
+                }
+            }
+            if pattern.rest.is_some() {
+                harvest.has_props_attrs_fallthrough = true;
+            }
+        }
+        // An array destructure of `Astro.props` (`const [a, b] = Astro.props`):
+        // the init span is already marked handled, so the whole-object-use
+        // visitor skips it; without an abstain here the declared interface props
+        // would look unused. The shape is runtime-broken for an object, but
+        // abstaining keeps the zero-FP guarantee airtight.
+        // An array destructure (`const [a, b] = Astro.props`, runtime-broken for
+        // an object) or a top-level assignment pattern binds no enumerable props;
+        // abstain rather than risk a false flag, mirroring the Svelte harvest's
+        // conservative catch-all.
+        BindingPattern::ArrayPattern(_) | BindingPattern::AssignmentPattern(_) => {
+            harvest.has_unharvestable_props = true;
+        }
+    }
+}
+
+/// Walks the frontmatter program for `Astro.props.<name>` member reads and bare
+/// (whole-object) `Astro.props` uses.
+struct AstroPropsVisitor<'h> {
+    member_used: FxHashSet<String>,
+    whole_object_use: bool,
+    handled_spans: &'h FxHashSet<u32>,
+}
+
+impl<'a> oxc_ast_visit::Visit<'a> for AstroPropsVisitor<'_> {
+    fn visit_static_member_expression(&mut self, expr: &StaticMemberExpression<'a>) {
+        // `Astro.props.<name>`: the object is itself `Astro.props`. Record the
+        // member and do NOT descend, so the inner `Astro.props` is consumed as a
+        // member object rather than counted as a bare whole-object use.
+        if let Expression::StaticMemberExpression(inner) = &expr.object
+            && is_astro_props(inner)
+        {
+            self.member_used.insert(expr.property.name.to_string());
+            return;
+        }
+        // A bare `Astro.props` (a destructure/binding init, a spread, or a call
+        // argument). Destructure/binding inits are recorded in `handled_spans`;
+        // anything else is a whole-object use that consumes every prop opaquely.
+        if is_astro_props(expr) {
+            if !self.handled_spans.contains(&expr.span.start) {
+                self.whole_object_use = true;
+            }
+            return;
+        }
+        oxc_ast_visit::walk::walk_static_member_expression(self, expr);
     }
 }
 
@@ -1208,5 +1510,790 @@ impl<'a> oxc_ast_visit::Visit<'a> for ThisMemberVisitor {
             self.usage.has_dynamic_this = true;
         }
         oxc_ast_visit::walk::walk_computed_member_expression(self, member);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use oxc_allocator::Allocator;
+    use oxc_parser::Parser;
+    use oxc_span::SourceType;
+
+    use super::*;
+
+    /// Parse `source` as TypeScript module syntax and call `f` with the resulting
+    /// `Program`. The allocator must outlive the `Program`, so both are created
+    /// inside the closure boundary via a callback pattern.
+    fn with_ts_program<F, R>(source: &str, f: F) -> R
+    where
+        F: for<'a> FnOnce(&oxc_ast::ast::Program<'a>) -> R,
+    {
+        let allocator = Allocator::default();
+        let parser_return = Parser::new(&allocator, source, SourceType::ts()).parse();
+        f(&parser_return.program)
+    }
+
+    // ------------------------------------------------------------------
+    // defineProps: runtime object form (lines 377-392 range, 363-408)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn define_props_runtime_object_harvests_names() {
+        with_ts_program(
+            "const props = defineProps({ foo: String, bar: Number })",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(
+                    h.props.iter().any(|p| p.name == "foo"),
+                    "expected foo in props"
+                );
+                assert!(
+                    h.props.iter().any(|p| p.name == "bar"),
+                    "expected bar in props"
+                );
+                assert!(!h.has_unharvestable_props);
+            },
+        );
+    }
+
+    #[test]
+    fn define_props_runtime_array_harvests_names() {
+        with_ts_program("const props = defineProps(['title', 'count'])", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.props.iter().any(|p| p.name == "title"));
+            assert!(h.props.iter().any(|p| p.name == "count"));
+            assert!(!h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn define_props_type_literal_harvests_names() {
+        with_ts_program(
+            "const props = defineProps<{ foo: string; bar?: number }>()",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(h.props.iter().any(|p| p.name == "foo"));
+                assert!(h.props.iter().any(|p| p.name == "bar"));
+                assert!(!h.has_unharvestable_props);
+            },
+        );
+    }
+
+    #[test]
+    fn define_props_type_reference_sets_unharvestable() {
+        with_ts_program("const props = defineProps<MyProps>()", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.props.is_empty());
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn define_props_runtime_object_spread_sets_unharvestable() {
+        with_ts_program("const props = defineProps({ ...baseProps })", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn define_props_runtime_non_object_arg_sets_unharvestable() {
+        with_ts_program("const props = defineProps(sharedProps)", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn define_props_array_non_literal_element_sets_unharvestable() {
+        with_ts_program("const props = defineProps([computedName])", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // withDefaults (lines 319-322)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn with_defaults_unwraps_define_props() {
+        with_ts_program(
+            "const props = withDefaults(defineProps<{ size: string }>(), { size: 'md' })",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(h.props.iter().any(|p| p.name == "size"));
+                assert!(!h.has_unharvestable_props);
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // defineModel / defineExpose detection on bound variable (lines 87-92, 338-342)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn define_model_assigned_form_sets_flag() {
+        with_ts_program(
+            "const props = defineProps(['x']); const m = defineModel()",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(h.has_define_model);
+            },
+        );
+    }
+
+    #[test]
+    fn define_expose_assigned_form_sets_flag() {
+        with_ts_program(
+            "const props = defineProps(['x']); const e = defineExpose({ count: 1 })",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(h.has_define_expose);
+            },
+        );
+    }
+
+    #[test]
+    fn unknown_macro_callee_does_not_set_flags() {
+        with_ts_program(
+            "const props = defineProps(['x']); const x = someFn()",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(!h.has_define_model);
+                assert!(!h.has_define_expose);
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Bare ExpressionStatement defineProps (lines 109-121)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn bare_define_props_expression_statement_harvests_names() {
+        with_ts_program("defineProps(['alpha', 'beta'])", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.props.iter().any(|p| p.name == "alpha"));
+            assert!(h.props.iter().any(|p| p.name == "beta"));
+        });
+    }
+
+    #[test]
+    fn non_define_props_expression_statement_ignored() {
+        with_ts_program("console.log('hello')", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.props.is_empty());
+            assert!(!h.has_unharvestable_props);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // bind_define_props_target: rest element fallthrough (lines 452-462)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn destructure_rest_element_sets_fallthrough() {
+        with_ts_program("const { foo, ...rest } = defineProps(['foo'])", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(h.has_props_attrs_fallthrough);
+        });
+    }
+
+    #[test]
+    fn destructure_plain_props_no_fallthrough() {
+        with_ts_program("const { foo } = defineProps(['foo'])", |prog| {
+            let h = harvest_define_props(prog);
+            assert!(!h.has_props_attrs_fallthrough);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // props return binding: member-access tracking (lines 512-529)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn props_binding_member_access_marks_used_in_script() {
+        with_ts_program(
+            "
+                const props = defineProps(['label', 'disabled'])
+                console.log(props.label)
+            ",
+            |prog| {
+                let h = harvest_define_props(prog);
+                let label = h.props.iter().find(|p| p.name == "label");
+                let disabled = h.props.iter().find(|p| p.name == "disabled");
+                assert!(
+                    label.is_some_and(|p| p.used_in_script),
+                    "label should be used"
+                );
+                assert!(
+                    disabled.is_some_and(|p| !p.used_in_script),
+                    "disabled should be unused"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn props_binding_whole_object_use_sets_fallthrough() {
+        with_ts_program(
+            "
+                const props = defineProps(['x'])
+                return props
+            ",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(h.has_props_attrs_fallthrough);
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Destructure with alias: used_in_script resolved by local name (142-144)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn props_whole_object_use_sets_fallthrough_via_to_refs() {
+        with_ts_program(
+            "
+                const props = defineProps(['a'])
+                const r = toRefs(props)
+            ",
+            |prog| {
+                let h = harvest_define_props(prog);
+                assert!(
+                    h.has_props_attrs_fallthrough,
+                    "toRefs(props) is a whole-object use"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn destructure_alias_prop_used_via_local() {
+        with_ts_program(
+            "
+                const { label: myLabel } = defineProps(['label'])
+                console.log(myLabel)
+            ",
+            |prog| {
+                let h = harvest_define_props(prog);
+                let prop = h
+                    .props
+                    .iter()
+                    .find(|p| p.name == "label")
+                    .expect("label prop");
+                assert_eq!(prop.local, "myLabel");
+                assert!(prop.used_in_script);
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // defineEmits: runtime array form (lines 734-751, 611-636)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn define_emits_runtime_array_harvests_events() {
+        with_ts_program("const emit = defineEmits(['save', 'cancel'])", |prog| {
+            let h = harvest_define_emits(prog);
+            assert!(h.emits.iter().any(|e| e.name == "save"));
+            assert!(h.emits.iter().any(|e| e.name == "cancel"));
+            assert!(!h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn define_emits_marks_used_event_called_with_string_literal() {
+        with_ts_program(
+            "
+                const emit = defineEmits(['save', 'cancel'])
+                emit('save')
+            ",
+            |prog| {
+                let h = harvest_define_emits(prog);
+                let save = h.emits.iter().find(|e| e.name == "save");
+                let cancel = h.emits.iter().find(|e| e.name == "cancel");
+                assert!(save.is_some_and(|e| e.used), "save should be used");
+                assert!(cancel.is_some_and(|e| !e.used), "cancel should be unused");
+            },
+        );
+    }
+
+    #[test]
+    fn define_emits_type_literal_tuple_form_harvests_events() {
+        with_ts_program(
+            "const emit = defineEmits<{ (e: 'click'): void; (e: 'change', val: string): void }>()",
+            |prog| {
+                let h = harvest_define_emits(prog);
+                assert!(h.emits.iter().any(|e| e.name == "click"));
+                assert!(h.emits.iter().any(|e| e.name == "change"));
+                assert!(!h.has_unharvestable_emits);
+            },
+        );
+    }
+
+    #[test]
+    fn define_emits_type_object_form_harvests_events() {
+        with_ts_program(
+            "const emit = defineEmits<{ update: [val: string]; reset: [] }>()",
+            |prog| {
+                let h = harvest_define_emits(prog);
+                assert!(h.emits.iter().any(|e| e.name == "update"));
+                assert!(h.emits.iter().any(|e| e.name == "reset"));
+                assert!(!h.has_unharvestable_emits);
+            },
+        );
+    }
+
+    #[test]
+    fn define_emits_type_reference_sets_unharvestable() {
+        with_ts_program("const emit = defineEmits<MyEmits>()", |prog| {
+            let h = harvest_define_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn define_emits_runtime_non_array_arg_sets_unharvestable() {
+        with_ts_program("const emit = defineEmits(sharedEmits)", |prog| {
+            let h = harvest_define_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn define_emits_non_string_array_element_sets_unharvestable() {
+        with_ts_program("const emit = defineEmits([computedEvent])", |prog| {
+            let h = harvest_define_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn define_emits_no_binding_sets_unharvestable() {
+        // Bare defineEmits without a bound variable: usage untrackable.
+        with_ts_program("defineEmits(['save'])", |prog| {
+            let h = harvest_define_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn define_emits_destructured_binding_sets_unharvestable() {
+        // Destructured defineEmits binding: can't track the emit fn name.
+        with_ts_program("const { save } = defineEmits(['save'])", |prog| {
+            let h = harvest_define_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn define_emits_dynamic_call_sets_has_dynamic_emit() {
+        with_ts_program(
+            "
+                const emit = defineEmits(['save'])
+                emit(eventName)
+            ",
+            |prog| {
+                let h = harvest_define_emits(prog);
+                assert!(h.has_dynamic_emit);
+            },
+        );
+    }
+
+    #[test]
+    fn define_emits_whole_object_use_sets_flag() {
+        // Passing `emit` to a function is a whole-value use.
+        with_ts_program(
+            "
+                const emit = defineEmits(['save'])
+                someWrapper(emit)
+            ",
+            |prog| {
+                let h = harvest_define_emits(prog);
+                assert!(h.has_emit_whole_object_use);
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Options API props (lines 849-881, 936-938, 969-971, 1015-1054)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn options_api_props_object_form_harvests_names() {
+        with_ts_program(
+            "export default { props: { title: String, count: Number } }",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                assert!(h.props.iter().any(|p| p.name == "title"));
+                assert!(h.props.iter().any(|p| p.name == "count"));
+                assert!(!h.has_unharvestable_props);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_props_array_form_harvests_names() {
+        with_ts_program("export default { props: ['label', 'disabled'] }", |prog| {
+            let h = harvest_options_api_props(prog);
+            assert!(h.props.iter().any(|p| p.name == "label"));
+            assert!(h.props.iter().any(|p| p.name == "disabled"));
+            assert!(!h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn options_api_props_identifier_sets_unharvestable() {
+        with_ts_program("export default { props: sharedProps }", |prog| {
+            let h = harvest_options_api_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn options_api_props_spread_in_object_sets_unharvestable() {
+        with_ts_program("export default { props: { ...base } }", |prog| {
+            let h = harvest_options_api_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn options_api_props_marks_used_via_this() {
+        with_ts_program(
+            "
+                export default {
+                    props: { title: String, count: Number },
+                    mounted() { console.log(this.title) }
+                }
+            ",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                let title = h.props.iter().find(|p| p.name == "title");
+                let count = h.props.iter().find(|p| p.name == "count");
+                assert!(
+                    title.is_some_and(|p| p.used_in_script),
+                    "title should be used"
+                );
+                assert!(
+                    count.is_some_and(|p| !p.used_in_script),
+                    "count should be unused"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_define_component_harvests_props() {
+        with_ts_program(
+            "export default defineComponent({ props: ['name'] })",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                assert!(h.props.iter().any(|p| p.name == "name"));
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_define_component_type_generic_sets_unharvestable() {
+        with_ts_program("export default defineComponent<MyProps>()", |prog| {
+            let h = harvest_options_api_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn options_api_mixin_sets_unharvestable() {
+        with_ts_program(
+            "export default { mixins: [BaseMixin], props: ['x'] }",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                assert!(h.has_unharvestable_props);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_extends_sets_unharvestable() {
+        with_ts_program(
+            "export default { extends: BaseComponent, props: ['x'] }",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                assert!(h.has_unharvestable_props);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_setup_method_sets_fallthrough() {
+        with_ts_program(
+            "export default { props: ['x'], setup(props) { return {} } }",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                assert!(h.has_props_attrs_fallthrough);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_dynamic_this_access_sets_fallthrough() {
+        with_ts_program(
+            "
+                export default {
+                    props: ['x'],
+                    mounted() { const k = 'x'; return this[k] }
+                }
+            ",
+            |prog| {
+                let h = harvest_options_api_props(prog);
+                assert!(h.has_props_attrs_fallthrough);
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Options API emits (lines 1042-1095, 1081-1083, 1114-1135)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn options_api_emits_array_form_harvests_events() {
+        with_ts_program("export default { emits: ['save', 'cancel'] }", |prog| {
+            let h = harvest_options_api_emits(prog);
+            assert!(h.emits.iter().any(|e| e.name == "save"));
+            assert!(h.emits.iter().any(|e| e.name == "cancel"));
+            assert!(!h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn options_api_emits_object_form_harvests_events() {
+        with_ts_program(
+            "export default { emits: { save: null, cancel: null } }",
+            |prog| {
+                let h = harvest_options_api_emits(prog);
+                assert!(h.emits.iter().any(|e| e.name == "save"));
+                assert!(h.emits.iter().any(|e| e.name == "cancel"));
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_emits_marks_used_via_this_emit() {
+        with_ts_program(
+            "
+                export default {
+                    emits: ['save', 'cancel'],
+                    methods: { onSave() { this.$emit('save') } }
+                }
+            ",
+            |prog| {
+                let h = harvest_options_api_emits(prog);
+                let save = h.emits.iter().find(|e| e.name == "save");
+                let cancel = h.emits.iter().find(|e| e.name == "cancel");
+                assert!(save.is_some_and(|e| e.used), "save should be used");
+                assert!(cancel.is_some_and(|e| !e.used), "cancel should be unused");
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_emits_dynamic_this_emit_sets_has_dynamic_emit() {
+        with_ts_program(
+            "
+                export default {
+                    emits: ['save'],
+                    methods: { onSave() { this.$emit(this.eventName) } }
+                }
+            ",
+            |prog| {
+                let h = harvest_options_api_emits(prog);
+                assert!(h.has_dynamic_emit);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_emits_identifier_value_sets_unharvestable() {
+        with_ts_program("export default { emits: sharedEmits }", |prog| {
+            let h = harvest_options_api_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn options_api_emits_spread_in_object_sets_unharvestable() {
+        with_ts_program("export default { emits: { ...base } }", |prog| {
+            let h = harvest_options_api_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn options_api_emits_non_string_array_element_sets_unharvestable() {
+        with_ts_program("export default { emits: [dynamicEvent] }", |prog| {
+            let h = harvest_options_api_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    #[test]
+    fn options_api_emits_mixin_sets_unharvestable() {
+        with_ts_program(
+            "export default { mixins: [Base], emits: ['save'] }",
+            |prog| {
+                let h = harvest_options_api_emits(prog);
+                assert!(h.has_unharvestable_emits);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_emits_setup_sets_dynamic_emit_flag() {
+        // setup() can fire `emit('save')` through context binding: abstain.
+        with_ts_program(
+            "export default { emits: ['save'], setup(props, ctx) { ctx.emit('save') } }",
+            |prog| {
+                let h = harvest_options_api_emits(prog);
+                assert!(h.has_dynamic_emit);
+            },
+        );
+    }
+
+    #[test]
+    fn options_api_define_component_type_generic_sets_unharvestable_emits() {
+        with_ts_program("export default defineComponent<MyOpts>()", |prog| {
+            let h = harvest_options_api_emits(prog);
+            assert!(h.has_unharvestable_emits);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Svelte $props() harvest (lines 194-251, 208-210, 233-234, 305-307)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn svelte_props_object_destructure_harvests_names() {
+        with_ts_program("let { label, count } = $props()", |prog| {
+            let h = harvest_svelte_props(prog);
+            assert!(h.props.iter().any(|p| p.name == "label"));
+            assert!(h.props.iter().any(|p| p.name == "count"));
+            assert!(!h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn svelte_props_bare_identifier_sets_unharvestable() {
+        with_ts_program("let p = $props()", |prog| {
+            let h = harvest_svelte_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn svelte_props_rest_element_sets_fallthrough() {
+        with_ts_program("let { label, ...rest } = $props()", |prog| {
+            let h = harvest_svelte_props(prog);
+            assert!(h.has_props_attrs_fallthrough);
+        });
+    }
+
+    #[test]
+    fn svelte_props_used_in_script_via_local() {
+        with_ts_program(
+            "
+                let { label, count } = $props()
+                console.log(label)
+            ",
+            |prog| {
+                let h = harvest_svelte_props(prog);
+                let label_prop = h.props.iter().find(|p| p.name == "label");
+                let count_prop = h.props.iter().find(|p| p.name == "count");
+                assert!(
+                    label_prop.is_some_and(|p| p.used_in_script),
+                    "label should be used"
+                );
+                assert!(
+                    count_prop.is_some_and(|p| !p.used_in_script),
+                    "count should be unused"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn svelte_props_renamed_alias_stored_correctly() {
+        with_ts_program("let { title: myTitle } = $props()", |prog| {
+            let h = harvest_svelte_props(prog);
+            let prop = h
+                .props
+                .iter()
+                .find(|p| p.name == "title")
+                .expect("title prop");
+            assert_eq!(prop.local, "myTitle");
+        });
+    }
+
+    #[test]
+    fn svelte_props_no_dollar_props_call_returns_empty() {
+        with_ts_program("let x = someOtherFn()", |prog| {
+            let h = harvest_svelte_props(prog);
+            assert!(h.props.is_empty());
+            assert!(!h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn svelte_props_array_pattern_sets_unharvestable() {
+        // An array destructure at the top level is an unrecognized shape.
+        with_ts_program("let [a, b] = $props()", |prog| {
+            let h = harvest_svelte_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn svelte_props_nested_object_destructure_sets_unharvestable() {
+        // `{ a: { x } }` is a nested pattern: binding_local_name returns None.
+        with_ts_program("let { a: { x } } = $props()", |prog| {
+            let h = harvest_svelte_props(prog);
+            assert!(h.has_unharvestable_props);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // options_has_setup_method: no setup key (line 922-923)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn options_without_setup_no_fallthrough() {
+        with_ts_program("export default { props: ['x'], mounted() {} }", |prog| {
+            let h = harvest_options_api_props(prog);
+            assert!(!h.has_props_attrs_fallthrough);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // No export default: returns empty harvest (find_options_object = None)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn no_export_default_returns_empty_options_props() {
+        with_ts_program("const x = 1", |prog| {
+            let h = harvest_options_api_props(prog);
+            assert!(h.props.is_empty());
+            assert!(!h.has_unharvestable_props);
+        });
+    }
+
+    #[test]
+    fn no_export_default_returns_empty_options_emits() {
+        with_ts_program("const x = 1", |prog| {
+            let h = harvest_options_api_emits(prog);
+            assert!(h.emits.is_empty());
+            assert!(!h.has_unharvestable_emits);
+        });
     }
 }

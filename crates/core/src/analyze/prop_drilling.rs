@@ -95,6 +95,13 @@ struct ForwardTarget {
     child_attr: String,
 }
 
+/// Classified props for one component: role plus declaration metadata keyed by
+/// local prop name.
+struct PropClassification {
+    prop_roles: FxHashMap<String, PropRole>,
+    prop_decls: FxHashMap<String, PropDecl>,
+}
+
 /// Result of the prop-drilling scan: the located chains plus the number of React
 /// components inspected (for the observability diagnostic, so a silent
 /// dep-gate / silent abstain is visible).
@@ -209,10 +216,25 @@ fn build_single_component_state<'a>(
     props: &[&ComponentProp],
 ) -> CompState<'a> {
     let component_abstain = component_has_abstain(func, edges);
+    let PropClassification {
+        prop_roles,
+        prop_decls,
+    } = classify_component_props(props);
+    let forwards = collect_forward_targets(edges, &prop_roles);
 
+    CompState {
+        path,
+        span_start: func.span_start,
+        abstain: component_abstain,
+        prop_roles,
+        prop_decls,
+        forwards,
+    }
+}
+
+fn classify_component_props(props: &[&ComponentProp]) -> PropClassification {
     let mut prop_roles = FxHashMap::default();
     let mut prop_decls = FxHashMap::default();
-    let mut forwards: FxHashMap<String, Vec<ForwardTarget>> = FxHashMap::default();
 
     for prop in props {
         if !prop.used_in_script {
@@ -235,8 +257,20 @@ fn build_single_component_state<'a>(
         );
     }
 
-    // Forward targets: each render edge's `forward_attrs` whose root is one of
-    // this component's prop locals.
+    PropClassification {
+        prop_roles,
+        prop_decls,
+    }
+}
+
+fn collect_forward_targets(
+    edges: &[&RenderEdge],
+    prop_roles: &FxHashMap<String, PropRole>,
+) -> FxHashMap<String, Vec<ForwardTarget>> {
+    let mut forwards: FxHashMap<String, Vec<ForwardTarget>> = FxHashMap::default();
+
+    // Each render edge's `forward_attrs` whose root is one of this component's
+    // prop locals.
     for edge in edges {
         for fa in &edge.forward_attrs {
             if prop_roles.contains_key(&fa.root) {
@@ -251,14 +285,7 @@ fn build_single_component_state<'a>(
         }
     }
 
-    CompState {
-        path,
-        span_start: func.span_start,
-        abstain: component_abstain,
-        prop_roles,
-        prop_decls,
-        forwards,
-    }
+    forwards
 }
 
 /// Whether a component carries any prop-drilling abstain signal.
@@ -324,33 +351,15 @@ fn walk_chains(
     let non_maximal = non_maximal_origins(states, resolver);
 
     for (key, state) in states {
-        if state.abstain {
-            continue;
-        }
-        // A chain ORIGIN is a pass-through prop on a NON-abstaining component:
-        // the component owns the prop and only forwards it. (A consumer prop is a
-        // chain terminus, not an origin; an unused prop is not a chain link.)
-        for (local, role) in &state.prop_roles {
-            if *role != PropRole::PassThrough {
-                continue;
-            }
-            if non_maximal.contains(&(key.clone(), local.clone())) {
-                continue;
-            }
-            let Some(decl) = state.prop_decls.get(local) else {
-                continue;
-            };
-            let dedup_key = (key.file, key.name.clone(), decl.name.clone());
-            if seen.contains(&dedup_key) {
-                continue;
-            }
-            if let Some(hops) = follow_chain(key, local, states, resolver, line_offsets_by_file)
+        for origin in component_chain_origins(key, state, &non_maximal, &seen) {
+            if let Some(hops) =
+                follow_chain(key, &origin.local, states, resolver, line_offsets_by_file)
                 && hops.len() >= MIN_CHAIN_DEPTH
             {
-                seen.insert(dedup_key);
+                seen.insert(origin.dedup_key);
                 let depth = u32::try_from(hops.len()).unwrap_or(u32::MAX);
                 chains.push(PropDrillingChain {
-                    prop: decl.name.clone(),
+                    prop: origin.prop,
                     depth,
                     hops,
                 });
@@ -368,6 +377,51 @@ fn walk_chains(
             .then(a.prop.cmp(&b.prop))
     });
     chains
+}
+
+/// A maximal component prop that can start a prop-drilling chain.
+struct ChainOrigin {
+    local: String,
+    prop: String,
+    dedup_key: (FileId, String, String),
+}
+
+fn component_chain_origins(
+    key: &CompKey,
+    state: &CompState<'_>,
+    non_maximal: &FxHashSet<(CompKey, String)>,
+    seen: &FxHashSet<(FileId, String, String)>,
+) -> Vec<ChainOrigin> {
+    if state.abstain {
+        return Vec::new();
+    }
+
+    let mut origins = Vec::new();
+    // A chain origin is a pass-through prop on a non-abstaining component: the
+    // component owns the prop and only forwards it. A consumer prop is a chain
+    // terminus, and an unused prop is not a chain link.
+    for (local, role) in &state.prop_roles {
+        if *role != PropRole::PassThrough {
+            continue;
+        }
+        if non_maximal.contains(&(key.clone(), local.clone())) {
+            continue;
+        }
+        let Some(decl) = state.prop_decls.get(local) else {
+            continue;
+        };
+        let dedup_key = (key.file, key.name.clone(), decl.name.clone());
+        if seen.contains(&dedup_key) {
+            continue;
+        }
+        origins.push(ChainOrigin {
+            local: local.clone(),
+            prop: decl.name.clone(),
+            dedup_key,
+        });
+    }
+
+    origins
 }
 
 /// Follow a chain from `(key, local)` through pass-through hops to a consumer.
@@ -456,20 +510,7 @@ fn advance_chain_step(
     // chain can follow. A forward to >= 2 distinct children is a fan-out (not
     // a single drilling line); abstain to stay high-confidence.
     let targets = state.forwards.get(current_local)?;
-    let resolved: Vec<(CompKey, &ForwardTarget)> = targets
-        .iter()
-        .filter_map(|t| {
-            ctx.resolver
-                .resolve(current_key.file, &t.child_name)
-                .map(|k| (k, t))
-        })
-        .collect();
-    // Every written target must resolve (an unresolvable hop abstains), and
-    // they must all point at the SAME child receiving the SAME attr (a
-    // genuine single-line forward, possibly written twice).
-    if resolved.len() != targets.len() {
-        return None;
-    }
+    let resolved = resolved_forward_targets(current_key, targets, ctx.resolver)?;
     let (child_key, target) = single_child(&resolved)?;
     if !ctx.visited.insert(child_key.clone()) {
         // Cycle: abstain.
@@ -499,6 +540,27 @@ fn advance_chain_step(
             key: child_key,
             local: child_local,
         }),
+    }
+}
+
+fn resolved_forward_targets<'a>(
+    current_key: &CompKey,
+    targets: &'a [ForwardTarget],
+    resolver: &ChildResolver<'_>,
+) -> Option<Vec<(CompKey, &'a ForwardTarget)>> {
+    let resolved: Vec<(CompKey, &ForwardTarget)> = targets
+        .iter()
+        .filter_map(|t| {
+            resolver
+                .resolve(current_key.file, &t.child_name)
+                .map(|k| (k, t))
+        })
+        .collect();
+    // Every written target must resolve; an unresolvable hop abstains.
+    if resolved.len() == targets.len() {
+        Some(resolved)
+    } else {
+        None
     }
 }
 

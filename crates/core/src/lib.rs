@@ -495,35 +495,40 @@ fn run_analysis_setup(config: &ResolvedConfig) -> AnalysisSetup {
     }
 }
 
+/// Borrowed inputs for plugin detection and script analysis.
+struct PluginScriptInput<'a> {
+    config: &'a ResolvedConfig,
+    progress: &'a progress::AnalysisProgress,
+    files: &'a [discover::DiscoveredFile],
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    root_pkg: Option<&'a PackageJson>,
+    workspace_pkgs: &'a [LoadedWorkspacePackage<'a>],
+    config_candidates: &'a [std::path::PathBuf],
+}
+
 /// Run plugin detection and package.json/CI script analysis, returning the
 /// aggregated plugin result plus the two phase timings.
 fn run_plugins_and_scripts(
-    config: &ResolvedConfig,
-    progress: &progress::AnalysisProgress,
-    files: &[discover::DiscoveredFile],
-    workspaces: &[fallow_config::WorkspaceInfo],
-    root_pkg: Option<&PackageJson>,
-    workspace_pkgs: &[LoadedWorkspacePackage<'_>],
-    config_candidates: &[std::path::PathBuf],
+    input: &PluginScriptInput<'_>,
 ) -> Result<(plugins::AggregatedPluginResult, f64, f64), FallowError> {
     let t = Instant::now();
-    progress.set_stage("detecting plugins...");
+    input.progress.set_stage("detecting plugins...");
     let mut plugin_result = run_plugins(
-        config,
-        files,
-        workspaces,
-        root_pkg,
-        workspace_pkgs,
-        config_candidates,
+        input.config,
+        input.files,
+        input.workspaces,
+        input.root_pkg,
+        input.workspace_pkgs,
+        input.config_candidates,
     )?;
     let plugins_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     let t = Instant::now();
     analyze_all_scripts(
-        config,
-        workspaces,
-        root_pkg,
-        workspace_pkgs,
+        input.config,
+        input.workspaces,
+        input.root_pkg,
+        input.workspace_pkgs,
         &mut plugin_result,
     );
     let scripts_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -565,15 +570,15 @@ pub fn analyze_with_parse_result(
     let workspaces = project.workspaces();
     let workspace_pkgs = load_workspace_packages(workspaces);
 
-    let (plugin_result, plugins_ms, scripts_ms) = run_plugins_and_scripts(
+    let (plugin_result, plugins_ms, scripts_ms) = run_plugins_and_scripts(&PluginScriptInput {
         config,
-        &progress,
+        progress: &progress,
         files,
         workspaces,
-        root_pkg.as_ref(),
-        &workspace_pkgs,
-        &config_candidates,
-    )?;
+        root_pkg: root_pkg.as_ref(),
+        workspace_pkgs: &workspace_pkgs,
+        config_candidates: &config_candidates,
+    })?;
 
     let core = run_reused_analysis_core(&ReusedAnalysisCoreInput {
         config,
@@ -703,6 +708,38 @@ struct ReusedAnalysisCore {
     analyze_ms: f64,
 }
 
+struct AnalysisCoreSharedInput<'a> {
+    config: &'a ResolvedConfig,
+    progress: &'a progress::AnalysisProgress,
+    files: &'a [discover::DiscoveredFile],
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    root_pkg: Option<&'a PackageJson>,
+    workspace_pkgs: &'a [LoadedWorkspacePackage<'a>],
+    plugin_result: &'a plugins::AggregatedPluginResult,
+}
+
+struct TimedEntryPoints {
+    entry_points: discover::CategorizedEntryPoints,
+    summary: results::EntryPointSummary,
+    count: usize,
+    elapsed_ms: f64,
+}
+
+struct TimedResolvedModules {
+    resolved: Vec<resolve::ResolvedModule>,
+    elapsed_ms: f64,
+}
+
+struct TimedGraph {
+    graph: graph::ModuleGraph,
+    elapsed_ms: f64,
+}
+
+struct TimedAnalysis {
+    result: AnalysisResults,
+    elapsed_ms: f64,
+}
+
 /// Run entry-point discovery, import resolution, graph construction, and dead-code
 /// analysis over caller-owned modules (which are copied before payload release).
 fn run_reused_analysis_core(input: &ReusedAnalysisCoreInput<'_>) -> ReusedAnalysisCore {
@@ -716,61 +753,137 @@ fn run_reused_analysis_core(input: &ReusedAnalysisCoreInput<'_>) -> ReusedAnalys
         plugin_result,
         modules,
     } = input;
-
-    let t = Instant::now();
-    let entry_points = discover_all_entry_points(
+    let shared = AnalysisCoreSharedInput {
         config,
+        progress,
         files,
         workspaces,
         root_pkg,
         workspace_pkgs,
         plugin_result,
-    );
-    let entry_points_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let ep_summary = summarize_entry_points(&entry_points.all);
-    let entry_point_count = entry_points.all.len();
+    };
 
-    let t = Instant::now();
-    progress.set_stage("resolving imports...");
-    let resolved = resolve_analysis_imports(modules, files, workspaces, plugin_result, config);
-    let resolve_ms = t.elapsed().as_secs_f64() * 1000.0;
-
-    let t = Instant::now();
-    progress.set_stage("building module graph...");
-    let graph = build_analysis_graph(&resolved, &entry_points, files, modules, workspaces);
-    let graph_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let entry_points = discover_analysis_entry_points(&shared);
+    let resolved = resolve_analysis_imports_timed(&shared, modules);
+    let graph = build_analysis_graph_timed(&shared, &resolved.resolved, &entry_points, modules);
 
     let mut analysis_modules = modules.to_vec();
-    for module in &mut analysis_modules {
+    release_resolution_payloads(&mut analysis_modules);
+    let analysis = analyze_dead_code_timed(
+        &shared,
+        &graph.graph,
+        &resolved.resolved,
+        &analysis_modules,
+        false,
+        entry_points.summary,
+    );
+
+    ReusedAnalysisCore {
+        result: analysis.result,
+        graph: graph.graph,
+        entry_point_count: entry_points.count,
+        entry_points_ms: entry_points.elapsed_ms,
+        resolve_ms: resolved.elapsed_ms,
+        graph_ms: graph.elapsed_ms,
+        analyze_ms: analysis.elapsed_ms,
+    }
+}
+
+fn discover_analysis_entry_points(input: &AnalysisCoreSharedInput<'_>) -> TimedEntryPoints {
+    let t = Instant::now();
+    let entry_points = discover_all_entry_points(
+        input.config,
+        input.files,
+        input.workspaces,
+        input.root_pkg,
+        input.workspace_pkgs,
+        input.plugin_result,
+    );
+    let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let summary = summarize_entry_points(&entry_points.all);
+    let count = entry_points.all.len();
+
+    TimedEntryPoints {
+        entry_points,
+        summary,
+        count,
+        elapsed_ms,
+    }
+}
+
+fn resolve_analysis_imports_timed(
+    input: &AnalysisCoreSharedInput<'_>,
+    modules: &[extract::ModuleInfo],
+) -> TimedResolvedModules {
+    let t = Instant::now();
+    input.progress.set_stage("resolving imports...");
+    let resolved = resolve_analysis_imports(
+        modules,
+        input.files,
+        input.workspaces,
+        input.plugin_result,
+        input.config,
+    );
+    TimedResolvedModules {
+        resolved,
+        elapsed_ms: t.elapsed().as_secs_f64() * 1000.0,
+    }
+}
+
+fn build_analysis_graph_timed(
+    input: &AnalysisCoreSharedInput<'_>,
+    resolved: &[resolve::ResolvedModule],
+    entry_points: &TimedEntryPoints,
+    modules: &[extract::ModuleInfo],
+) -> TimedGraph {
+    let t = Instant::now();
+    input.progress.set_stage("building module graph...");
+    let graph = build_analysis_graph(
+        resolved,
+        &entry_points.entry_points,
+        input.files,
+        modules,
+        input.workspaces,
+    );
+    TimedGraph {
+        graph,
+        elapsed_ms: t.elapsed().as_secs_f64() * 1000.0,
+    }
+}
+
+fn release_resolution_payloads(modules: &mut [extract::ModuleInfo]) {
+    for module in modules {
         module.release_resolution_payload();
     }
+}
 
+fn analyze_dead_code_timed(
+    input: &AnalysisCoreSharedInput<'_>,
+    graph: &graph::ModuleGraph,
+    resolved: &[resolve::ResolvedModule],
+    modules: &[extract::ModuleInfo],
+    collect_usages: bool,
+    entry_point_summary: results::EntryPointSummary,
+) -> TimedAnalysis {
     let t = Instant::now();
-    progress.set_stage("analyzing...");
+    input.progress.set_stage("analyzing...");
     #[expect(
         deprecated,
         reason = "ADR-008 keeps workspace path-dependency calls while warning external fallow-core consumers"
     )]
     let mut result = analyze::find_dead_code_full(
-        &graph,
-        config,
-        &resolved,
-        Some(plugin_result),
-        workspaces,
-        &analysis_modules,
-        false,
-    );
-    let analyze_ms = t.elapsed().as_secs_f64() * 1000.0;
-    result.entry_point_summary = Some(ep_summary);
-
-    ReusedAnalysisCore {
-        result,
         graph,
-        entry_point_count,
-        entry_points_ms,
-        resolve_ms,
-        graph_ms,
-        analyze_ms,
+        input.config,
+        resolved,
+        Some(input.plugin_result),
+        input.workspaces,
+        modules,
+        collect_usages,
+    );
+    result.entry_point_summary = Some(entry_point_summary);
+    TimedAnalysis {
+        result,
+        elapsed_ms: t.elapsed().as_secs_f64() * 1000.0,
     }
 }
 
@@ -796,22 +909,17 @@ fn analyze_full(
     let workspaces = project.workspaces();
     let workspace_pkgs = load_workspace_packages(workspaces);
 
-    let (plugin_result, plugins_ms, scripts_ms) = run_plugins_and_scripts(
+    let (plugin_result, plugins_ms, scripts_ms) = run_plugins_and_scripts(&PluginScriptInput {
         config,
-        &progress,
+        progress: &progress,
         files,
         workspaces,
-        root_pkg.as_ref(),
-        &workspace_pkgs,
-        &config_candidates,
-    )?;
+        root_pkg: root_pkg.as_ref(),
+        workspace_pkgs: &workspace_pkgs,
+        config_candidates: &config_candidates,
+    })?;
 
-    let t = Instant::now();
-    progress.set_stage(&format!("parsing {} files...", files.len()));
-    let AnalysisParseOutput { modules, metrics } =
-        parse_analysis_modules(config, files, need_complexity, t);
-
-    let core = run_owned_analysis_core(OwnedAnalysisCoreInput {
+    let FullAnalysisCoreOutput { core, metrics } = run_full_analysis_core(&FullAnalysisCoreInput {
         config,
         progress: &progress,
         files,
@@ -819,25 +927,24 @@ fn analyze_full(
         root_pkg: root_pkg.as_ref(),
         workspace_pkgs: &workspace_pkgs,
         plugin_result: &plugin_result,
-        modules,
+        need_complexity,
         collect_usages,
     });
     progress.finish();
 
-    let timings = PreludeTimings {
-        discover_ms,
-        workspaces_ms,
-        plugins_ms,
-        scripts_ms,
-    };
-    let prelude = prelude_metrics(
-        &timings,
+    let profile = full_analysis_pipeline_profile(
+        &PreludeTimings {
+            discover_ms,
+            workspaces_ms,
+            plugins_ms,
+            scripts_ms,
+        },
         pipeline_start,
         files,
         workspaces,
-        core.modules.len(),
+        &core,
+        &metrics,
     );
-    let profile = full_pipeline_profile(&prelude, &core, &metrics);
     trace_pipeline_profile(&profile);
 
     Ok(assemble_full_output(
@@ -848,6 +955,74 @@ fn analyze_full(
         retain,
         retain_modules,
     ))
+}
+
+struct FullAnalysisCoreInput<'a> {
+    config: &'a ResolvedConfig,
+    progress: &'a progress::AnalysisProgress,
+    files: &'a [discover::DiscoveredFile],
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    root_pkg: Option<&'a PackageJson>,
+    workspace_pkgs: &'a [LoadedWorkspacePackage<'a>],
+    plugin_result: &'a plugins::AggregatedPluginResult,
+    need_complexity: bool,
+    collect_usages: bool,
+}
+
+struct FullAnalysisCoreOutput {
+    core: OwnedAnalysisCore,
+    metrics: ParseMetrics,
+}
+
+fn run_full_analysis_core(input: &FullAnalysisCoreInput<'_>) -> FullAnalysisCoreOutput {
+    let &FullAnalysisCoreInput {
+        config,
+        progress,
+        files,
+        workspaces,
+        root_pkg,
+        workspace_pkgs,
+        plugin_result,
+        need_complexity,
+        collect_usages,
+    } = input;
+
+    let t = Instant::now();
+    progress.set_stage(&format!("parsing {} files...", files.len()));
+    let AnalysisParseOutput { modules, metrics } =
+        parse_analysis_modules(config, files, need_complexity, t);
+
+    let core = run_owned_analysis_core(OwnedAnalysisCoreInput {
+        config,
+        progress,
+        files,
+        workspaces,
+        root_pkg,
+        workspace_pkgs,
+        plugin_result,
+        modules,
+        collect_usages,
+    });
+
+    FullAnalysisCoreOutput { core, metrics }
+}
+
+fn full_analysis_pipeline_profile(
+    timings: &PreludeTimings,
+    pipeline_start: Instant,
+    files: &[discover::DiscoveredFile],
+    workspaces: &[fallow_config::WorkspaceInfo],
+    core: &OwnedAnalysisCore,
+    metrics: &ParseMetrics,
+) -> PipelineProfile {
+    let prelude = prelude_metrics(
+        timings,
+        pipeline_start,
+        files,
+        workspaces,
+        core.modules.len(),
+    );
+    full_pipeline_profile(&prelude, core, metrics)
 }
 
 /// Assemble the `AnalysisOutput` for the full pipeline, honoring the graph/module
@@ -921,61 +1096,38 @@ fn run_owned_analysis_core(input: OwnedAnalysisCoreInput<'_>) -> OwnedAnalysisCo
         mut modules,
         collect_usages,
     } = input;
-
-    let t = Instant::now();
-    let entry_points = discover_all_entry_points(
+    let shared = AnalysisCoreSharedInput {
         config,
+        progress,
         files,
         workspaces,
         root_pkg,
         workspace_pkgs,
         plugin_result,
-    );
-    let entry_points_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let entry_point_count = entry_points.all.len();
+    };
 
-    let t = Instant::now();
-    progress.set_stage("resolving imports...");
-    let resolved = resolve_analysis_imports(&modules, files, workspaces, plugin_result, config);
-    let resolve_ms = t.elapsed().as_secs_f64() * 1000.0;
-
-    let t = Instant::now();
-    progress.set_stage("building module graph...");
-    let graph = build_analysis_graph(&resolved, &entry_points, files, &modules, workspaces);
-    for module in &mut modules {
-        module.release_resolution_payload();
-    }
-    let graph_ms = t.elapsed().as_secs_f64() * 1000.0;
-
-    let ep_summary = summarize_entry_points(&entry_points.all);
-
-    let t = Instant::now();
-    progress.set_stage("analyzing...");
-    #[expect(
-        deprecated,
-        reason = "ADR-008 keeps workspace path-dependency calls while warning external fallow-core consumers"
-    )]
-    let mut result = analyze::find_dead_code_full(
-        &graph,
-        config,
-        &resolved,
-        Some(plugin_result),
-        workspaces,
+    let entry_points = discover_analysis_entry_points(&shared);
+    let resolved = resolve_analysis_imports_timed(&shared, &modules);
+    let graph = build_analysis_graph_timed(&shared, &resolved.resolved, &entry_points, &modules);
+    release_resolution_payloads(&mut modules);
+    let analysis = analyze_dead_code_timed(
+        &shared,
+        &graph.graph,
+        &resolved.resolved,
         &modules,
         collect_usages,
+        entry_points.summary,
     );
-    let analyze_ms = t.elapsed().as_secs_f64() * 1000.0;
-    result.entry_point_summary = Some(ep_summary);
 
     OwnedAnalysisCore {
-        result,
-        graph,
+        result: analysis.result,
+        graph: graph.graph,
         modules,
-        entry_point_count,
-        entry_points_ms,
-        resolve_ms,
-        graph_ms,
-        analyze_ms,
+        entry_point_count: entry_points.count,
+        entry_points_ms: entry_points.elapsed_ms,
+        resolve_ms: resolved.elapsed_ms,
+        graph_ms: graph.elapsed_ms,
+        analyze_ms: analysis.elapsed_ms,
     }
 }
 

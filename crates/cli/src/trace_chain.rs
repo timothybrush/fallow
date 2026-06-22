@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fallow_config::{OutputFormat, ProductionAnalysis};
-use fallow_core::trace_chain::{SymbolChainTrace, TraceDirections, trace_symbol_chain};
+use fallow_core::trace_chain::{
+    SymbolChainQuery, SymbolChainTrace, TraceDirections, trace_symbol_chain,
+};
 
 use crate::error::emit_error;
 use crate::output_envelope::{FallowOutput, serialize_root_output};
@@ -96,10 +98,12 @@ pub fn run_trace(opts: &TraceChainOptions<'_>) -> ExitCode {
         graph,
         modules,
         &config.root,
-        &file,
-        &symbol,
-        opts.depth,
-        directions,
+        SymbolChainQuery {
+            file: &file,
+            symbol: &symbol,
+            depth: opts.depth,
+            directions,
+        },
     ) else {
         return emit_error(
             &format!("file '{file}' not found in module graph"),

@@ -164,69 +164,85 @@ struct PolicyNodeInput<'a> {
 /// findings. Off-master and out-of-scope nodes are skipped.
 fn collect_node_policy_violations(input: &mut PolicyNodeInput<'_>) {
     let node = input.node;
-    if !node.is_reachable() && !node.is_entry_point() {
-        return;
-    }
-    let Ok(relative) = node.path.strip_prefix(&input.config.root) else {
+    let Some(scope) =
+        scoped_policy_rules(node, input.config, input.rules, input.scoped_file_counts)
+    else {
         return;
     };
-    let relative = relative.to_string_lossy().replace('\\', "/");
-
-    let master = input
-        .config
-        .resolve_rules_for_path(&node.path)
-        .policy_violation;
-    if master == Severity::Off {
-        return;
-    }
-
-    let in_scope: Vec<(usize, &CompiledRule<'_>)> = input
-        .rules
-        .iter()
-        .enumerate()
-        .filter(|(_, rule)| rule.applies_to(&relative))
-        .collect();
-    if in_scope.is_empty() {
-        return;
-    }
-    for (index, _) in &in_scope {
-        input.scoped_file_counts[*index] += 1;
-    }
 
     let Some(module) = input.modules_by_id.get(&node.file_id) else {
         return;
     };
 
     collect_banned_imports(&mut PolicyCollectionInput {
-        in_scope: &in_scope,
+        in_scope: &scope.in_scope,
         module,
         node,
-        master,
+        master: scope.master,
         declared_deps: input.declared_deps,
         suppressions: input.suppressions,
         line_offsets_by_file: input.line_offsets_by_file,
         violations: input.violations,
     });
     collect_banned_effects(&mut PolicyCollectionInput {
-        in_scope: &in_scope,
+        in_scope: &scope.in_scope,
         module,
         node,
-        master,
+        master: scope.master,
         declared_deps: input.declared_deps,
         suppressions: input.suppressions,
         line_offsets_by_file: input.line_offsets_by_file,
         violations: input.violations,
     });
     collect_banned_calls(&mut PolicyCollectionInput {
-        in_scope: &in_scope,
+        in_scope: &scope.in_scope,
         module,
         node,
-        master,
+        master: scope.master,
         declared_deps: input.declared_deps,
         suppressions: input.suppressions,
         line_offsets_by_file: input.line_offsets_by_file,
         violations: input.violations,
     });
+}
+
+struct ScopedPolicyRules<'a> {
+    master: Severity,
+    in_scope: Vec<(usize, &'a CompiledRule<'a>)>,
+}
+
+fn scoped_policy_rules<'a>(
+    node: &crate::graph::ModuleNode,
+    config: &ResolvedConfig,
+    rules: &'a [CompiledRule<'a>],
+    scoped_file_counts: &mut [usize],
+) -> Option<ScopedPolicyRules<'a>> {
+    if !node.is_reachable() && !node.is_entry_point() {
+        return None;
+    }
+    let Ok(relative) = node.path.strip_prefix(&config.root) else {
+        return None;
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+
+    let master = config.resolve_rules_for_path(&node.path).policy_violation;
+    if master == Severity::Off {
+        return None;
+    }
+
+    let in_scope: Vec<(usize, &CompiledRule<'_>)> = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule.applies_to(&relative))
+        .collect();
+    if in_scope.is_empty() {
+        return None;
+    }
+    for (index, _) in &in_scope {
+        scoped_file_counts[*index] += 1;
+    }
+
+    Some(ScopedPolicyRules { master, in_scope })
 }
 
 /// Compile every loaded pack rule. Rules pinned to `severity: "off"` are
@@ -280,6 +296,11 @@ struct PolicyCollectionInput<'a> {
 }
 
 fn collect_banned_imports(input: &mut PolicyCollectionInput<'_>) {
+    let ctx = BannedImportCtx {
+        node: input.node,
+        suppressions: input.suppressions,
+        line_offsets_by_file: input.line_offsets_by_file,
+    };
     for (_, rule) in input.in_scope {
         if rule.rule.kind != RulePackRuleKind::BannedImport {
             continue;
@@ -307,7 +328,7 @@ fn collect_banned_imports(input: &mut PolicyCollectionInput<'_>) {
             }));
         for (source, is_type_only, span_start) in sites {
             push_banned_import_if_matched(
-                input.node,
+                &ctx,
                 rule,
                 severity,
                 &BannedImportSite {
@@ -315,8 +336,6 @@ fn collect_banned_imports(input: &mut PolicyCollectionInput<'_>) {
                     is_type_only,
                     span_start,
                 },
-                input.suppressions,
-                input.line_offsets_by_file,
                 input.violations,
             );
         }
@@ -330,15 +349,20 @@ struct BannedImportSite<'a> {
     span_start: u32,
 }
 
+/// Per-module emission context shared across every `banned-import` site check.
+struct BannedImportCtx<'a> {
+    node: &'a crate::graph::ModuleNode,
+    suppressions: &'a SuppressionContext<'a>,
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+}
+
 /// Push a `banned-import` violation when `site`'s specifier matches the rule and
 /// is neither type-only-skipped nor suppressed.
 fn push_banned_import_if_matched(
-    node: &crate::graph::ModuleNode,
+    ctx: &BannedImportCtx<'_>,
     rule: &CompiledRule<'_>,
     severity: PolicyViolationSeverity,
     site: &BannedImportSite<'_>,
-    suppressions: &SuppressionContext<'_>,
-    line_offsets_by_file: &LineOffsetsMap<'_>,
     violations: &mut Vec<PolicyViolation>,
 ) {
     if rule.rule.ignore_type_only && site.is_type_only {
@@ -352,12 +376,16 @@ fn push_banned_import_if_matched(
     {
         return;
     }
-    let (line, col) = byte_offset_to_line_col(line_offsets_by_file, node.file_id, site.span_start);
-    if suppressions.is_policy_suppressed(node.file_id, line, rule.pack, &rule.rule.id) {
+    let (line, col) =
+        byte_offset_to_line_col(ctx.line_offsets_by_file, ctx.node.file_id, site.span_start);
+    if ctx
+        .suppressions
+        .is_policy_suppressed(ctx.node.file_id, line, rule.pack, &rule.rule.id)
+    {
         return;
     }
     violations.push(PolicyViolation {
-        path: node.path.clone(),
+        path: ctx.node.path.clone(),
         line,
         col,
         pack: rule.pack.to_owned(),

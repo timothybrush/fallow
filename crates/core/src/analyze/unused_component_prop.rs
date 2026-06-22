@@ -1,6 +1,9 @@
-//! Detection of unused Vue `<script setup>` `defineProps` props and Svelte 5
-//! `$props()` props: a declared prop referenced NOWHERE inside its own
-//! single-file component (neither `<script>` nor `<template>`).
+//! Detection of unused Vue `<script setup>` `defineProps` props, Svelte 5
+//! `$props()` props, and Astro `interface Props` fields: a declared prop
+//! referenced NOWHERE inside its own single-file component (neither `<script>` /
+//! frontmatter nor `<template>` / markup). Astro props are harvested from the
+//! frontmatter `interface Props { ... }` and credited via `Astro.props`
+//! destructure / member access / template `{prop}` usage.
 //!
 //! Single-file finding, zero-FP doctrine. The harvest + usage flags live on
 //! `ModuleInfo.component_props` (set during extraction); this detector only reads
@@ -21,7 +24,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use fallow_types::extract::ModuleInfo;
 
 use crate::discover::FileId;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleNode};
 use crate::results::UnusedComponentProp;
 
 use super::{LineOffsetsMap, byte_offset_to_line_col};
@@ -40,7 +43,8 @@ pub fn find_unused_component_props(
         || declared_deps.contains("@vue/runtime-core")
         || declared_deps.contains("nuxt");
     let svelte_gated = declared_deps.contains("svelte") || declared_deps.contains("@sveltejs/kit");
-    if !vue_gated && !svelte_gated {
+    let astro_gated = declared_deps.contains("astro");
+    if !vue_gated && !svelte_gated && !astro_gated {
         return Vec::new();
     }
 
@@ -58,39 +62,13 @@ pub fn find_unused_component_props(
         match framework {
             ComponentPropFramework::Vue if !vue_gated => continue,
             ComponentPropFramework::Svelte if !svelte_gated => continue,
+            ComponentPropFramework::Astro if !astro_gated => continue,
             _ => {}
         }
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.component_props.is_empty() {
-            continue;
-        }
-        // Whole-file abstain ladder: any signal that a prop could be consumed
-        // indirectly skips the file (zero-FP doctrine).
-        if module.has_unharvestable_props
-            || module.has_props_attrs_fallthrough
-            || module.has_define_expose
-            || module.has_define_model
-        {
-            continue;
-        }
-
-        let component_name = component_name_for(&node.path);
-        for prop in &module.component_props {
-            if prop.used_in_script || prop.used_in_template {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
-            findings.push(UnusedComponentProp {
-                path: node.path.clone(),
-                component_name: component_name.clone(),
-                prop_name: prop.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_sfc_props(node, module, line_offsets_by_file, &mut findings);
     }
 
     findings.sort_by(|a, b| {
@@ -102,17 +80,58 @@ pub fn find_unused_component_props(
     findings
 }
 
+fn collect_module_unused_sfc_props(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    findings: &mut Vec<UnusedComponentProp>,
+) {
+    if module.component_props.is_empty() {
+        return;
+    }
+    // Whole-file abstain ladder: any signal that a prop could be consumed
+    // indirectly skips the file (zero-FP doctrine).
+    if module.has_unharvestable_props
+        || module.has_props_attrs_fallthrough
+        || module.has_define_expose
+        || module.has_define_model
+    {
+        return;
+    }
+
+    let component_name = component_name_for(&node.path);
+    for prop in &module.component_props {
+        if prop.used_in_script || prop.used_in_template {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
+        findings.push(UnusedComponentProp {
+            path: node.path.clone(),
+            component_name: component_name.clone(),
+            prop_name: prop.name.clone(),
+            line,
+            col,
+        });
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ComponentPropFramework {
     Vue,
     Svelte,
+    Astro,
 }
 
-/// Whether the path is an SFC whose props feed `unused-component-prop`.
+/// Whether the path is an SFC whose props feed `unused-component-prop`. `.astro`
+/// joins `.vue` / `.svelte`: its `interface Props` declaration + `Astro.props`
+/// usage are harvested into the same `ComponentProp` IR + abstain flags during
+/// extraction.
 fn component_prop_framework(path: &Path) -> Option<ComponentPropFramework> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("vue") => Some(ComponentPropFramework::Vue),
         Some("svelte") => Some(ComponentPropFramework::Svelte),
+        Some("astro") => Some(ComponentPropFramework::Astro),
         _ => None,
     }
 }
@@ -172,11 +191,7 @@ pub fn find_unused_react_props(
     declared_deps: &FxHashSet<String>,
     line_offsets_by_file: &LineOffsetsMap<'_>,
 ) -> ReactPropScan {
-    let gated = declared_deps.contains("react")
-        || declared_deps.contains("react-dom")
-        || declared_deps.contains("next")
-        || declared_deps.contains("preact");
-    if !gated {
+    if !has_react_runtime_dep(declared_deps) {
         return ReactPropScan::default();
     }
 
@@ -194,41 +209,7 @@ pub fn find_unused_react_props(
         let Some(module) = modules_by_id.get(&node.file_id) else {
             continue;
         };
-        if module.component_functions.is_empty() {
-            continue;
-        }
-        scan.components_scanned += module.component_functions.len();
-        if module.react_props.is_empty() {
-            continue;
-        }
-
-        // Per-component abstain set: a component whose props are unharvestable
-        // (rest/spread, bare props param, computed/nested key) or that is
-        // exported (public contract) flags NO props. Built once per file.
-        let abstained: FxHashSet<&str> = module
-            .component_functions
-            .iter()
-            .filter(|c| c.has_unharvestable_props || c.is_exported)
-            .map(|c| c.name.as_str())
-            .collect();
-
-        for prop in &module.react_props {
-            if prop.used_in_script {
-                continue;
-            }
-            if abstained.contains(prop.component.as_str()) {
-                continue;
-            }
-            let (line, col) =
-                byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
-            scan.findings.push(UnusedComponentProp {
-                path: node.path.clone(),
-                component_name: prop.component.clone(),
-                prop_name: prop.name.clone(),
-                line,
-                col,
-            });
-        }
+        collect_module_unused_react_props(node, module, line_offsets_by_file, &mut scan);
     }
 
     scan.findings.sort_by(|a, b| {
@@ -239,4 +220,57 @@ pub fn find_unused_react_props(
             .then(a.prop_name.cmp(&b.prop_name))
     });
     scan
+}
+
+fn has_react_runtime_dep(declared_deps: &FxHashSet<String>) -> bool {
+    declared_deps.contains("react")
+        || declared_deps.contains("react-dom")
+        || declared_deps.contains("next")
+        || declared_deps.contains("preact")
+}
+
+fn collect_module_unused_react_props(
+    node: &ModuleNode,
+    module: &ModuleInfo,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    scan: &mut ReactPropScan,
+) {
+    if module.component_functions.is_empty() {
+        return;
+    }
+    scan.components_scanned += module.component_functions.len();
+    if module.react_props.is_empty() {
+        return;
+    }
+
+    let abstained = react_prop_abstained_components(module);
+    for prop in &module.react_props {
+        if prop.used_in_script {
+            continue;
+        }
+        if abstained.contains(prop.component.as_str()) {
+            continue;
+        }
+        let (line, col) =
+            byte_offset_to_line_col(line_offsets_by_file, node.file_id, prop.span_start);
+        scan.findings.push(UnusedComponentProp {
+            path: node.path.clone(),
+            component_name: prop.component.clone(),
+            prop_name: prop.name.clone(),
+            line,
+            col,
+        });
+    }
+}
+
+fn react_prop_abstained_components(module: &ModuleInfo) -> FxHashSet<&str> {
+    // Per-component abstain set: a component whose props are unharvestable
+    // (rest/spread, bare props param, computed/nested key) or that is exported
+    // (public contract) flags no props. Built once per file.
+    module
+        .component_functions
+        .iter()
+        .filter(|c| c.has_unharvestable_props || c.is_exported)
+        .map(|c| c.name.as_str())
+        .collect()
 }

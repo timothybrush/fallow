@@ -78,49 +78,80 @@ pub(super) fn collect_template_usage_with_bound_targets(
         return TemplateUsage::default();
     }
 
-    let mut usage = TemplateUsage::default();
-    let mut scopes = vec![SvelteScopeFrame {
-        kind: SvelteBlockKind::Root,
-        locals: Vec::new(),
-    }];
+    SvelteTemplateUsageScanner::new(&markup, imported_bindings, bound_targets).scan()
+}
 
-    let bytes = markup.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'{' => {
-                let Some((tag, next_index)) = scan_curly_section(&markup, index, 1, 1) else {
-                    break;
-                };
-                apply_tag(&mut SvelteTagInput {
-                    tag: tag.trim(),
-                    tag_start: index,
-                    tag_end: next_index,
-                    imported_bindings,
-                    bound_targets,
-                    scopes: &mut scopes,
-                    usage: &mut usage,
-                });
-                index = next_index;
-            }
-            b'<' => {
-                let Some((tag, next_index)) = scan_html_tag(&markup, index) else {
-                    break;
-                };
-                apply_markup_tag(
-                    tag,
-                    imported_bindings,
-                    bound_targets,
-                    &mut scopes,
-                    &mut usage,
-                );
-                index = next_index;
-            }
-            _ => index += 1,
+struct SvelteTemplateUsageScanner<'a> {
+    markup: &'a str,
+    imported_bindings: &'a FxHashSet<String>,
+    bound_targets: &'a FxHashMap<String, String>,
+    usage: TemplateUsage,
+    scopes: Vec<SvelteScopeFrame>,
+}
+
+impl<'a> SvelteTemplateUsageScanner<'a> {
+    fn new(
+        markup: &'a str,
+        imported_bindings: &'a FxHashSet<String>,
+        bound_targets: &'a FxHashMap<String, String>,
+    ) -> Self {
+        Self {
+            markup,
+            imported_bindings,
+            bound_targets,
+            usage: TemplateUsage::default(),
+            scopes: vec![SvelteScopeFrame {
+                kind: SvelteBlockKind::Root,
+                locals: Vec::new(),
+            }],
         }
     }
 
-    usage
+    fn scan(mut self) -> TemplateUsage {
+        let mut index = 0;
+        while index < self.markup.len() {
+            index = self.scan_next(index);
+        }
+        self.usage
+    }
+
+    fn scan_next(&mut self, index: usize) -> usize {
+        match self.markup.as_bytes()[index] {
+            b'{' => self.scan_svelte_tag(index),
+            b'<' => self.scan_markup_tag(index),
+            _ => index + 1,
+        }
+    }
+
+    fn scan_svelte_tag(&mut self, index: usize) -> usize {
+        let Some((tag, next_index)) = scan_curly_section(self.markup, index, 1, 1) else {
+            return self.markup.len();
+        };
+        apply_tag(&mut SvelteTagInput {
+            tag: tag.trim(),
+            tag_start: index,
+            tag_end: next_index,
+            imported_bindings: self.imported_bindings,
+            bound_targets: self.bound_targets,
+            scopes: &mut self.scopes,
+            usage: &mut self.usage,
+        });
+        next_index
+    }
+
+    fn scan_markup_tag(&mut self, index: usize) -> usize {
+        let Some((tag, next_index)) = scan_html_tag(self.markup, index) else {
+            return self.markup.len();
+        };
+        apply_markup_tag(
+            tag,
+            self.imported_bindings,
+            self.bound_targets,
+            &mut self.scopes,
+            &mut self.usage,
+        );
+        next_index
+    }
 }
 
 /// Collect Svelte custom-event listener names from template `on:<name>`

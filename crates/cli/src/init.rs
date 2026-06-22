@@ -313,35 +313,7 @@ fn insert_json_duplicates_template(output: &mut String) {
 /// - `Test:` only when `test_framework` is Some AND not ambiguous; capitalized.
 /// - `Typecheck or lint:` filled with `tsc --noEmit` only when `has_typescript`.
 pub fn build_agents_guide(info: &ProjectInfo) -> String {
-    // Determine prefilled Commands lines.
-    let install_line = agents_install_line(info);
-    let test_line = agents_test_line(info);
-    let typecheck_line = if info.has_typescript {
-        "tsc --noEmit".to_string()
-    } else {
-        String::new()
-    };
-
-    let any_commands_prefilled =
-        !install_line.is_empty() || !test_line.is_empty() || !typecheck_line.is_empty();
-
-    let provenance_comment = if any_commands_prefilled {
-        "<!-- fallow init prefilled these from package.json; confirm before relying on them -->\n"
-    } else {
-        ""
-    };
-
-    let module_boundaries = agents_module_boundaries_line(info);
-
-    // The task-to-command matrix is static (not project-derived), rendered
-    // from the single `crate::task_matrix::TASK_MATRIX` slice so it stays in
-    // sync with the agent-hook managed block, the schema manifest, and the
-    // generated SKILL.md section. Wrapped in the same `generated:task-matrix`
-    // markers so `scripts/generate-agent-docs.mjs` can regenerate it in place.
-    let task_matrix_block = format!(
-        "<!-- generated:task-matrix:start -->\n{}<!-- generated:task-matrix:end -->",
-        crate::task_matrix::render_task_matrix_markdown()
-    );
+    let prefill = build_agents_guide_prefill(info);
 
     format!(
         r"# AGENTS.md
@@ -381,12 +353,62 @@ This file gives coding agents project-specific context. Keep it short and update
 - Always ask before:
 - Preferred style:
 ",
-        module_boundaries_suffix = space_prefixed(&module_boundaries),
-        provenance_comment = provenance_comment,
-        install_suffix = space_prefixed(&install_line),
-        test_suffix = space_prefixed(&test_line),
-        typecheck_suffix = space_prefixed(&typecheck_line),
+        module_boundaries_suffix = space_prefixed(&prefill.module_boundaries),
+        provenance_comment = prefill.provenance_comment,
+        install_suffix = space_prefixed(&prefill.install_line),
+        test_suffix = space_prefixed(&prefill.test_line),
+        typecheck_suffix = space_prefixed(&prefill.typecheck_line),
+        task_matrix_block = prefill.task_matrix_block,
     )
+}
+
+struct AgentsGuidePrefill {
+    install_line: String,
+    test_line: String,
+    typecheck_line: String,
+    provenance_comment: &'static str,
+    module_boundaries: String,
+    task_matrix_block: String,
+}
+
+fn build_agents_guide_prefill(info: &ProjectInfo) -> AgentsGuidePrefill {
+    let install_line = agents_install_line(info);
+    let test_line = agents_test_line(info);
+    let typecheck_line = if info.has_typescript {
+        "tsc --noEmit".to_string()
+    } else {
+        String::new()
+    };
+
+    let any_commands_prefilled =
+        !install_line.is_empty() || !test_line.is_empty() || !typecheck_line.is_empty();
+
+    let provenance_comment = if any_commands_prefilled {
+        "<!-- fallow init prefilled these from package.json; confirm before relying on them -->\n"
+    } else {
+        ""
+    };
+
+    let module_boundaries = agents_module_boundaries_line(info);
+
+    // The task-to-command matrix is static (not project-derived), rendered
+    // from the single `crate::task_matrix::TASK_MATRIX` slice so it stays in
+    // sync with the agent-hook managed block, the schema manifest, and the
+    // generated SKILL.md section. Wrapped in the same `generated:task-matrix`
+    // markers so `scripts/generate-agent-docs.mjs` can regenerate it in place.
+    let task_matrix_block = format!(
+        "<!-- generated:task-matrix:start -->\n{}<!-- generated:task-matrix:end -->",
+        crate::task_matrix::render_task_matrix_markdown()
+    );
+
+    AgentsGuidePrefill {
+        install_line,
+        test_line,
+        typecheck_line,
+        provenance_comment,
+        module_boundaries,
+        task_matrix_block,
+    }
 }
 
 /// Return `""` for an empty value, otherwise `" {value}"`. Used to splice an

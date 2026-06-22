@@ -456,12 +456,7 @@ fn print_status(status: &LicenseStatus) {
                 "license: EXPIRED ({days_since_expiry} days ago), analysis still runs in the warning window. \
                  Refresh: fallow license refresh"
             );
-            println!(
-                "  tier={} seats={} features={}",
-                claims.tier,
-                claims.seats,
-                claims.features.join(",")
-            );
+            print_license_claims(claims);
         }
         LicenseStatus::ExpiredWatermark {
             claims,
@@ -471,12 +466,7 @@ fn print_status(status: &LicenseStatus) {
                 "license: EXPIRED ({days_since_expiry} days ago), output will show a watermark until refreshed. \
                  Refresh: fallow license refresh"
             );
-            println!(
-                "  tier={} seats={} features={}",
-                claims.tier,
-                claims.seats,
-                claims.features.join(",")
-            );
+            print_license_claims(claims);
         }
         LicenseStatus::HardFail {
             days_since_expiry, ..
@@ -492,6 +482,19 @@ fn print_status(status: &LicenseStatus) {
             );
         }
     }
+    print_runtime_coverage_status(status);
+}
+
+fn print_license_claims(claims: &LicenseClaims) {
+    println!(
+        "  tier={} seats={} features={}",
+        claims.tier,
+        claims.seats,
+        claims.features.join(",")
+    );
+}
+
+fn print_runtime_coverage_status(status: &LicenseStatus) {
     if status.permits(&Feature::RuntimeCoverage) {
         println!("  → runtime_coverage: ENABLED");
     } else {

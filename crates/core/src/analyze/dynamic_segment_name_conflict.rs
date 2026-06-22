@@ -70,10 +70,23 @@ pub fn find_dynamic_segment_name_conflicts(
 
     let pkg_roots = collect_pkg_roots(config, workspaces);
     let pkg_root_refs: Vec<&Path> = pkg_roots.iter().map(PathBuf::as_path).collect();
+    let by_position = collect_occurrences_by_position(graph, &pkg_root_refs);
 
+    let mut findings = Vec::new();
+    for ((_, _, position), occs) in by_position {
+        append_conflicts_for_position(&mut findings, &position, &occs, suppressions);
+    }
+
+    findings
+}
+
+fn collect_occurrences_by_position<'a>(
+    graph: &'a ModuleGraph,
+    pkg_root_refs: &[&Path],
+) -> FxHashMap<PositionKey, Vec<Occurrence<'a>>> {
     let mut by_position: FxHashMap<PositionKey, Vec<Occurrence<'_>>> = FxHashMap::default();
     for module in &graph.modules {
-        let Some(classified) = classify_route_file(module.path.as_path(), &pkg_root_refs) else {
+        let Some(classified) = classify_route_file(module.path.as_path(), pkg_root_refs) else {
             continue;
         };
         for occ in classified.dynamic_occurrences() {
@@ -85,45 +98,48 @@ pub fn find_dynamic_segment_name_conflicts(
             });
         }
     }
+    by_position
+}
 
-    let mut findings = Vec::new();
-    for ((_, _, position), occs) in by_position {
-        // A position conflicts only when more than one distinct spelling appears.
-        let mut distinct: Vec<&str> = occs.iter().map(|o| o.spelling.as_str()).collect();
-        distinct.sort_unstable();
-        distinct.dedup();
-        if distinct.len() < 2 {
+fn append_conflicts_for_position(
+    findings: &mut Vec<DynamicSegmentNameConflict>,
+    position: &str,
+    occs: &[Occurrence<'_>],
+    suppressions: &SuppressionContext<'_>,
+) {
+    // A position conflicts only when more than one distinct spelling appears.
+    let mut distinct: Vec<&str> = occs.iter().map(|o| o.spelling.as_str()).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    if distinct.len() < 2 {
+        return;
+    }
+    let conflicting_segments: Vec<String> = distinct.iter().map(|s| (*s).to_string()).collect();
+
+    // Dedupe involved files by path (a file has one occurrence per position),
+    // path-sorted for stable output.
+    let mut involved: Vec<(FileId, &Path)> = occs.iter().map(|o| (o.file_id, o.path)).collect();
+    involved.sort_by(|a, b| a.1.cmp(b.1));
+    involved.dedup_by(|a, b| a.1 == b.1);
+
+    for &(file_id, path) in &involved {
+        if suppressions.is_file_suppressed(file_id, IssueKind::DynamicSegmentNameConflict) {
             continue;
         }
-        let conflicting_segments: Vec<String> = distinct.iter().map(|s| (*s).to_string()).collect();
-
-        // Dedupe involved files by path (a file has one occurrence per
-        // position), path-sorted for stable output.
-        let mut involved: Vec<(FileId, &Path)> = occs.iter().map(|o| (o.file_id, o.path)).collect();
-        involved.sort_by(|a, b| a.1.cmp(b.1));
-        involved.dedup_by(|a, b| a.1 == b.1);
-
-        for &(file_id, path) in &involved {
-            if suppressions.is_file_suppressed(file_id, IssueKind::DynamicSegmentNameConflict) {
-                continue;
-            }
-            let conflicting_paths: Vec<PathBuf> = involved
-                .iter()
-                .filter(|(_, p)| *p != path)
-                .map(|(_, p)| p.to_path_buf())
-                .collect();
-            findings.push(DynamicSegmentNameConflict {
-                path: path.to_path_buf(),
-                position: position.clone(),
-                conflicting_segments: conflicting_segments.clone(),
-                conflicting_paths,
-                line: 1,
-                col: 0,
-            });
-        }
+        let conflicting_paths: Vec<PathBuf> = involved
+            .iter()
+            .filter(|(_, p)| *p != path)
+            .map(|(_, p)| p.to_path_buf())
+            .collect();
+        findings.push(DynamicSegmentNameConflict {
+            path: path.to_path_buf(),
+            position: position.to_string(),
+            conflicting_segments: conflicting_segments.clone(),
+            conflicting_paths,
+            line: 1,
+            col: 0,
+        });
     }
-
-    findings
 }
 
 /// Package roots to anchor app-roots on: the project root plus every discovered

@@ -7,7 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Astro framework-health detection.** `.astro` components now participate in the same
+  health suite as Vue/Svelte/Angular/React. The frontmatter is semantic-analyzed (imports
+  used only as `<Header/>` tags or `{expr}` markup are credited; a genuinely-dead
+  frontmatter import now refines `unused-export`). A reachable `.astro` component kept alive
+  only by a barrel re-export but rendered in no template surfaces as `unrendered-component`
+  (framework `astro`). An `interface Props` field read nowhere via `Astro.props`
+  (destructure / member access) or the template surfaces as `unused-component-prop`, with a
+  zero-false-positive abstain ladder (`interface Props extends X` / `type Props = Imported`,
+  rest destructure, whole-object `Astro.props` use, and `{...Astro.props}` template spread
+  all abstain the component). No new rules or severities: `.astro` reuses the existing
+  `unrendered-component` and `unused-component-prop` rules.
+
+- **Lit / web-component framework-health detection.** A custom element registered via
+  `@customElement('x-foo')` or `customElements.define('x-foo', C)` but rendered as a tag in no
+  `html` template anywhere in the project surfaces as `unrendered-component` (framework `lit`,
+  the finding names the tag). The zero-false-positive ladder wholesale-abstains published
+  elements (re-exported from a package entry, the dominant design-system shape), credits
+  imperative renders (`document.createElement` / `customElements.get` / `whenDefined`), and
+  abstains the whole project when any `html` template renders a dynamic tag. A Lit `@state()`
+  reactive property read nowhere in its element (neither a method nor the `html` template) now
+  surfaces as `unused-class-member`; `@property` (the public attribute API, settable via HTML
+  attribute / parent binding / `setAttribute` / CSS) is never flagged. Gated on a `lit` /
+  `lit-element` / `@lit/reactive-element` dependency; reuses the existing `unrendered-component`
+  and `unused-class-member` rules (no new rules).
+
+### Changed
+
+- **`fallow health` now scores `.astro` complexity.** Astro frontmatter functions are scored
+  like a Vue/Svelte `<script>`, and a synthetic `<template>` entry scores the markup
+  `{ ... }` expression and iteration (`.map` / `.flatMap` / `.forEach`) complexity, mirroring
+  the existing Vue/Svelte synthetic `<template>` entries. This is a health SIGNAL only (it
+  never appears under bare `fallow`, `audit`, or `dead-code`), but it is a one-time
+  discontinuity in baselined health trends for projects with `.astro` files: a previously
+  unscored `.astro` frontmatter/template now contributes to the complexity aggregate.
+
+## [2.101.0] - 2026-06-21
+
+### Changed
+
+- **Faster duplicate detection on large repositories.** Clone detection now builds its
+  suffix array with a linear-time SA-IS construction instead of the previous
+  prefix-doubling approach, cutting the duplication stage of `fallow dupes` (and of
+  bare `fallow` and `fallow audit`) on large codebases. Reported clones are unchanged.
+
+- **Faster repeated stylesheet resolution.** Resolving external (`node_modules`)
+  stylesheet `@import` / `@use` chains now reuses a single resolver session across
+  lookups instead of rebuilding the resolver and re-reading every workspace
+  `package.json` for each stylesheet. On a 41-workspace monorepo this removes roughly
+  80 manifest reads and 80 path-canonicalization calls per external stylesheet.
+  Resolution results are unchanged.
+
+- **Faster plugin and config detection on large repositories.** Plugin config files
+  (`tsconfig.json`, `.eslintrc.json`, `bunfig.toml`, and the like) are now collected
+  during the existing project file scan instead of a second filesystem walk of every
+  directory, and workspace file bucketing runs in parallel. The same in-memory listing
+  also drives filesystem-based plugin activation, so the browser-extension and Obsidian
+  plugins no longer read every candidate directory's `manifest.json` to decide whether
+  to activate. On a 21k-file, 41-workspace project this roughly halves the plugin
+  detection stage (about 340ms). Analysis output is unchanged: byte-identical results
+  across the benchmark suite.
+
+  One deliberate behavior refinement comes with it: outside production mode, config
+  files and activation manifests are now discovered with the same traversal rules as
+  source files, so one that is gitignored, excluded by an `ignorePatterns` entry, or
+  inside a hidden directory fallow does not traverse is no longer parsed or used to
+  activate a plugin. Committed files in normal locations are unaffected. Production
+  mode keeps the previous filesystem discovery.
+
 ### Fixed
+
+- **Vue components exposed as namespaces are no longer falsely reported as unused.**
+  A design system that re-exports compound components through namespace barrels
+  (`export * as List from "./components/List"`) and renders their members via dotted
+  tags had every such member reported by the `unrendered-component` check as
+  "reachable but rendered nowhere". The render-usage walk now follows namespace
+  re-export edges back to the underlying `.vue` files and credits them, for both the
+  named-import form (`import { List } from "@/design-system"`; `<List.Root>`) and the
+  whole-namespace-import form (`import * as DS from "@/design-system"`;
+  `<DS.List.Root>`), including barrels nested through further `export *` /
+  `export * as` re-exports. This removes those false positives; a component
+  re-exported through a namespace that nothing renders is still reported.
+  Thanks [@Smrtnyk](https://github.com/Smrtnyk) for the report.
+  (Closes [#1351](https://github.com/fallow-rs/fallow/issues/1351))
 
 - **Varlock now activates from a nested `.env.schema`, not just a root-level one.**
   A project with a `.env.schema` in a subdirectory (for example `apps/web/.env.schema`)
@@ -18,23 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (activation there still requires the `varlock` dependency or a root-level
   `.env.schema`).
 
-### Changed
-
-- **Faster plugin and config detection on large repositories.** Plugin config files
-  (`tsconfig.json`, `.eslintrc.json`, `bunfig.toml`, and the like) are now collected
-  during the existing project file scan instead of a second filesystem walk of every
-  directory. The same in-memory listing also drives filesystem-based plugin
-  activation, so the browser-extension and Obsidian plugins no longer read every
-  candidate directory's `manifest.json` to decide whether to activate. On a 21k-file,
-  41-workspace project this roughly halves the plugin detection stage (about 340ms).
-  Analysis output is unchanged: byte-identical results across the benchmark suite.
-
-  One deliberate behavior refinement comes with it: outside production mode, config
-  files and activation manifests are now discovered with the same traversal rules as
-  source files, so one that is gitignored, excluded by an `ignorePatterns` entry, or
-  inside a hidden directory fallow does not traverse is no longer parsed or used to
-  activate a plugin. Committed files in normal locations are unaffected. Production
-  mode keeps the previous filesystem discovery.
+- **`fallow ci-template gitlab` now bundles the shared `gitlab_common.sh` helper.**
+  The vendored GitLab CI template sources a shared `gitlab_common.sh` script from its
+  comment and review steps, but the file was missing from the vendored output, so a
+  generated pipeline failed at runtime trying to source a file that was not there. The
+  template now includes it.
 
 ## [2.100.0] - 2026-06-19
 
@@ -3211,7 +3283,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.100.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.101.0...HEAD
+[2.101.0]: https://github.com/fallow-rs/fallow/compare/v2.100.0...v2.101.0
 [2.100.0]: https://github.com/fallow-rs/fallow/compare/v2.99.0...v2.100.0
 [2.99.0]: https://github.com/fallow-rs/fallow/compare/v2.98.0...v2.99.0
 [2.98.0]: https://github.com/fallow-rs/fallow/compare/v2.97.0...v2.98.0
