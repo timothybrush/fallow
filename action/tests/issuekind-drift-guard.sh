@@ -19,11 +19,10 @@
 # `pass` / `fail` helpers defined by the sourcing runner, plus `$GUARD_DIR`
 # (the directory containing this script) being set by the caller.
 #
-# Canonical set: the dead-code issue-type ids from `fallow schema`
-# (issue_types[].command == "dead-code"). When the binary is unavailable the
-# fallback derives the kebab ids from crates/types/src/suppress.rs
-# `issue_kind_to_kebab` instead. Either source is mapped to the snake_case
-# plural JSON result key the surfaces reference.
+# Canonical set: the dead-code issue-type ids, result keys, and count policy
+# from `fallow schema` (issue_types[].command == "dead-code"). When the binary
+# is unavailable or too old to expose result metadata, the fallback derives the
+# same row contract from crates/types/src/issue_meta.rs `ISSUE_RESULT_META`.
 #
 # Non-dead-code kinds (security-*, code-duplication, complexity, coverage-gaps,
 # feature-flag) are NOT summarised by these dead-code surfaces: they belong to
@@ -38,12 +37,115 @@
 # fails to reach a subset surface STILL fails the guard; only the explicitly
 # enumerated, documented omissions are tolerated.
 
-# Deterministic kebab-id -> summary-check.jq JSON key. Irregular pluralisation
-# (catalog-entry -> catalog_entries, boundary-coverage -> *_violations) makes a
-# mechanical s/-/_/+pluralise unsafe, so the mapping is explicit. A dead-code id
-# with no entry here FAILS the guard, forcing this table to grow in lockstep
-# with the IssueKind enum.
-issuekind_json_key() {
+FALLOW_DEAD_CODE_SCHEMA_ROWS_CACHE="__unset__"
+
+fallow_dead_code_source_rows() {
+  local repo_root source_file
+  repo_root="$(cd "$GUARD_DIR/../.." && pwd)"
+  source_file="$repo_root/crates/types/src/issue_meta.rs"
+  if [ ! -f "$source_file" ]; then
+    return 1
+  fi
+
+  awk '
+    /IssueResultMeta[[:space:]]*\{/ {
+      in_meta = 1
+      code = ""
+      result_key = ""
+      counts = ""
+      next
+    }
+    in_meta && /code: "/ {
+      line = $0
+      sub(/^.*code: "/, "", line)
+      sub(/".*$/, "", line)
+      code = line
+      next
+    }
+    in_meta && /result_key: "/ {
+      line = $0
+      sub(/^.*result_key: "/, "", line)
+      sub(/".*$/, "", line)
+      result_key = line
+      next
+    }
+    in_meta && /counts_in_total: / {
+      line = $0
+      sub(/^.*counts_in_total: /, "", line)
+      sub(/,.*/, "", line)
+      counts = line
+      next
+    }
+    in_meta && /^[[:space:]]*\},/ {
+      if (code != "" && result_key != "" && counts != "") {
+        print code "\t" result_key "\t" counts
+      }
+      in_meta = 0
+      next
+    }
+  ' "$source_file"
+}
+
+fallow_dead_code_schema_rows() {
+  if [ "$FALLOW_DEAD_CODE_SCHEMA_ROWS_CACHE" != "__unset__" ]; then
+    printf '%s\n' "$FALLOW_DEAD_CODE_SCHEMA_ROWS_CACHE"
+    [ -n "$FALLOW_DEAD_CODE_SCHEMA_ROWS_CACHE" ]
+    return
+  fi
+
+  local repo_root bin rows
+  repo_root="$(cd "$GUARD_DIR/../.." && pwd)"
+  bin="${FALLOW_BIN:-}"
+  if [ -z "$bin" ]; then
+    for cand in "$repo_root/target/debug/fallow" "$repo_root/target/release/fallow"; do
+      if [ -x "$cand" ]; then bin="$cand"; break; fi
+    done
+  fi
+
+  rows=""
+  if [ -n "$bin" ] && [ -x "$bin" ] && command -v jq > /dev/null 2>&1; then
+    rows="$("$bin" schema 2>/dev/null \
+      | jq -r '
+        [.issue_types[] | select(.command == "dead-code")] as $rows
+        | if (($rows | length) > 0 and all($rows[]; has("result_key") and has("counts_in_total"))) then
+            $rows[] | [.id, (.result_key // ""), (.counts_in_total | tostring)] | @tsv
+          else
+            empty
+          end
+      ' 2>/dev/null)"
+  fi
+
+  if [ -z "$rows" ]; then
+    rows="$(fallow_dead_code_source_rows 2>/dev/null)"
+  fi
+
+  FALLOW_DEAD_CODE_SCHEMA_ROWS_CACHE="$rows"
+  printf '%s\n' "$rows"
+  [ -n "$rows" ]
+}
+
+issuekind_schema_field() {
+  local id="$1" field="$2" rows row_id row_key row_counts
+  rows="$(fallow_dead_code_schema_rows)" || return 1
+  while IFS=$'\t' read -r row_id row_key row_counts; do
+    [ -z "$row_id" ] && continue
+    if [ "$row_id" != "$id" ]; then
+      continue
+    fi
+    case "$field" in
+      result_key) printf '%s\n' "$row_key" ;;
+      counts_in_total) printf '%s\n' "$row_counts" ;;
+      *) return 1 ;;
+    esac
+    return 0
+  done <<< "$rows"
+  return 1
+}
+
+# Legacy kebab-id -> summary-check.jq JSON key fallback used only when
+# `fallow schema` is unavailable. Irregular pluralisation makes mechanical
+# conversion unsafe, so this remains explicit for the fallback path.
+issuekind_json_key_fallback() {
   case "$1" in
     unused-file) echo "unused_files" ;;
     unused-export) echo "unused_exports" ;;
@@ -90,6 +192,19 @@ issuekind_json_key() {
   esac
 }
 
+issuekind_json_key() {
+  local key counts
+  if key="$(issuekind_schema_field "$1" result_key)"; then
+    counts="$(issuekind_schema_field "$1" counts_in_total || true)"
+    if [ "$counts" = "true" ] && [ -n "$key" ]; then
+      printf '%s\n' "$key"
+      return 0
+    fi
+    return 1
+  fi
+  issuekind_json_key_fallback "$1"
+}
+
 # Map a canonical kebab id to the VS Code diagnostic CODE that filters it in
 # DIAGNOSTIC_CATEGORIES. Mostly identity (the diagnostic code equals the rule
 # id), except the boundary family: the LSP deliberately emits boundary-coverage
@@ -104,31 +219,18 @@ issuekind_diagnostic_code() {
 }
 
 # Resolve the canonical dead-code id list. Prefer `fallow schema` so the set is
-# command-tagged; fall back to suppress.rs kebab ids (non-dead-code kinds drop
-# out at the mapping step, which is the desired conservative behaviour).
+# command-tagged; fall back to the checked-in result metadata table so shell-only
+# guard runs still gate every counted serialized result key.
 fallow_dead_code_ids() {
-  local repo_root bin
-  repo_root="$(cd "$GUARD_DIR/../.." && pwd)"
-  bin="${FALLOW_BIN:-}"
-  if [ -z "$bin" ]; then
-    for cand in "$repo_root/target/debug/fallow" "$repo_root/target/release/fallow"; do
-      if [ -x "$cand" ]; then bin="$cand"; break; fi
-    done
+  local rows row_id _row_key _row_counts
+  if rows="$(fallow_dead_code_schema_rows)" && [ -n "$rows" ]; then
+    echo "__SOURCE__ fallow schema or issue_meta.rs result metadata" >&2
+    while IFS=$'\t' read -r row_id _row_key _row_counts; do
+      [ -n "$row_id" ] && printf '%s\n' "$row_id"
+    done <<< "$rows"
+    return 0
   fi
-  if [ -n "$bin" ] && [ -x "$bin" ] && command -v jq > /dev/null 2>&1; then
-    local ids
-    ids="$("$bin" schema 2>/dev/null \
-      | jq -r '.issue_types[] | select(.command == "dead-code") | .id' 2>/dev/null)"
-    if [ -n "$ids" ]; then
-      echo "__SOURCE__ fallow schema ($bin)" >&2
-      printf '%s\n' "$ids"
-      return 0
-    fi
-  fi
-  # Fallback: kebab ids from issue_kind_to_kebab in suppress.rs.
-  echo "__SOURCE__ suppress.rs issue_kind_to_kebab (binary unavailable)" >&2
-  grep -oE '=> "[a-z-]+",' "$repo_root/crates/types/src/suppress.rs" \
-    | sed -E 's/=> "//; s/",//' | sort -u
+  return 1
 }
 
 # Does the JSON result key appear in this jq source? Surfaces reference keys in
@@ -141,9 +243,44 @@ fallow_dead_code_ids() {
 # The member-access form is matched as a literal `.` immediately followed by the
 # key, bounded so `.unused_file` never matches `.unused_files`. The trailing
 # bound also accepts end-of-line.
+issuekind_strip_jq_comments() {
+  awk '
+    {
+      out = ""
+      in_string = 0
+      escaped = 0
+      for (i = 1; i <= length($0); i++) {
+        char = substr($0, i, 1)
+        if (in_string) {
+          out = out char
+          if (escaped) {
+            escaped = 0
+          } else if (char == "\\") {
+            escaped = 1
+          } else if (char == "\"") {
+            in_string = 0
+          }
+          continue
+        }
+        if (char == "\"") {
+          in_string = 1
+          out = out char
+          continue
+        }
+        if (char == "#") {
+          break
+        }
+        out = out char
+      }
+      print out
+    }
+  '
+}
+
 issuekind_key_present() {
-  local jq_src="$1" key="$2"
-  printf '%s' "$jq_src" | grep -qE "\"${key}\"|\.${key}([^A-Za-z0-9_]|$)"
+  local jq_src="$1" key="$2" stripped
+  stripped="$(printf '%s' "$jq_src" | issuekind_strip_jq_comments)"
+  grep -qE "\"${key}\"|\.${key}([^A-Za-z0-9_]|$)" <<< "$stripped"
 }
 
 # Is <kebab-id> in the space-separated allowed-omission list <allow>? Used to
@@ -257,13 +394,19 @@ assert_issuekind_summary_coverage() {
 # is provider-agnostic, so this runs once (from the GitHub runner).
 assert_issuekind_vscode_category_coverage() {
   local label="$1" ts_file="$2"
-  local ts_src ids id code missing=() skipped=() unmapped=()
+  local ts_src ids id code key wiring_file wiring_src missing=() missing_wiring=() skipped=() unmapped=()
 
   if [ ! -f "$ts_file" ]; then
     fail "$label: surface file present" "missing file: $ts_file"
     return
   fi
   ts_src="$(cat "$ts_file")"
+  wiring_file="$(cd "$GUARD_DIR/../.." && pwd)/editors/vscode/test/deadCodeKindDrift.test.ts"
+  if [ ! -f "$wiring_file" ]; then
+    fail "$label: VS Code wiring test present" "missing file: $wiring_file"
+    return
+  fi
+  wiring_src="$(cat "$wiring_file")"
   ids="$(fallow_dead_code_ids 2>/dev/null)"
 
   if [ -z "$ids" ]; then
@@ -276,7 +419,7 @@ assert_issuekind_vscode_category_coverage() {
     # Reuse the json-key map purely to classify dead-code vs non-dead-code: a
     # successful mapping means a dead-code kind (must be in the catalog); a
     # failed one is a non-dead-code kind carried by other catalogs.
-    if ! issuekind_json_key "$id" > /dev/null; then
+    if ! key="$(issuekind_json_key "$id")"; then
       # prop-drilling / thin-wrapper / duplicate-prop-shape are dead-code-tagged
       # but CLI/JSON-only advisory health signals the LSP does not emit, so they
       # carry no diagnostic CODE in DIAGNOSTIC_CATEGORIES (same treatment as the
@@ -287,6 +430,9 @@ assert_issuekind_vscode_category_coverage() {
         *) unmapped+=("$id") ;;
       esac
       continue
+    fi
+    if ! printf '%s' "$wiring_src" | grep -qE "field: \"${key}\""; then
+      missing_wiring+=("$id -> $key")
     fi
     # The catalog carries each kind under its diagnostic CODE (the boundary
     # family collapses to boundary-violation); the quotes bound the match so
@@ -311,6 +457,12 @@ assert_issuekind_vscode_category_coverage() {
   if [ "${#missing[@]}" -gt 0 ]; then
     fail "$label: every dead-code IssueKind appears in DIAGNOSTIC_CATEGORIES" \
       "absent diagnostic code(s): ${missing[*]} (add to editors/vscode/src/diagnosticFilter.ts)"
+    return
+  fi
+
+  if [ "${#missing_wiring[@]}" -gt 0 ]; then
+    fail "$label: every counted dead-code result key is covered by VS Code wiring tests" \
+      "absent result key(s): ${missing_wiring[*]} (add to editors/vscode/test/deadCodeKindDrift.test.ts)"
     return
   fi
 
