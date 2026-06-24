@@ -73,6 +73,8 @@ const CLI_REFERENCE_SECTION_IDS = [
   "flags:migrate",
   "flags:health",
   "flags:audit",
+  "flags:trace",
+  "flags:decision-surface",
   "flags:flags",
   "flags:security",
   "flags:config",
@@ -176,6 +178,14 @@ const CLI_REFERENCE_FLAG_SECTIONS = {
       "--group-by",
       "--output-file",
     ],
+  },
+  "flags:trace": {
+    command: "trace",
+    globalRefs: ["--format", "--quiet", "--root", "--config"],
+  },
+  "flags:decision-surface": {
+    command: "decision-surface",
+    globalRefs: ["--changed-since", "--format", "--quiet", "--workspace", "--root", "--config"],
   },
   "flags:flags": {
     command: "flags",
@@ -545,6 +555,8 @@ const RENDERERS = {
   "flags:migrate": renderCommandFlagsSection("flags:migrate"),
   "flags:health": renderCommandFlagsSection("flags:health"),
   "flags:audit": renderCommandFlagsSection("flags:audit"),
+  "flags:trace": renderCommandFlagsSection("flags:trace"),
+  "flags:decision-surface": renderCommandFlagsSection("flags:decision-surface"),
   "flags:flags": renderCommandFlagsSection("flags:flags"),
   "flags:security": renderCommandFlagsSection("flags:security"),
   "flags:config": renderCommandFlagsSection("flags:config"),
