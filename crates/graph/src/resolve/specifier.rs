@@ -1209,9 +1209,9 @@ impl ResolvedPathContext<'_, '_> {
             return result;
         }
 
-        match dunce::canonicalize(resolved_path) {
-            Ok(canonical) => self.resolve_canonical_path(canonical),
-            Err(_) => self.resolve_uncanonicalized_path(resolved_path),
+        match self.ctx.canonicalize_cache.get(resolved_path) {
+            Some(canonical) => self.resolve_canonical_path(canonical),
+            None => self.resolve_uncanonicalized_path(resolved_path),
         }
     }
 
@@ -1690,7 +1690,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::resolve::react_native;
-    use crate::resolve::types::{ResolveContext, TsconfigCache};
+    use crate::resolve::types::{CanonicalizeCache, ResolveContext, TsconfigCache};
 
     use super::{
         SpecifierNormalization, extension_alias_matches, glob_values_match, has_glob_meta,
@@ -1878,6 +1878,7 @@ mod tests {
         let condition_names = react_native::build_condition_names(&[], &[]);
         let tsconfig_warned = std::sync::Mutex::new(FxHashSet::default());
         let tsconfig_cache = TsconfigCache::default();
+        let canonicalize_cache = CanonicalizeCache::default();
         let ctx = ResolveContext {
             resolver: &resolver,
             style_resolver: &style_resolver,
@@ -1894,6 +1895,7 @@ mod tests {
             canonical_fallback: None,
             tsconfig_warned: &tsconfig_warned,
             tsconfig_cache: &tsconfig_cache,
+            canonicalize_cache: &canonicalize_cache,
         };
 
         assert!(matches_nearest_tsconfig_path_alias(

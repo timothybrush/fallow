@@ -1113,7 +1113,7 @@ pub(super) fn make_glob_from_pattern(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::types::TsconfigCache;
+    use crate::resolve::types::{CanonicalizeCache, TsconfigCache};
     use rustc_hash::FxHashSet;
 
     fn with_package_map_ctx(
@@ -1140,6 +1140,7 @@ mod tests {
         let resolver = oxc_resolver::Resolver::new(oxc_resolver::ResolveOptions::default());
         let tsconfig_warned = std::sync::Mutex::new(FxHashSet::default());
         let tsconfig_cache = TsconfigCache::default();
+        let canonicalize_cache = CanonicalizeCache::default();
         let ctx = ResolveContext {
             resolver: &resolver,
             style_resolver: &resolver,
@@ -1156,6 +1157,7 @@ mod tests {
             canonical_fallback: None,
             tsconfig_warned: &tsconfig_warned,
             tsconfig_cache: &tsconfig_cache,
+            canonicalize_cache: &canonicalize_cache,
         };
 
         f(&ctx, &manifests[0], &manifests[0].root);
@@ -2642,6 +2644,7 @@ mod tests {
         let resolver = oxc_resolver::Resolver::new(oxc_resolver::ResolveOptions::default());
         let tsconfig_warned = std::sync::Mutex::new(FxHashSet::default());
         let tsconfig_cache = TsconfigCache::default();
+        let canonicalize_cache = CanonicalizeCache::default();
         let root = PathBuf::from("/project");
         let ctx = ResolveContext {
             resolver: &resolver,
@@ -2659,6 +2662,7 @@ mod tests {
             canonical_fallback: None,
             tsconfig_warned: &tsconfig_warned,
             tsconfig_cache: &tsconfig_cache,
+            canonicalize_cache: &canonicalize_cache,
         };
         let result = lookup_internal_file_id(&ctx, &target);
         assert_eq!(

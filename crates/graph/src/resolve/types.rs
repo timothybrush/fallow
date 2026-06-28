@@ -283,6 +283,37 @@ pub(super) struct ResolveContext<'a> {
     /// tsconfig-poisoned specifier, so keeping it session-local avoids
     /// repeated filesystem work without risking stale data across runs.
     pub tsconfig_cache: &'a TsconfigCache,
+    /// Per-analysis cache of `dunce::canonicalize` results keyed by resolved
+    /// path. Every import resolving to a `node_modules` / output-dir / symlinked
+    /// target is realpath'd during classification, and the same package path is
+    /// re-canonicalized for every file that imports the package. The result is a
+    /// pure function of the path's on-disk state (constant within a run), so the
+    /// cache is session-local for watch-mode safety.
+    pub canonicalize_cache: &'a CanonicalizeCache,
+}
+
+/// Session-local cache of `dunce::canonicalize` results keyed by input path.
+#[derive(Default)]
+pub(super) struct CanonicalizeCache {
+    map: Mutex<FxHashMap<PathBuf, Option<PathBuf>>>,
+}
+
+impl CanonicalizeCache {
+    /// Return the cached `dunce::canonicalize(path)` outcome, computing it on
+    /// first miss. `None` (a path that fails to canonicalize) is cached too so a
+    /// repeated probe of the same missing path does not re-issue the syscall.
+    pub fn get(&self, path: &Path) -> Option<PathBuf> {
+        if let Ok(cache) = self.map.lock()
+            && let Some(value) = cache.get(path)
+        {
+            return value.clone();
+        }
+        let value = dunce::canonicalize(path).ok();
+        if let Ok(mut cache) = self.map.lock() {
+            cache.insert(path.to_path_buf(), value.clone());
+        }
+        value
+    }
 }
 
 /// Session-local cache for tsconfig helper lookups used during import resolution.
