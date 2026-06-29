@@ -9,6 +9,7 @@ documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Compatibility health runner adapter for fallow embedders"
+publish = false
 readme = "../../README.md"
 
 [dependencies]
