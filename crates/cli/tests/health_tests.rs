@@ -2961,6 +2961,30 @@ fn health_css_flag_surfaces_css_analytics() {
     );
 }
 
+/// Assert the styling-health confidence marker shape: a `high`/`low` enum, with
+/// the prose reason present iff `low` and omitted iff `high`.
+fn assert_styling_confidence_shape(styling: &serde_json::Value) {
+    let confidence = styling["confidence"].as_str();
+    assert!(
+        matches!(confidence, Some("high" | "low")),
+        "styling_health carries a confidence marker: {styling}"
+    );
+    if confidence == Some("low") {
+        assert!(
+            styling
+                .get("confidence_reason")
+                .and_then(|r| r.as_str())
+                .is_some_and(|r| r.contains("declaration")),
+            "a low-confidence grade names the declaration count: {styling}"
+        );
+    } else {
+        assert!(
+            styling.get("confidence_reason").is_none(),
+            "a high-confidence grade omits the reason: {styling}"
+        );
+    }
+}
+
 #[test]
 fn health_css_flag_surfaces_styling_health_axis() {
     let dir = tempdir().unwrap();
@@ -3049,6 +3073,7 @@ fn health_css_flag_surfaces_styling_health_axis() {
         styling["score"].as_f64().is_some_and(|s| s < 100.0),
         "a dead @font-face should dock the styling score: {styling}"
     );
+    assert_styling_confidence_shape(styling);
 
     // The CODE health_score is byte-identical with and without --css: the styling
     // axis is additive and never folds into the code score.
@@ -3058,6 +3083,51 @@ fn health_css_flag_surfaces_styling_health_axis() {
     assert_eq!(
         code_score_with_css, &code_score_without_css,
         "code health_score must be unchanged by the styling axis"
+    );
+}
+
+/// The HUMAN render of a low-confidence styling grade: the grade is prefixed
+/// with `~` and a plain-text `Low confidence:` caveat (naming the declaration
+/// count) sits before the `Deductions:` line. The JSON tests assert the
+/// `confidence` shape; this guards the two human-render branches in
+/// `report/human/health.rs` (the `~` prefix and the caveat line), which would
+/// otherwise regress silently while the JSON tests stay green.
+#[test]
+fn health_css_low_confidence_renders_human_caveat() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"sparse-css","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // A handful of declarations: well below the 50-declaration confidence floor.
+    write_file(
+        &root.join("src/styles.css"),
+        ".a { color: green; }\n.b { width: 4px; }\n",
+    );
+    let out = run_fallow_in_root("health", root, &["--css", "--score", "--quiet"]);
+    assert!(
+        out.stdout.contains("Low confidence:"),
+        "low-confidence grade shows the caveat label: {}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("graded from only") && out.stdout.contains("declaration"),
+        "the caveat names the declaration count: {}",
+        out.stdout
+    );
+    // The grade itself is prefixed with `~` to signal an approximate sample. The
+    // `~` sits on the styling line (the only `~` fallow emits in this output), so
+    // assert it follows the styling label rather than just appearing somewhere.
+    let styling_line = out
+        .stdout
+        .lines()
+        .find(|l| l.contains("Styling health:"))
+        .unwrap_or_else(|| panic!("a Styling health line is rendered: {}", out.stdout));
+    assert!(
+        styling_line.contains('~'),
+        "a low-confidence grade is prefixed with ~: {styling_line}"
     );
 }
 
