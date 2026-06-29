@@ -4019,6 +4019,14 @@ framework_health?: (FrameworkHealthDiagnostics | null)
  * over-complex selectors, deep nesting). Present only with `--css`.
  */
 css_analytics?: (CssAnalyticsReport | null)
+/**
+ * Styling-health score and letter grade: a SECOND health axis derived from
+ * the CSS analytics (the design-system axis), orthogonal to the JS/TS code
+ * `health_score`. Present only with `--css` (the same condition as
+ * `css_analytics`), so a plain `fallow health` run is byte-unchanged. The
+ * code score is never affected by this field.
+ */
+styling_health?: (StylingHealth | null)
 }
 /**
  * Wire envelope for a single complexity finding.
@@ -6567,6 +6575,61 @@ notation: string
 count: number
 }
 /**
+ * Project-level styling-health score: a SECOND health axis computed purely from
+ * the structural CSS analytics (`CssAnalyticsReport`), orthogonal to the JS/TS
+ * code-health [`HealthScore`]. Surfaced only alongside the `--css` analytics, so
+ * a plain `fallow health` run is byte-unchanged. The code score and grade stay
+ * untouched: styling health is additive, never folded into the code score.
+ *
+ * Like [`HealthScore`], the score starts at 100 and subtracts capped per-category
+ * penalties; the grade reuses the shared [`letter_grade`] thresholds verbatim
+ * (A>=85, B>=70, C>=55, D>=40, F<40), so the two axes are read on one scale.
+ */
+export interface StylingHealth {
+formula_version: number
+score: number
+grade: string
+penalties: StylingHealthPenalties
+}
+/**
+ * Per-category penalty breakdown for the styling-health score. Each field is the
+ * number of points subtracted from a starting 100 for one CSS signal family,
+ * already capped at its category ceiling. A `0.0` field means "the signal was
+ * evaluated and clean"; the whole struct is only ever built when CSS analytics
+ * were produced, so there is no "missing pipeline" ambiguity to model with
+ * `Option` here (the parent `StylingHealth` is itself `Option` on the report).
+ */
+export interface StylingHealthPenalties {
+/**
+ * Copy-paste declaration blocks (`duplicate_declaration_blocks`), scaled by
+ * total removable declarations. Capped at 20pt.
+ */
+duplication: number
+/**
+ * Dead styling surface: unreferenced classes, unused `@theme` tokens, unused
+ * `@property`/`@layer` at-rules, and dead `@font-face` families, normalized
+ * per analyzed stylesheet. Capped at 20pt.
+ */
+dead_surface: number
+/**
+ * Broken references: markup classes one edit from a defined class
+ * (`unresolved_class_references`) and animations referencing a `@keyframes`
+ * defined nowhere (`undefined_keyframes`). Capped at 15pt.
+ */
+broken_references: number
+/**
+ * Design-token erosion: mixed `font-size` units (`font_size_unit_mix`) and
+ * Tailwind arbitrary-value bypasses (`tailwind_arbitrary_values`). Capped at
+ * 10pt.
+ */
+token_erosion: number
+/**
+ * Structural smells from the summary aggregates: `!important` density and
+ * deep style-rule nesting. Capped at 10pt.
+ */
+structural: number
+}
+/**
  * Envelope emitted by `fallow explain <issue-type> --format json`.
  *
  * Standalone rule explanation. This command does not run project analysis
@@ -6993,6 +7056,14 @@ framework_health?: (FrameworkHealthDiagnostics | null)
  * over-complex selectors, deep nesting). Present only with `--css`.
  */
 css_analytics?: (CssAnalyticsReport | null)
+/**
+ * Styling-health score and letter grade: a SECOND health axis derived from
+ * the CSS analytics (the design-system axis), orthogonal to the JS/TS code
+ * `health_score`. Present only with `--css` (the same condition as
+ * `css_analytics`), so a plain `fallow health` run is byte-unchanged. The
+ * code score is never affected by this field.
+ */
+styling_health?: (StylingHealth | null)
 grouped_by?: (GroupByMode | null)
 groups?: (HealthGroup[] | null)
 _meta?: (Meta | null)

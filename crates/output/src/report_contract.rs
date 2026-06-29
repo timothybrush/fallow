@@ -303,6 +303,7 @@ fn health_metrics() -> BTreeMap<String, MetaMetric> {
     metrics.extend(health_churn_and_target_metrics());
     metrics.extend(health_ownership_metrics());
     metrics.extend(health_runtime_metrics());
+    metrics.extend(health_styling_metrics());
     metrics
 }
 
@@ -536,6 +537,60 @@ fn health_runtime_metrics() -> [(String, MetaMetric); 5] {
     ]
 }
 
+fn health_styling_metrics() -> [(String, MetaMetric); 7] {
+    [
+        health_metric(
+            "styling_health.score",
+            "Styling Health Score",
+            "CSS/styling-axis aggregate score computed from the styling penalty rubric. Present only under --css.",
+            Some("[0, 100]"),
+            "higher is better; missing metrics are not penalized",
+        ),
+        health_metric(
+            "styling_health.formula_version",
+            "Styling Health Formula Version",
+            "Version of the styling-health scoring rubric used to produce the score. Present only under --css.",
+            Some("[1, infinity)"),
+            "bump signals a rubric change; compare scores only within the same version",
+        ),
+        health_metric(
+            "styling_health.penalties.duplication",
+            "Styling Duplication Penalty",
+            "Points deducted for copy-paste declaration blocks, scaled by the share of declarations removable via consolidation. Present only under --css.",
+            Some("[0, 20]"),
+            "lower is better; 0 means no removable duplicate blocks",
+        ),
+        health_metric(
+            "styling_health.penalties.dead_surface",
+            "Styling Dead-Surface Penalty",
+            "Points deducted for unreferenced classes, unused tokens, at-rules, and font-faces, normalized per stylesheet. Present only under --css.",
+            Some("[0, 20]"),
+            "lower is better; 0 means no dead styling surface",
+        ),
+        health_metric(
+            "styling_health.penalties.broken_references",
+            "Styling Broken-References Penalty",
+            "Points deducted for markup classes one edit from a defined class and animations referencing undefined keyframes. Present only under --css.",
+            Some("[0, 15]"),
+            "lower is better; 0 means no broken references",
+        ),
+        health_metric(
+            "styling_health.penalties.token_erosion",
+            "Styling Token-Erosion Penalty",
+            "Points deducted for mixing font-size units past a healthy baseline and Tailwind arbitrary-value bypasses. Present only under --css.",
+            Some("[0, 10]"),
+            "lower is better; 0 means a single source of truth for the scale",
+        ),
+        health_metric(
+            "styling_health.penalties.structural",
+            "Styling Structural Penalty",
+            "Points deducted for !important density above a healthy floor and deep style-rule nesting. Present only under --css.",
+            Some("[0, 10]"),
+            "lower is better; 0 means no structural smells",
+        ),
+    ]
+}
+
 fn health_metric(
     key: impl Into<String>,
     name: impl Into<String>,
@@ -589,6 +644,15 @@ mod tests {
         assert!(meta.metrics.contains_key("health_score"));
         assert!(meta.metrics.contains_key("max_render_fan_in"));
         assert!(meta.metrics.contains_key("percent_dead_in_production"));
+        assert!(meta.metrics.contains_key("styling_health.score"));
+        assert!(
+            meta.metrics
+                .contains_key("styling_health.penalties.duplication")
+        );
+        assert!(
+            meta.metrics
+                .contains_key("styling_health.penalties.structural")
+        );
     }
 
     #[test]

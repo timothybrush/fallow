@@ -2622,6 +2622,7 @@ fn sample_health_report(root: &Path) -> HealthReport {
         actions_meta: None,
         framework_health: None,
         css_analytics: None,
+        styling_health: None,
         render_fan_in_top: rustc_hash::FxHashMap::default(),
     }
 }
@@ -2893,6 +2894,7 @@ fn empty_health_report() -> HealthReport {
         actions_meta: None,
         framework_health: None,
         css_analytics: None,
+        styling_health: None,
         render_fan_in_top: rustc_hash::FxHashMap::default(),
     }
 }

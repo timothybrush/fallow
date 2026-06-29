@@ -2962,6 +2962,106 @@ fn health_css_flag_surfaces_css_analytics() {
 }
 
 #[test]
+fn health_css_flag_surfaces_styling_health_axis() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        &root.join("package.json"),
+        r#"{"name":"styling-axis","version":"1.0.0"}"#,
+    );
+    write_file(&root.join("src/index.ts"), "export const x = 1;\n");
+    // A stylesheet with a dead @font-face and an unreferenced custom property:
+    // the styling-health axis should dock points for the dead styling surface.
+    write_file(
+        &root.join("src/styles.css"),
+        ":root { --brand: 4px; --unused-token: 0; }\n\
+         .themed { width: var(--brand); }\n\
+         @font-face { font-family: \"DeadFont\"; src: url(dead.woff2); }\n\
+         .plain { color: green; }\n",
+    );
+
+    // Without --css the styling-health axis is absent (default output unchanged).
+    let plain = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--score",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let plain_json = parse_json(&plain);
+    assert!(
+        plain_json.get("styling_health").is_none(),
+        "styling_health must be absent without --css: {}",
+        plain.stdout
+    );
+    let code_score_without_css = plain_json
+        .get("health_score")
+        .expect("code health_score present with --score")
+        .clone();
+
+    // With --css the styling-health axis is a separate score + grade object.
+    let out = run_fallow_in_root(
+        "health",
+        root,
+        &[
+            "--css",
+            "--score",
+            "--max-crap",
+            "10000",
+            "--format",
+            "json",
+            "--quiet",
+        ],
+    );
+    let json = parse_json(&out);
+    let styling = json
+        .get("styling_health")
+        .expect("styling_health present with --css");
+    assert!(
+        styling.get("formula_version").is_some(),
+        "styling_health carries a formula_version: {styling}"
+    );
+    assert!(
+        styling["score"]
+            .as_f64()
+            .is_some_and(|s| (0.0..=100.0).contains(&s)),
+        "styling_health score is in [0, 100]: {styling}"
+    );
+    assert!(
+        matches!(styling["grade"].as_str(), Some("A" | "B" | "C" | "D" | "F")),
+        "styling_health carries a letter grade: {styling}"
+    );
+    assert!(
+        styling
+            .get("penalties")
+            .and_then(|p| p.get("dead_surface"))
+            .is_some(),
+        "styling_health carries the per-category penalty breakdown: {styling}"
+    );
+    // The dead @font-face docks the dead-surface category, so the styling score
+    // is below a clean 100.
+    assert!(
+        styling["score"].as_f64().is_some_and(|s| s < 100.0),
+        "a dead @font-face should dock the styling score: {styling}"
+    );
+
+    // The CODE health_score is byte-identical with and without --css: the styling
+    // axis is additive and never folds into the code score.
+    let code_score_with_css = json
+        .get("health_score")
+        .expect("code health_score present with --score");
+    assert_eq!(
+        code_score_with_css, &code_score_without_css,
+        "code health_score must be unchanged by the styling axis"
+    );
+}
+
+#[test]
 fn health_css_flags_undefined_keyframe_and_var() {
     let dir = tempdir().unwrap();
     let root = dir.path();

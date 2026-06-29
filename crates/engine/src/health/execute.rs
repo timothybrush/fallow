@@ -447,6 +447,15 @@ fn finalize_health_report_side_effects(input: &mut HealthReportSideEffectsInput<
                 ws_roots: input.ws_roots,
             },
         );
+        // Styling health is the SECOND health axis: a separate score + grade
+        // derived from the CSS analytics, surfaced only alongside `css_analytics`
+        // (the same `--css` condition) so a plain `fallow health` run stays
+        // byte-identical. It never affects the code `health_score`.
+        input.report.styling_health = input
+            .report
+            .css_analytics
+            .as_ref()
+            .map(crate::health::styling_score::compute_styling_health);
     }
 }
 

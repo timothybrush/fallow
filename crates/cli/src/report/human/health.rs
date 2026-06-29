@@ -191,6 +191,7 @@ fn render_css_analytics(lines: &mut Vec<String>, report: &fallow_output::HealthR
 
     lines.push(String::new());
     lines.push("CSS health".bold().to_string());
+    render_styling_health(lines, report);
     render_css_analytics_summary(lines, &css.summary);
     render_css_keyframe_candidates(lines, css);
     render_css_unused_at_rules(lines, css);
@@ -203,6 +204,33 @@ fn render_css_analytics(lines: &mut Vec<String>, report: &fallow_output::HealthR
     render_css_unused_theme_tokens(lines, css);
     render_css_font_size_unit_mix(lines, css);
     render_css_notable_rules(lines, css);
+}
+
+/// Render the styling-health grade line: the SECOND health axis (the CSS /
+/// design-system grade), styled like the code `Health score:` line. Present only
+/// alongside `--css`; the code grade is rendered separately and is unaffected.
+fn render_styling_health(lines: &mut Vec<String>, report: &fallow_output::HealthReport) {
+    let Some(ref styling) = report.styling_health else {
+        return;
+    };
+    lines.push(format!(
+        "  {} {}",
+        "Styling health:".cyan().bold(),
+        styling_health_colored(styling),
+    ));
+}
+
+fn styling_health_colored(styling: &fallow_output::StylingHealth) -> String {
+    let text = format!("{:.0} {}", styling.score, styling.grade);
+    if styling.score >= 85.0 {
+        text.green().bold().to_string()
+    } else if styling.score >= 70.0 {
+        text.yellow().bold().to_string()
+    } else if styling.score >= 55.0 {
+        text.yellow().to_string()
+    } else {
+        text.red().bold().to_string()
+    }
 }
 
 fn render_css_analytics_summary(

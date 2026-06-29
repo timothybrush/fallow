@@ -21,6 +21,7 @@ pub mod ownership;
 mod react_hooks;
 mod runtime_filter;
 pub mod scoring;
+pub mod styling_score;
 mod tailwind_theme;
 mod targets;
 

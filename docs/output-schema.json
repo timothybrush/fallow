@@ -1420,6 +1420,17 @@
           ],
           "description": "Structural CSS analytics (specificity hotspots, `!important` density,\nover-complex selectors, deep nesting). Present only with `--css`."
         },
+        "styling_health": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StylingHealth"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Styling-health score and letter grade: a SECOND health axis derived from\nthe CSS analytics (the design-system axis), orthogonal to the JS/TS code\n`health_score`. Present only with `--css` (the same condition as\n`css_analytics`), so a plain `fallow health` run is byte-unchanged. The\ncode score is never affected by this field."
+        },
         "grouped_by": {
           "anyOf": [
             {
@@ -2420,6 +2431,17 @@
             }
           ],
           "description": "Structural CSS analytics (specificity hotspots, `!important` density,\nover-complex selectors, deep nesting). Present only with `--css`."
+        },
+        "styling_health": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StylingHealth"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Styling-health score and letter grade: a SECOND health axis derived from\nthe CSS analytics (the design-system axis), orthogonal to the JS/TS code\n`health_score`. Present only with `--css` (the same condition as\n`css_analytics`), so a plain `fallow health` run is byte-unchanged. The\ncode score is never affected by this field."
         }
       },
       "required": [
@@ -17254,6 +17276,63 @@
         "stale_after_days"
       ],
       "description": "Provenance of a runtime-coverage report (fallow-rs/fallow-cloud#319), mirroring\nthe cloud runtime-context `provenance` block so the local-capture and cloud\nsurfaces present one portable shape. F4: provenance is context only; it never\ngates a verdict or confidence."
+    },
+    "StylingHealth": {
+      "type": "object",
+      "properties": {
+        "formula_version": {
+          "type": "integer"
+        },
+        "score": {
+          "type": "number"
+        },
+        "grade": {
+          "type": "string"
+        },
+        "penalties": {
+          "$ref": "#/definitions/StylingHealthPenalties"
+        }
+      },
+      "required": [
+        "formula_version",
+        "score",
+        "grade",
+        "penalties"
+      ],
+      "description": "Project-level styling-health score: a SECOND health axis computed purely from\nthe structural CSS analytics (`CssAnalyticsReport`), orthogonal to the JS/TS\ncode-health [`HealthScore`]. Surfaced only alongside the `--css` analytics, so\na plain `fallow health` run is byte-unchanged. The code score and grade stay\nuntouched: styling health is additive, never folded into the code score.\n\nLike [`HealthScore`], the score starts at 100 and subtracts capped per-category\npenalties; the grade reuses the shared [`letter_grade`] thresholds verbatim\n(A>=85, B>=70, C>=55, D>=40, F<40), so the two axes are read on one scale."
+    },
+    "StylingHealthPenalties": {
+      "type": "object",
+      "properties": {
+        "duplication": {
+          "type": "number",
+          "description": "Copy-paste declaration blocks (`duplicate_declaration_blocks`), scaled by\ntotal removable declarations. Capped at 20pt."
+        },
+        "dead_surface": {
+          "type": "number",
+          "description": "Dead styling surface: unreferenced classes, unused `@theme` tokens, unused\n`@property`/`@layer` at-rules, and dead `@font-face` families, normalized\nper analyzed stylesheet. Capped at 20pt."
+        },
+        "broken_references": {
+          "type": "number",
+          "description": "Broken references: markup classes one edit from a defined class\n(`unresolved_class_references`) and animations referencing a `@keyframes`\ndefined nowhere (`undefined_keyframes`). Capped at 15pt."
+        },
+        "token_erosion": {
+          "type": "number",
+          "description": "Design-token erosion: mixed `font-size` units (`font_size_unit_mix`) and\nTailwind arbitrary-value bypasses (`tailwind_arbitrary_values`). Capped at\n10pt."
+        },
+        "structural": {
+          "type": "number",
+          "description": "Structural smells from the summary aggregates: `!important` density and\ndeep style-rule nesting. Capped at 10pt."
+        }
+      },
+      "required": [
+        "duplication",
+        "dead_surface",
+        "broken_references",
+        "token_erosion",
+        "structural"
+      ],
+      "description": "Per-category penalty breakdown for the styling-health score. Each field is the\nnumber of points subtracted from a starting 100 for one CSS signal family,\nalready capped at its category ceiling. A `0.0` field means \"the signal was\nevaluated and clean\"; the whole struct is only ever built when CSS analytics\nwere produced, so there is no \"missing pipeline\" ambiguity to model with\n`Option` here (the parent `StylingHealth` is itself `Option` on the report)."
     }
   }
 }

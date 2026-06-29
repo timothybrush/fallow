@@ -4,7 +4,7 @@ use crate::{
     CoverageGaps, CoverageIntelligenceReport, CssAnalyticsReport, FileHealthScore,
     FrameworkHealthDiagnostics, HealthActionsMeta, HealthFinding, HealthScore, HealthSummary,
     HealthTrend, HotspotFinding, HotspotSummary, LargeFunctionEntry, RefactoringTargetFinding,
-    RuntimeCoverageReport, TargetThresholds, ThresholdOverrideState, VitalSigns,
+    RuntimeCoverageReport, StylingHealth, TargetThresholds, ThresholdOverrideState, VitalSigns,
 };
 use fallow_types::output_dead_code::PropDrillingChainFinding;
 
@@ -98,6 +98,13 @@ pub struct HealthReport {
     /// over-complex selectors, deep nesting). Present only with `--css`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub css_analytics: Option<CssAnalyticsReport>,
+    /// Styling-health score and letter grade: a SECOND health axis derived from
+    /// the CSS analytics (the design-system axis), orthogonal to the JS/TS code
+    /// `health_score`. Present only with `--css` (the same condition as
+    /// `css_analytics`), so a plain `fallow health` run is byte-unchanged. The
+    /// code score is never affected by this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub styling_health: Option<StylingHealth>,
     /// Per-file top render fan-in for the descriptive human drill-down only.
     #[serde(skip)]
     pub render_fan_in_top: rustc_hash::FxHashMap<std::path::PathBuf, (String, u32)>,
@@ -122,6 +129,8 @@ mod tests {
         assert!(!json.contains("vital_signs"));
         assert!(!json.contains("health_score"));
         assert!(!json.contains("framework_health"));
+        assert!(!json.contains("css_analytics"));
+        assert!(!json.contains("styling_health"));
     }
 
     #[test]

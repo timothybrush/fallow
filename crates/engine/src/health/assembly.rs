@@ -246,6 +246,7 @@ fn build_health_report_struct(
         actions_meta: build_health_actions_meta(action_ctx),
         framework_health: parts.framework_health,
         css_analytics: None,
+        styling_health: None,
         render_fan_in_top: parts.render_fan_in_top,
     };
     fill_coverage_intelligence(&mut report, opts);

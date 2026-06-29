@@ -19,6 +19,13 @@ pub const MI_DENSITY_MIN_LINES: f64 = 50.0;
 
 pub const HEALTH_SCORE_FORMULA_VERSION: u32 = 2;
 
+/// Formula version for the styling-health score (the CSS / design-system axis).
+/// Bumped independently of [`HEALTH_SCORE_FORMULA_VERSION`] whenever the styling
+/// penalty rubric is recalibrated, so consumers can distinguish a score shift
+/// caused by a weight change from one caused by an actual codebase change. v1 is
+/// the provisional first-slice rubric pending corpus calibration.
+pub const STYLING_HEALTH_FORMULA_VERSION: u32 = 1;
+
 /// `skip_serializing_if` predicate: drop a `u16` field from JSON when zero, so
 /// the React descriptive counts never bloat non-React complexity findings.
 #[expect(
@@ -66,6 +73,53 @@ pub struct HealthScorePenalties {
     /// `prop-drilling` rule is enabled; sized like the coupling penalty (~5pt cap).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prop_drilling: Option<f64>,
+}
+
+/// Project-level styling-health score: a SECOND health axis computed purely from
+/// the structural CSS analytics (`CssAnalyticsReport`), orthogonal to the JS/TS
+/// code-health [`HealthScore`]. Surfaced only alongside the `--css` analytics, so
+/// a plain `fallow health` run is byte-unchanged. The code score and grade stay
+/// untouched: styling health is additive, never folded into the code score.
+///
+/// Like [`HealthScore`], the score starts at 100 and subtracts capped per-category
+/// penalties; the grade reuses the shared [`letter_grade`] thresholds verbatim
+/// (A>=85, B>=70, C>=55, D>=40, F<40), so the two axes are read on one scale.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StylingHealth {
+    pub formula_version: u32,
+    pub score: f64,
+    pub grade: &'static str,
+    pub penalties: StylingHealthPenalties,
+}
+
+/// Per-category penalty breakdown for the styling-health score. Each field is the
+/// number of points subtracted from a starting 100 for one CSS signal family,
+/// already capped at its category ceiling. A `0.0` field means "the signal was
+/// evaluated and clean"; the whole struct is only ever built when CSS analytics
+/// were produced, so there is no "missing pipeline" ambiguity to model with
+/// `Option` here (the parent `StylingHealth` is itself `Option` on the report).
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StylingHealthPenalties {
+    /// Copy-paste declaration blocks (`duplicate_declaration_blocks`), scaled by
+    /// total removable declarations. Capped at 20pt.
+    pub duplication: f64,
+    /// Dead styling surface: unreferenced classes, unused `@theme` tokens, unused
+    /// `@property`/`@layer` at-rules, and dead `@font-face` families, normalized
+    /// per analyzed stylesheet. Capped at 20pt.
+    pub dead_surface: f64,
+    /// Broken references: markup classes one edit from a defined class
+    /// (`unresolved_class_references`) and animations referencing a `@keyframes`
+    /// defined nowhere (`undefined_keyframes`). Capped at 15pt.
+    pub broken_references: f64,
+    /// Design-token erosion: mixed `font-size` units (`font_size_unit_mix`) and
+    /// Tailwind arbitrary-value bypasses (`tailwind_arbitrary_values`). Capped at
+    /// 10pt.
+    pub token_erosion: f64,
+    /// Structural smells from the summary aggregates: `!important` density and
+    /// deep style-rule nesting. Capped at 10pt.
+    pub structural: f64,
 }
 
 /// Map a numeric score (0-100) to a letter grade.
@@ -766,6 +820,33 @@ mod tests {
         assert!(!json.contains("maintainability"));
         assert!(!json.contains("hotspots"));
         assert!(!json.contains("duplication"));
+    }
+
+    #[test]
+    fn styling_health_serializes_correctly() {
+        let styling = StylingHealth {
+            formula_version: STYLING_HEALTH_FORMULA_VERSION,
+            score: 72.0,
+            grade: "B",
+            penalties: StylingHealthPenalties {
+                duplication: 12.0,
+                dead_surface: 8.0,
+                broken_references: 4.0,
+                token_erosion: 2.0,
+                structural: 2.0,
+            },
+        };
+        let json = serde_json::to_string(&styling).expect("styling health should serialize");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("styling health JSON should parse");
+        assert_eq!(parsed["formula_version"], STYLING_HEALTH_FORMULA_VERSION);
+        assert_eq!(parsed["score"], 72.0);
+        assert_eq!(parsed["grade"], "B");
+        assert_eq!(parsed["penalties"]["duplication"], 12.0);
+        assert_eq!(parsed["penalties"]["dead_surface"], 8.0);
+        assert_eq!(parsed["penalties"]["broken_references"], 4.0);
+        assert_eq!(parsed["penalties"]["token_erosion"], 2.0);
+        assert_eq!(parsed["penalties"]["structural"], 2.0);
     }
 
     #[test]
