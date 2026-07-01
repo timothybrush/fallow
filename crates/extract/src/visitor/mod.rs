@@ -28,6 +28,20 @@ use fallow_types::extract::{
     SkippedSecurityCalleeSite, TaintedBinding,
 };
 use helpers::LitCustomElementDecorator;
+use helpers::array_element_type_from_type;
+
+/// Infer the element class of a Vue `defineProps` field whose declared type is an
+/// array (or nullable array) of a non-builtin class (`items: Util[]` /
+/// `Array<Util>` / `readonly Util[]` / `Util[] | null`). Thin crate-visible
+/// wrapper over the visitor helper so the SFC props harvest reuses the same
+/// inference the `v-for` binding fix uses, keyed by the prop field's `TSType`.
+/// Returns a non-builtin class name only; `number[]` / `Map[]` / non-array field
+/// types yield `None` (over-credit only, issue #1711).
+pub(crate) fn infer_props_field_array_element_type(
+    field_type: &oxc_ast::ast::TSType<'_>,
+) -> Option<String> {
+    array_element_type_from_type(field_type)
+}
 
 #[derive(Debug, Clone)]
 struct LocalClassExportInfo {
@@ -616,6 +630,54 @@ impl ModuleInfoExtractor {
 
     pub(crate) fn array_binding_element_types(&self) -> &FxHashMap<String, String> {
         &self.array_binding_element_types
+    }
+
+    /// Mutable accessor so the SFC props harvest can record `props.<field>` ->
+    /// element-class entries after the visit but before the template-visible
+    /// iterable-types read, typing a Vue `v-for="(util) of props.items"` loop
+    /// item to the prop field's array element class (issue #1711).
+    pub(crate) fn array_binding_element_types_mut(&mut self) -> &mut FxHashMap<String, String> {
+        &mut self.array_binding_element_types
+    }
+
+    /// Seed the array/reactive-array element-type map from an already-parsed
+    /// scope (the Astro frontmatter). Used by the Astro template-expression pass
+    /// so a fresh extractor visiting `{utils.map((util) => util.getter)}` can bind
+    /// `util` to the frontmatter's `const utils: Util[]` element class. See issue
+    /// #1713.
+    pub(crate) fn seed_array_binding_element_types(
+        &mut self,
+        element_types: &FxHashMap<String, String>,
+    ) {
+        for (binding, class) in element_types {
+            self.array_binding_element_types
+                .insert(binding.clone(), class.clone());
+        }
+    }
+
+    /// Run the bound-member resolution finalize and take the member accesses that
+    /// resolved onto a SEEDED element class. For the Astro template-expression
+    /// pass (issue #1713): a fresh extractor seeded with the frontmatter element
+    /// types visits the template `{...}` expression regions,
+    /// `bind_iterable_callback_parameter` types each `.map((util) => ...)` callback
+    /// param to its element class during the walk, and `resolve_bound_member_accesses`
+    /// re-emits the class-qualified access (`Util.getter`). This returns ONLY those
+    /// class-qualified accesses (object == a seeded element-class name), dropping
+    /// the raw `util.getter` / `utils.map` noise so nothing but the intended
+    /// element-class credit reaches the module. Accesses are span-less name pairs,
+    /// so no un-remapped template-region span ever leaks into the module.
+    pub(crate) fn take_resolved_iteration_member_accesses(&mut self) -> Vec<MemberAccess> {
+        self.resolve_typed_destructure_bindings();
+        self.resolve_bound_member_accesses();
+        let element_classes: FxHashSet<&str> = self
+            .array_binding_element_types
+            .values()
+            .map(String::as_str)
+            .collect();
+        self.member_accesses
+            .drain(..)
+            .filter(|access| element_classes.contains(access.object.as_str()))
+            .collect()
     }
 
     fn insert_class_binding_target(&mut self, binding: String, target: String) {

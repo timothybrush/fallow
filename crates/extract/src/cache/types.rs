@@ -700,7 +700,25 @@ use crate::MemberKind;
 /// over a typed array / reactive array, so member accesses on the iteration
 /// variable credit the element class. A warm cache from 216 lacks the credited
 /// iteration-variable member accesses.
-pub(super) const CACHE_VERSION: u32 = 217;
+///
+/// Bumped to 218 for issue #1711: a Vue `v-for` over a `props.<field>`
+/// member-expression source (where the prop is typed as an array of a class via
+/// `defineProps<{ items: Util[] }>()`) now types the loop item to the element
+/// class, so `.vue` `member_accesses` gain the credited item-member accesses a
+/// warm 217 cache lacks.
+///
+/// Bumped to 219 for issue #1712: an Angular `@for` / `*ngFor` loop variable
+/// over a component field typed as an array of a class (`utils: Util[]`) in an
+/// inline `template:` is typed to the element class, so inline-Angular-component
+/// `member_accesses` gain the remapped item-member accesses a warm 218 cache
+/// lacks.
+///
+/// Bumped to 220 for issue #1713: a `.map()` / `.forEach()` / `for...of`
+/// iteration binding in an Astro TEMPLATE `{...}` expression region (over a
+/// frontmatter-typed class array) now credits the element-class members, so
+/// `.astro` `member_accesses` gain the template-region item-member accesses a
+/// warm 219 cache lacks.
+pub(super) const CACHE_VERSION: u32 = 220;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.

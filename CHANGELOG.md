@@ -197,6 +197,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Astro template `.map()` callbacks over a typed class array no longer report
+  the class members as unused.** An iteration variable in an Astro template
+  `{...}` expression (`{utils.map((util) => <li>{util.getter}</li>)}`) whose
+  receiver is a frontmatter binding typed as an array of a class (`Util[]`)
+  previously flagged the element class members as `unused-class-member`. Astro
+  frontmatter is visitor-parsed (so a frontmatter `.map` was already credited),
+  but the template body `{...}` expressions were only scanned for bare
+  identifiers, never run through the member-recording visitor. fallow now
+  re-parses each template expression region and runs it through the same
+  iteration-binding visitor pass, seeded with the frontmatter's element types, so
+  a template `.map` / `.forEach` / `for...of` callback credits the element class
+  the same as the frontmatter and `.tsx`. Over-credit only: a member accessed
+  nowhere still reports. (Closes
+  [#1713](https://github.com/fallow-rs/fallow/issues/1713))
+
+- **Angular `@for` / `*ngFor` loop variables over a class array no longer report
+  the class members as unused.** An Angular component with an inline `template:`
+  that iterates a component field typed as an array of a class (`utils: Util[]`)
+  via `@for (util of utils; track util)` or legacy `*ngFor="let util of utils"`
+  and reads members on the loop item (`{{ util.getName() }}`) previously flagged
+  those members as `unused-class-member`. The loop variable is a template local,
+  not a class field, and nothing typed it to the iterated field's element class.
+  The Angular template scanner now types a bare-identifier `@for` / `*ngFor` loop
+  variable to the element class of the matching component field and remaps
+  `util.member` onto that class. Over-credit only: the iterated field is still
+  credited, a builtin-array field (`number[]`) types nothing, and a genuinely
+  unused member still reports. External `templateUrl` templates are a known
+  remaining case. (Closes
+  [#1712](https://github.com/fallow-rs/fallow/issues/1712))
+
+- **Vue `v-for` over a `props.<field>` array no longer reports the element
+  class members as unused.** A Vue `<script setup>` component that iterates a
+  prop typed as an array of a class and reads members on the loop item, for
+  example `v-for="(util, i) of props.items"` with `{{ util.getter }}` /
+  `{{ util.hello() }}` where `props` comes from
+  `defineProps<{ items: Util[] }>()`, previously flagged `Util.getter` /
+  `Util.hello` as `unused-class-member`. The element-type crediting only matched
+  a bare module-scope iterable, not a `props.<field>` member-expression source.
+  The `defineProps` inline-type harvest now records each array-typed prop field's
+  element class as `props.<field>`, which the existing `v-for` scanner matches, so
+  member accesses on the loop item credit the class. Over-credit only: a
+  genuinely unused member on the same class still reports, and a non-class array
+  prop (`number[]`) types nothing. (Closes
+  [#1711](https://github.com/fallow-rs/fallow/issues/1711))
+
 - **Iterating a typed class array no longer reports the class members as
   unused.** Extending the Vue `v-for` fix below to the general iteration case: an
   iteration variable whose type is the element class of a typed array or reactive
@@ -209,12 +254,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unused-class-member`. Explicitly annotated callback parameters
   (`(u: Util) => ...`) already worked; this adds the implicitly-typed case. The
   change only removes false positives; a genuinely unused member on the same
-  class still reports. Angular `@for` / `*ngFor`
+  class still reports. The deferred sibling cases are now fixed above: Angular
+  `@for` / `*ngFor`
   ([#1712](https://github.com/fallow-rs/fallow/issues/1712)), Astro `.map`
   ([#1713](https://github.com/fallow-rs/fallow/issues/1713)), and Vue `v-for`
-  over a member-expression source such as `props.items`
-  ([#1711](https://github.com/fallow-rs/fallow/issues/1711)) are tracked as
-  follow-ups. (Refs
+  over a member-expression `props.<field>` source
+  ([#1711](https://github.com/fallow-rs/fallow/issues/1711)). (Refs
   [#1707](https://github.com/fallow-rs/fallow/issues/1707))
 
 - **Vue `v-for` loop variables iterating over a class array no longer report the
