@@ -142,7 +142,7 @@ const UNITLESS_PROPERTIES: &[&str] = &[
 /// whether a library's synthetic rules count toward the styling-health structural
 /// grade and duplicate-block fingerprints.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Lib {
+pub(super) enum Lib {
     /// vanilla-extract (`@vanilla-extract/css` / `/recipes`): real selectors via
     /// `globalStyle` / `selectors`, structure is meaningful.
     VanillaExtract,
@@ -510,7 +510,7 @@ enum CallKind {
 /// than a package name, so any specifier whose path contains a `styled-system`
 /// segment is treated as Panda (still behind the engine's `@pandacss/dev` dep
 /// gate, which decides whether the file is scanned at all).
-pub fn module_library(specifier: &str) -> Option<Lib> {
+pub(super) fn module_library(specifier: &str) -> Option<Lib> {
     match specifier {
         "@vanilla-extract/css" | "@vanilla-extract/recipes" => Some(Lib::VanillaExtract),
         "@emotion/react" | "@emotion/css" => Some(Lib::Emotion),
@@ -743,12 +743,13 @@ fn kebab_case(name: &str) -> String {
 }
 
 /// Drop any character from a `globalStyle` selector that could break out of the
-/// synthetic rule context (`{`, `}`). The selector is authored CSS, kept as-is
-/// otherwise so its specificity / complexity are measured for real.
+/// synthetic rule context (`{`, `}`) or split a declaration (`;`). The selector
+/// is authored CSS, kept as-is otherwise so its specificity / complexity are
+/// measured for real.
 fn sanitize_selector(selector: &str) -> String {
     selector
         .chars()
-        .filter(|&c| c != '{' && c != '}')
+        .filter(|&c| c != '{' && c != '}' && c != ';')
         .collect::<String>()
         .trim()
         .to_string()
@@ -945,6 +946,21 @@ mod tests {
             a.notable_rules.is_empty(),
             "no garbled structural finding: {a:?}"
         );
+    }
+
+    #[test]
+    fn panda_cva_and_class_variance_authority_cva_coexist() {
+        // Both `cva` names can appear in one file only under distinct local
+        // aliases (duplicate bindings are a JS error). class-variance-authority is
+        // filtered out before the import map, so only Panda's binding is tracked:
+        // its `base` lifts to atomic CSS while the class-name builder stays inert.
+        let src = "import { cva } from '../styled-system/css';\n\
+                   import { cva as cn } from 'class-variance-authority';\n\
+                   const a = cva({ base: { color: 'red' } });\n\
+                   const b = cn('base', { variants: { size: { sm: 'text-sm' } } });\n";
+        let css = sheets(src).atomic.expect("panda cva base is atomic");
+        assert!(css.contains("color:red;"), "panda base lifted: {css:?}");
+        assert!(!css.contains("text-sm"), "cva-lib not serialized: {css:?}");
     }
 
     #[test]
