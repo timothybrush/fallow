@@ -283,7 +283,7 @@ writeFileSync(
   assert.equal(error.exitCode, 2);
   assert.equal(error.code, "FALLOW_INVALID_ROOT");
   assert.equal(error.context, "analysis.root");
-  assert.match(error.message, /analysis root does not exist/);
+  assert.match(error.message, /invalid root path/);
   console.log("  [PASS] structured errors");
 }
 
