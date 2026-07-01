@@ -451,10 +451,15 @@ impl<'a> Visit<'a> for TokenDefCollector<'a> {
     }
 }
 
-/// 1-based line number of a byte offset in `source`.
+/// 1-based line number of a byte offset in `source`. Uses `.get(..end)` so an
+/// out-of-range or non-char-boundary offset clamps to line 1 rather than
+/// panicking (matches `css::line_at_offset`).
 fn line_at(source: &str, offset: u32) -> u32 {
     let end = (offset as usize).min(source.len());
-    1 + u32::try_from(source[..end].bytes().filter(|&b| b == b'\n').count()).unwrap_or(u32::MAX - 1)
+    let count = source
+        .get(..end)
+        .map_or(0, |s| s.bytes().filter(|&b| b == b'\n').count());
+    u32::try_from(1 + count).unwrap_or(u32::MAX)
 }
 
 #[cfg(all(test, not(miri)))]

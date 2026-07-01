@@ -18,7 +18,7 @@
 //! | Category | Cap | Signal | Scaling |
 //! |---|---|---|---|
 //! | `duplication` | 20pt | `summary.duplicate_declarations_total` (removable declarations from copy-paste blocks) | `total / max(non_atomic_declarations, 1) * 80`, capped (v3 down-weighted from `* 200`: exact CSS duplication is the least-harmful pattern, so ~25% of declarations removable = full 20pt, a soft hint not a dominant term; the non-atomic denominator is the 3c atomic-exclusion behavior) |
-//! | `dead_surface` | 20pt | (a) unused `@theme` tokens, as a share of all defined `@theme` tokens; (b) unreferenced classes + unused at-rules + dead `@font-face`, as a share of `total_declarations` | token term `min(unused_theme_tokens / max(theme_tokens_defined, 1) * 15, 15)` + other term `min(other_dead / max(total_declarations, 1) * 150, 8)`, summed then capped at 20 (the token term is a *per-population* death ratio so a handful of dead tokens in a declaration-sparse Tailwind project no longer explodes the penalty) |
+//! | `dead_surface` | 20pt | (a) unused `@theme` tokens, as a share of all defined `@theme` tokens; (b) unreferenced classes + unused at-rules + dead `@font-face`, as a share of `total_declarations` | token term `min(unused_theme_tokens / max(theme_tokens_defined, 1) * 15, 15)` + other term `min(other_dead / max(non_atomic_declarations, 1) * 150, 8)`, summed then capped at 20 (the token term is a *per-population* death ratio so a handful of dead tokens in a declaration-sparse Tailwind project no longer explodes the penalty) |
 //! | `broken_references` | 15pt | `unresolved_class_references` + `keyframes_undefined` | `count * 3`, capped (so 5 broken refs = full 15pt) |
 //! | `token_erosion` | 10pt | mixed `font-size` units (above 2) + distinct Tailwind arbitrary-value tokens + distinct HARDCODED `box-shadow`/`border-radius`/`line-height` values (v3 sprawl/drift sub-term) | `min((extra_units * 2), 4)` unit term + `min(arbitrary / 18, 8)` arbitrary term + `min(sum_per_axis_excess / 6, 5)` sprawl term (per-axis excess above baselines 10/8/6), summed then capped at 10 |
 //! | `structural` | 10pt | `!important` density + deep nesting | `(important_pct - 5).clamp * 1` + `(max_nesting - 4).clamp * 1`, capped |
@@ -469,10 +469,11 @@ fn duplication_penalty(report: &CssAnalyticsReport, inputs: &StylingScoringInput
 ///    population the tokens are drawn from is the principled fix.
 /// 2. **Other-dead term** ([`OTHER_DEAD_SCALE`], capped at
 ///    [`OTHER_DEAD_TERM_CAP`]): unreferenced classes, unused `@property`/`@layer`
-///    at-rules, and dead `@font-face` families as a share of `total_declarations`
-///    (the same size-stable denominator the duplication penalty uses). These
-///    scale with authored-CSS size, so the declaration denominator is correct for
-///    them; only the `@theme` tokens needed the per-population treatment.
+///    at-rules, and dead `@font-face` families as a share of the non-atomic
+///    declaration count (the same size-stable denominator the duplication penalty
+///    uses). These scale with authored-CSS size, so the declaration denominator is
+///    correct for them; only the `@theme` tokens needed the per-population
+///    treatment.
 ///
 /// The two terms are summed and capped at [`DEAD_SURFACE_CAP`]. Both `@theme`
 /// tokens are EXCLUDED from the other-dead term (they live only in term 1). The
@@ -520,7 +521,10 @@ fn broken_references_penalty(report: &CssAnalyticsReport) -> f64 {
 /// [`ARBITRARY_VALUE_DIVISOR`] and caps at [`ARBITRARY_VALUE_TERM_CAP`], so it
 /// saturates gently around ~50-100+ distinct values instead of instant-capping
 /// the whole category at 10 (v1 reached the ceiling at just 10 arbitrary
-/// values, punishing normal Tailwind usage). The category cap stays 10pt.
+/// values, punishing normal Tailwind usage). v3 adds a third saturating term,
+/// [`value_sprawl_term`], for hardcoded `box-shadow` / `border-radius` /
+/// `line-height` value drift (var-blind: scales tokenized via `var(--*)` score 0).
+/// The category cap stays 10pt.
 fn token_erosion_penalty(report: &CssAnalyticsReport) -> f64 {
     let s = &report.summary;
     let extra_units = f64::from(

@@ -281,11 +281,19 @@ impl<'a> ObjectStyleCollector<'a> {
                     ImportDeclarationSpecifier::ImportSpecifier(s) => {
                         (s.local.name.as_str(), s.imported.name().as_str())
                     }
-                    // Default / namespace bindings route through the member-call /
-                    // call arms (which match on library only); the role is the
-                    // local name (the conventional default name, e.g. `css`).
+                    // A default import routes through the member-call / call arms.
+                    // For emotion the default export IS the `css` function, so
+                    // canonicalize its role to `css` and let any local alias fire
+                    // (mirrors how EmotionStyled member calls ignore the binding
+                    // name). Other libs keep the local name for member-call
+                    // recognition (`import stylex from ...` -> `stylex.create`).
                     ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                        (s.local.name.as_str(), s.local.name.as_str())
+                        let role = if lib == Lib::Emotion {
+                            "css"
+                        } else {
+                            s.local.name.as_str()
+                        };
+                        (s.local.name.as_str(), role)
                     }
                     ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
                         (s.local.name.as_str(), s.local.name.as_str())
@@ -997,6 +1005,18 @@ mod tests {
         let css = sheets(src)
             .structural
             .expect("default css import recognized");
+        assert!(css.contains("color:red;"), "css={css:?}");
+    }
+
+    #[test]
+    fn emotion_css_default_import_aliased_recognized() {
+        // The `@emotion/css` default css function fires under ANY local alias, not
+        // only the conventional `css` name (canonical-role dispatch on the lib).
+        let src = "import emo from '@emotion/css';\n\
+                   const a = emo({ color: 'red' });\n";
+        let css = sheets(src)
+            .structural
+            .expect("aliased default css import recognized");
         assert!(css.contains("color:red;"), "css={css:?}");
     }
 
