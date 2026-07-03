@@ -496,6 +496,7 @@ permissions:
   contents: read
   checks: write # needed for the Fallow Check Run
   pull-requests: write # needed for comment/review-comments
+  id-token: write # optional: post PR comments as the branded Fallow app
 
 jobs:
   fallow:
@@ -510,6 +511,8 @@ jobs:
           comment: true
           review-comments: true
 ```
+
+With `id-token: write`, PR comments and reviews are posted by the Fallow app (a branded bot) once the app is installed on the repository. Without it, or if the app is not installed, output posts under the default `github-actions` bot, no configuration needed and no account required.
 
 `command: audit` is the PR gate. In pull requests, the Action auto-scopes to the PR base SHA when `changed-since` is not set, derives a unified diff for line-level filtering, and emits a verdict: **pass**, **warn**, or **fail**. With the default `fail-on-issues: true`, audit fails the job only on verdict `fail`; warn-tier findings stay visible without blocking merge.
 
