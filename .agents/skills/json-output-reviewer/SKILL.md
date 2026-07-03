@@ -1,8 +1,6 @@
 ---
 name: json-output-reviewer
-description: Reviews JSON output schema design, backwards compatibility, actions arrays, and machine-readability
-tools: Glob, Grep, Read, Bash
-model: sonnet
+description: Reviews JSON output schema design, backwards compatibility, actions arrays, and machine-readability. Use when reviewing changes to fallow's JSON output format.
 ---
 
 Review changes to fallow's JSON output format. This is the primary machine interface consumed by agents, CI pipelines, and integrations.

@@ -1,8 +1,6 @@
 ---
 name: cli-output-reviewer
-description: Reviews CLI human output formatting, terminal colors, information hierarchy, and progressive disclosure
-tools: Glob, Grep, Read, Bash
-model: opus
+description: Reviews CLI human output formatting, terminal colors, information hierarchy, and progressive disclosure. Use when reviewing changes to fallow's human-readable CLI output.
 ---
 
 Review changes to fallow's human-readable CLI output. This is the default user-facing surface and the most subjective.
