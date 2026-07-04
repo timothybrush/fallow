@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-07-04
+
 ### Added
 
 - **Rule-pack authoring commands for repo-wide policy linting.** `fallow rule-pack`
@@ -62,6 +64,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they can gate when `rules.css-token-drift` is set to `error`, but they tell
   agents to confirm intent before replacing a value with an existing token or
   custom property.
+
+- **Inventory names callback arguments from the callee.** A function passed as a
+  call or `new` argument was previously surfaced as anonymous; inventory now
+  derives its name from the callee (identifier, member property, or computed
+  string-literal key), matching the runtime instrumenter so static inventory and
+  runtime coverage agree on the same callback name (`arr.map(cb)`, route
+  handlers, `.references(() => ...)`)
+  ([#1719](https://github.com/fallow-rs/fallow/pull/1719)).
+
+- **Repo-scoped agent skills.** Added `.agents/` skill definitions for the
+  CI-format, CLI-output, and JSON-output reviewers so agents working in the
+  repository get scoped review guidance. Thanks
+  [@revazi](https://github.com/revazi) for the patch in
+  [#1727](https://github.com/fallow-rs/fallow/pull/1727).
+
+### Changed
+
+- **New fallow f-wing brand mark.** The three-bar logo is replaced by the new
+  f-wing mark across the icon, the light and dark wordmark lockups, the VS Code
+  sidebar icon, and the GitHub Pages favicon
+  ([#1733](https://github.com/fallow-rs/fallow/pull/1733)).
+
+- **Engine and registry architecture split completed.** Command, API, MCP, and
+  editor flows now route through typed engine and API boundaries, and combined
+  and audit reuse retained project artifacts instead of repeating discovery,
+  parse, and graph work. Output and issue metadata ownership moved into
+  generated contracts, and the security catalogue moved into a dedicated
+  `fallow-security` crate. CLI wire contracts, config, and output formats are
+  unchanged.
 
 ## [2.104.0] - 2026-07-01
 
@@ -3925,7 +3956,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.104.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/fallow-rs/fallow/compare/v2.104.0...v3.0.0
 [2.104.0]: https://github.com/fallow-rs/fallow/compare/v2.103.0...v2.104.0
 [2.103.0]: https://github.com/fallow-rs/fallow/compare/v2.102.0...v2.103.0
 [2.102.0]: https://github.com/fallow-rs/fallow/compare/v2.101.0...v2.102.0

@@ -372,8 +372,6 @@ fallow migrate --toml           # output as fallow.toml
 fallow migrate --from knip.jsonc
 ```
 
-The migrator understands knip, jscpd, and Stylelint configs. Stylelint support maps selector, nesting, and important-usage quality rules to Fallow styling audit settings, while formatting, syntax, vendor-prefix, declaration-order, and naming-convention rules remain Stylelint-owned and are reported as skipped fields.
-
 ---
 
 ## `health`: Function Complexity & File Health Analysis
@@ -510,7 +508,7 @@ fallow health --format json --quiet --trend
 {
   "kind": "health",
   "schema_version": 7,
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 32,
   "summary": {
     "files_analyzed": 482,
@@ -908,7 +906,7 @@ fallow audit \
 {
   "kind": "audit",
   "schema_version": 7,
-  "version": "2.104.0",
+  "version": "3.0.0",
   "command": "audit",
   "verdict": "fail",
   "changed_files_count": 12,
@@ -983,7 +981,7 @@ fallow flags --format json --quiet --workspace my-package
 ```json
 {
   "schema_version": 7,
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 116,
   "feature_flags": [],
   "total_flags": 0
@@ -1084,7 +1082,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1113,7 +1111,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1728,6 +1726,7 @@ These are global flags with behavior specific to bare `fallow` combined mode.
 | `FALLOW_REVIEW` | GitLab CI: set to `true` to post inline code review comments on MR diffs. |
 | `FALLOW_REVIEW_GUIDANCE` | Add collapsed "What to do" guidance blocks to `review-github` / `review-gitlab` inline comments. |
 | `FALLOW_SUMMARY_SCOPE` | Sticky PR/MR summary scope for `pr-comment-github` / `pr-comment-gitlab`: `all` (default) keeps project-level findings outside the diff; `diff` applies the diff filter to those findings too. Inline review comments are unaffected. |
+| `FALLOW_PR_COMMENT_LAYOUT` | Sticky PR/MR summary layout for `pr-comment-github` / `pr-comment-gitlab`: `default`, `compact`, `gate-only`, or `details`. |
 | `FALLOW_SCORE` | GitLab CI: set to `true` to compute health score in combined mode. Enables health delta header in MR comments. |
 | `FALLOW_TREND` | GitLab CI: set to `true` to compare current health metrics against saved snapshot. Implies `FALLOW_SCORE`. |
 | `FALLOW_EXTRA_ARGS` | GitLab CI: additional CLI flags passed through to fallow. |
@@ -1801,6 +1800,7 @@ The HTTP layer mirrors the bash `gh_api_retry` / `curl_retry` helpers: `FALLOW_A
 | `FALLOW_REVIEW` | `false` | Post inline code review comments on MR diff lines where issues were found |
 | `FALLOW_REVIEW_GUIDANCE` | `false` | Add collapsed "What to do" guidance blocks to inline review comments |
 | `FALLOW_SUMMARY_SCOPE` | `all` | Sticky summary scope: `all` keeps project-level findings outside the diff; `diff` applies the diff filter to those findings too |
+| `FALLOW_PR_COMMENT_LAYOUT` | `default` | Sticky summary layout: `default`, `compact`, `gate-only`, or `details` |
 | `FALLOW_SCORE` | `false` | Compute health score (0-100 with letter grade) in combined mode. Enables the health delta header in MR comments |
 | `FALLOW_TREND` | `false` | Compare current health metrics against saved snapshot. Implies `FALLOW_SCORE`. Shows per-metric deltas |
 | `FALLOW_EXTRA_ARGS` | - | Additional CLI flags passed through to fallow |
@@ -1820,7 +1820,7 @@ The HTTP layer mirrors the bash `gh_api_retry` / `curl_retry` helpers: `FALLOW_A
 {
   "kind": "dead-code",
   "schema_version": 7,
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 45,
   "total_issues": 12,
   "entry_points": {
@@ -1980,7 +1980,7 @@ When `--baseline` is used in combined output, the JSON includes a `baseline_delt
 {
   "kind": "dupes",
   "schema_version": 7,
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 82,
   "total_clones": 15,
   "total_lines_duplicated": 230,
@@ -2024,11 +2024,11 @@ When running `fallow` with no subcommand (all analyses), the JSON output combine
 {
   "kind": "combined",
   "schema_version": 7,
-  "version": "2.104.0",
+  "version": "3.0.0",
   "elapsed_ms": 159,
   "check": {
     "schema_version": 7,
-    "version": "2.104.0",
+    "version": "3.0.0",
     "elapsed_ms": 45,
     "total_issues": 12,
     "unused_files": [],

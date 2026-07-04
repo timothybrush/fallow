@@ -34,17 +34,17 @@ Codebase intelligence for JavaScript, TypeScript, and styling. The static layer 
 - Projects that are not JavaScript or TypeScript
 
 ## Prerequisites
+
 Fallow must be installed. If not available, install it:
 
 ```bash
-npm install -g fallow          # prebuilt binaries (fastest)
-# or
-npx fallow dead-code               # run without installing
-# or
-cargo install fallow-cli        # build from source
+npm install -g fallow      # prebuilt binaries (fastest, recommended)
+npx fallow dead-code       # run without installing
+cargo install fallow-cli   # build from source
 ```
 
 ## Agent Rules
+
 1. **Always use `--format json --quiet 2>/dev/null`** for machine-readable output. The `2>/dev/null` discards stderr so progress messages and threshold warnings don't corrupt the JSON on stdout. Never use `2>&1`
 2. **Always append `|| true`** to every fallow command. Exit code 1 means "issues found" (normal), not a runtime error. Without `|| true`, the Bash tool treats exit 1 as failure and cancels parallel commands. Only exit code 2 is a real error (invalid config, parse failure)
 3. **Use `--explain`** to include a `_meta` object in JSON output with metric definitions, ranges, and interpretation hints. In human format, `--explain` prints a `Description:` line under each section header.
@@ -57,7 +57,7 @@ cargo install fallow-cli        # build from source
 10. **Type the JSON in TypeScript**. When a project has `fallow` installed as a dev-dependency and the agent is consuming `--format json` output from TypeScript code, `import type { CheckOutput, HealthOutput, DupesOutput, AuditOutput, FallowJsonOutput } from "fallow/types"` exposes the full output contract. `SchemaVersion` is pinned to a literal at codegen time, so a major schema bump fails to compile at call sites that gate on the version.
 11. **Never enable telemetry on the user's behalf**. Fallow's product telemetry is opt-in and off by default; only the user may run `fallow telemetry enable`. You MAY set `FALLOW_AGENT_SOURCE=<allowlisted-value>` (for example `claude_code`, `codex`, `cursor`, `windsurf`, `gemini`, `cline`) so that, IF the user has already enabled telemetry, your integration is correctly attributed. Setting `FALLOW_AGENT_SOURCE` never enables telemetry by itself and uploads no codebase content.
 ## Onboarding And Insight
-Offer setup only after a human-requested analysis finds issues and all signals match: `fallow config --path` exits 3, not CI, not a pipeline format, `fallow impact --format json --quiet` has `onboarding_declined: false`, and no offer happened this session. Ask after showing value, mutate only after consent, and on decline run `fallow init --decline --quiet`. For guards, inspect `fallow hooks status --format json --quiet`, then install agent and git hooks; for large backlogs, pair the gate with `--save-baseline` / new-only guidance. Offer `fallow impact enable` only as local value tracking, never as telemetry. Ask about telemetry only after a clear win and never enable it yourself.
+Offer setup only after a human-requested analysis shows findings and all signals match: `fallow config --path` exits 3, not CI, not a pipeline format, `fallow impact --format json --quiet` has `onboarding_declined: false`, and no offer happened this session. Ask after showing value. Choices: guard commits and PRs, baseline the existing backlog and clean by category, add AGENTS.md guidance, or keep as-is. On decline, run `fallow init --decline --quiet` and stay silent for this project. Mutate only after consent. For guards, inspect `fallow hooks status --format json --quiet`, then use `fallow hooks install --target agent` and `fallow hooks install --target git`; for large backlogs, pair the gate with `--save-baseline` / new-only guidance. Offer `fallow impact enable` as local-only value tracking, never as telemetry; also offer it once on already-configured projects when `fallow impact status --format json` has `enabled: false` and `explicit_decision: false`, and record a no with `fallow impact disable --quiet`. Surface value on clear events: if the agent gate blocked a commit or push and a later retry succeeded, mention what was contained; when `next_steps` carries id `impact-report`, run its command and relay the non-zero numbers to the user in one line. On request, summarize non-zero Impact counts. Ask about telemetry only after such a win, only if `fallow telemetry status --format json` has `explicit_decision: false`, and never run `fallow telemetry enable`.
 ## Task Cheat Sheet
 Route by intent before reaching for the big analysis commands. Same matrix as `fallow schema` (`task_matrix`) and the generated AGENTS.md section.
 
@@ -246,9 +246,6 @@ All JSON responses include structured `actions` arrays on every finding (dead co
 
 `dead-code`, `health`, `dupes`, bare `fallow`, and `audit` JSON output also carry a top-level `next_steps` array of read-only follow-up commands computed from the run's findings: each entry is `{ id, command, reason }`. The `command` is runnable as-is (never a placeholder, never `fix` or any other mutating command); the stable kebab-case `id` (`setup`, `impact-report`, `trace-unused-export`, `trace-clone`, `complexity-breakdown`, `scope-workspaces`, `audit-changed`) maps to a verification step you should run BEFORE acting, for example tracing an export before deleting it. A leading `setup` step (command: `fallow schema`) appears only on unconfigured, non-CI projects with findings and doubles as the onboarding trigger below; it disappears after setup or `fallow init --decline`. An at-most-weekly `impact-report` step (command: `fallow impact`) carries the local value digest when impact tracking has non-zero results; it may ride a clean run. When running via MCP, dispatch on the `id` to the matching tool / `code_execute` host call (`trace_export`, `trace_clone`, `check_health` with `complexity_breakdown: true`, `audit`) rather than shelling out the CLI string. The array is deduplicated, capped at three, and omitted when empty; set `FALLOW_SUGGESTIONS=off` to suppress it.
 
-## Node.js Bindings
-Embedding fallow in a Node.js process (editor extensions, servers, custom tooling)? Use the `@fallow-cli/fallow-node` NAPI bindings instead of spawning the CLI: six async functions (`detectDeadCode`, `detectCircularDependencies`, `detectBoundaryViolations`, `detectDuplication`, `computeComplexity`, `computeHealth`) returning the same JSON envelopes as `--format json`. Read-only analysis only; use the CLI for write-path commands. Details: [Node Bindings](references/node-bindings.md).
-
 ## References
 - [CLI Reference](references/cli-reference.md): complete command and flag specifications, plus configuration field details
 - [Gotchas](references/gotchas.md): common pitfalls, edge cases, and correct usage patterns
@@ -415,13 +412,13 @@ fallow dead-code --format json --quiet --trace-file src/utils.ts        # trace 
 fallow dead-code --format json --quiet --trace-dependency lodash        # trace where a dependency is used
 ```
 
-### Migrate from knip, jscpd, or Stylelint
+### Migrate from knip or jscpd
 ```bash
 fallow migrate --dry-run   # preview
 fallow migrate             # apply; mirrors the source extension (knip.jsonc -> .fallowrc.jsonc); --jsonc / --toml force a format
 ```
 
-Auto-detects `knip.json`, `knip.jsonc`, `.knip.json`, `.knip.jsonc`, `.jscpd.json`, `.stylelintrc.json`, `stylelint.config.js`, and package.json embedded configs. Stylelint migration maps adjacent selector, nesting, and important-usage quality gates to Fallow styling audit settings. Formatting, syntax, vendor-prefix, declaration-order, and naming-convention rules stay in Stylelint and are reported as skipped fields.
+Auto-detects `knip.json`, `knip.jsonc`, `.knip.json`, `.knip.jsonc`, `.jscpd.json`, and package.json embedded configs.
 
 ### Initialize a new config
 ```bash
