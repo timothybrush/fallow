@@ -805,6 +805,50 @@ fn routing_self_identity_probe_routes_through_engine() {
 }
 
 #[test]
+fn audit_repo_ref_orchestration_routes_through_engine() {
+    let source_path = "crates/api/src/runtime/audit.rs";
+    let source = read_source_without_line_comments(source_path).expect("read audit source");
+    let production_source = source
+        .split("\n#[cfg(test)]")
+        .next()
+        .expect("audit source before tests");
+    assert!(
+        production_source.contains("repo_refs::{self, ResolvedAuditBase, TemporaryBaseWorktree}"),
+        "audit runtime must use engine-owned repo-ref and base-worktree helpers"
+    );
+    for forbidden in [
+        "Command::new(\"git\")",
+        "std::process::Command::new(\"git\")",
+        "clear_ambient_git_env",
+        "fn git_stdout",
+        "fn git_ref_exists",
+        "fn git_upstream_ref",
+        "fn git_merge_base",
+        "fn detect_remote_default_ref",
+        "fn get_head_sha",
+        "struct BaseWorktree",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "{source_path} must not own audit git orchestration helper `{forbidden}`"
+        );
+    }
+
+    let decision_surface_path = "crates/api/src/runtime/decision_surface.rs";
+    let decision_surface =
+        read_source_without_line_comments(decision_surface_path).expect("read decision surface");
+    assert!(
+        decision_surface.contains("fallow_engine::repo_refs::{self, TemporaryBaseWorktree}"),
+        "decision surface must use engine-owned base-worktree helpers"
+    );
+    assert!(
+        !decision_surface.contains("super::audit::BaseWorktree")
+            && !decision_surface.contains("super::audit::base_analysis_root"),
+        "{decision_surface_path} must not depend on audit-internal base-worktree helpers"
+    );
+}
+
+#[test]
 fn combined_and_audit_share_project_analysis_artifacts() {
     for source_path in [
         "crates/api/src/runtime/combined.rs",

@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use fallow_config::AuditGate;
 use fallow_engine::{
-    changed_files::clear_ambient_git_env, dead_code::DeadCodeAnalysisArtifacts,
-    project_analysis::ProjectAnalysisArtifactOptions, session::AnalysisSession,
+    dead_code::DeadCodeAnalysisArtifacts,
+    project_analysis::ProjectAnalysisArtifactOptions,
+    repo_refs::{self, ResolvedAuditBase, TemporaryBaseWorktree},
+    session::AnalysisSession,
 };
 use fallow_output::build_audit_next_steps;
 use fallow_types::output::NextStep;
@@ -81,7 +82,7 @@ pub fn run_audit(options: &AuditOptions) -> ProgrammaticResult<AuditProgrammatic
         changed_files_count,
         base_ref: resolved_base.git_ref,
         base_description: resolved_base.description,
-        head_sha: get_head_sha(resolved.root()),
+        head_sha: repo_refs::short_head_sha(resolved.root()),
         elapsed: start.elapsed(),
         base_snapshot_skipped: None,
         base_snapshot,
@@ -113,12 +114,6 @@ fn validate_audit_api_options(options: &AuditOptions) -> ProgrammaticResult<()> 
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct ResolvedAuditBase {
-    pub(super) git_ref: String,
-    pub(super) description: Option<String>,
-}
-
 pub(super) fn resolve_audit_base_ref(
     options: &AuditOptions,
 ) -> ProgrammaticResult<ResolvedAuditBase> {
@@ -145,7 +140,7 @@ pub(super) fn resolve_audit_base_ref(
         .root
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    auto_detect_base_ref(&root).ok_or_else(|| {
+    repo_refs::auto_detect_audit_base_ref(&root).ok_or_else(|| {
         ProgrammaticError::new(
             "could not detect base branch. Set audit.base to specify the comparison target",
             2,
@@ -198,7 +193,7 @@ fn empty_audit_output(
         changed_files_count,
         base_ref: base.git_ref,
         base_description: base.description,
-        head_sha: get_head_sha(root),
+        head_sha: repo_refs::short_head_sha(root),
         elapsed,
         base_snapshot_skipped: None,
         base_snapshot: None,
@@ -648,8 +643,12 @@ fn compute_base_snapshot(
     base_ref: &str,
 ) -> ProgrammaticResult<AuditProgrammaticKeySnapshot> {
     let current_root = analysis_root_from_options(options)?;
-    let worktree = BaseWorktree::create(&current_root, base_ref)?;
-    let base_root = base_analysis_root(&current_root, worktree.path());
+    let worktree = TemporaryBaseWorktree::create(&current_root, base_ref).map_err(|err| {
+        ProgrammaticError::new(err.to_string(), 2)
+            .with_code("FALLOW_AUDIT_BASE_WORKTREE_FAILED")
+            .with_context("audit.base")
+    })?;
+    let base_root = repo_refs::base_analysis_root(&current_root, worktree.path());
     let current_config_path = options
         .analysis
         .config_path
@@ -680,104 +679,6 @@ fn analysis_root_from_options(options: &AuditOptions) -> ProgrammaticResult<Path
     }
 }
 
-pub(super) struct BaseWorktree {
-    repo_root: PathBuf,
-    path: PathBuf,
-}
-
-impl BaseWorktree {
-    pub(super) fn create(repo_root: &Path, base_ref: &str) -> ProgrammaticResult<Self> {
-        let path = base_worktree_path()?;
-        let mut command = Command::new("git");
-        command
-            .args([
-                "worktree",
-                "add",
-                "--detach",
-                "--quiet",
-                path.to_string_lossy().as_ref(),
-                base_ref,
-            ])
-            .current_dir(repo_root);
-        clear_ambient_git_env(&mut command);
-        let output = command.output().map_err(|err| {
-            ProgrammaticError::new(
-                format!("could not create a temporary worktree for base ref `{base_ref}`: {err}"),
-                2,
-            )
-            .with_code("FALLOW_AUDIT_BASE_WORKTREE_FAILED")
-            .with_context("audit.base")
-        })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(ProgrammaticError::new(
-                format!(
-                    "could not create a temporary worktree for base ref `{base_ref}`: {stderr}"
-                ),
-                2,
-            )
-            .with_code("FALLOW_AUDIT_BASE_WORKTREE_FAILED")
-            .with_context("audit.base"));
-        }
-        Ok(Self {
-            repo_root: repo_root.to_path_buf(),
-            path,
-        })
-    }
-
-    pub(super) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for BaseWorktree {
-    fn drop(&mut self) {
-        let mut command = Command::new("git");
-        command
-            .args([
-                "worktree",
-                "remove",
-                "--force",
-                self.path.to_string_lossy().as_ref(),
-            ])
-            .current_dir(&self.repo_root);
-        clear_ambient_git_env(&mut command);
-        let _ = command.output();
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn base_worktree_path() -> ProgrammaticResult<PathBuf> {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|err| {
-            ProgrammaticError::new(format!("system clock before unix epoch: {err}"), 2)
-                .with_code("FALLOW_CLOCK_ERROR")
-                .with_context("audit.base")
-        })?
-        .as_nanos();
-    Ok(std::env::temp_dir().join(format!(
-        "fallow-api-audit-base-{}-{nanos}",
-        std::process::id()
-    )))
-}
-
-pub(super) fn base_analysis_root(current_root: &Path, base_worktree_root: &Path) -> PathBuf {
-    let Some(git_root) = git_toplevel(current_root) else {
-        return base_worktree_root.to_path_buf();
-    };
-    let current_root =
-        dunce::canonicalize(current_root).unwrap_or_else(|_| current_root.to_path_buf());
-    match current_root.strip_prefix(&git_root) {
-        Ok(relative) => base_worktree_root.join(relative),
-        Err(_) => base_worktree_root.to_path_buf(),
-    }
-}
-
-fn git_toplevel(root: &Path) -> Option<PathBuf> {
-    git_stdout(root, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
-}
-
 fn audit_next_steps(
     dead_code: &crate::DeadCodeProgrammaticOutput,
     complexity: &crate::HealthProgrammaticOutput,
@@ -805,93 +706,6 @@ fn audit_base_env_override() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn auto_detect_base_ref(root: &Path) -> Option<ResolvedAuditBase> {
-    if let Some(upstream) = git_upstream_ref(root) {
-        if let Some(sha) = git_merge_base(root, &upstream, "HEAD") {
-            return Some(ResolvedAuditBase {
-                git_ref: sha,
-                description: Some(format!("merge-base with {upstream}")),
-            });
-        }
-        return Some(ResolvedAuditBase {
-            description: Some(format!("{upstream} (tip)")),
-            git_ref: upstream,
-        });
-    }
-
-    if let Some(remote_ref) = detect_remote_default_ref(root) {
-        if let Some(sha) = git_merge_base(root, &remote_ref, "HEAD") {
-            return Some(ResolvedAuditBase {
-                git_ref: sha,
-                description: Some(format!("merge-base with {remote_ref}")),
-            });
-        }
-        return Some(ResolvedAuditBase {
-            description: Some(format!("{remote_ref} (tip)")),
-            git_ref: remote_ref,
-        });
-    }
-
-    for candidate in ["main", "master"] {
-        if git_ref_exists(root, candidate) {
-            return Some(ResolvedAuditBase {
-                git_ref: candidate.to_string(),
-                description: Some(format!("local {candidate}")),
-            });
-        }
-    }
-
-    None
-}
-
-fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
-    let mut command = Command::new("git");
-    command.args(args).current_dir(root);
-    clear_ambient_git_env(&mut command);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!trimmed.is_empty()).then_some(trimmed)
-}
-
-fn git_ref_exists(root: &Path, git_ref: &str) -> bool {
-    git_stdout(root, &["rev-parse", "--verify", "--quiet", git_ref]).is_some()
-}
-
-fn git_upstream_ref(root: &Path) -> Option<String> {
-    git_stdout(
-        root,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    )
-}
-
-fn git_merge_base(root: &Path, a: &str, b: &str) -> Option<String> {
-    git_stdout(root, &["merge-base", a, b])
-}
-
-fn detect_remote_default_ref(root: &Path) -> Option<String> {
-    if let Some(full_ref) = git_stdout(root, &["symbolic-ref", "refs/remotes/origin/HEAD"])
-        && let Some(branch) = full_ref.strip_prefix("refs/remotes/origin/")
-    {
-        return Some(format!("origin/{branch}"));
-    }
-    ["origin/main", "origin/master"]
-        .into_iter()
-        .find(|candidate| git_ref_exists(root, candidate))
-        .map(str::to_string)
-}
-
-fn get_head_sha(root: &Path) -> Option<String> {
-    git_stdout(root, &["rev-parse", "--short", "HEAD"])
 }
 
 #[cfg(test)]

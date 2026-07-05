@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use fallow_engine::repo_refs::{self, TemporaryBaseWorktree};
 use fallow_output::ReviewDeltas;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -195,8 +196,12 @@ fn compute_base_decision_snapshot(
     current_root: &Path,
     base_ref: &str,
 ) -> ProgrammaticResult<DecisionSnapshot> {
-    let worktree = super::audit::BaseWorktree::create(current_root, base_ref)?;
-    let base_root = super::audit::base_analysis_root(current_root, worktree.path());
+    let worktree = TemporaryBaseWorktree::create(current_root, base_ref).map_err(|err| {
+        ProgrammaticError::new(err.to_string(), 2)
+            .with_code("FALLOW_DECISION_SURFACE_FAILED")
+            .with_context("decisionSurface.base")
+    })?;
+    let base_root = repo_refs::base_analysis_root(current_root, worktree.path());
     let base_analysis = AnalysisOptions {
         root: Some(base_root),
         config_path: options.analysis.config_path.clone(),
