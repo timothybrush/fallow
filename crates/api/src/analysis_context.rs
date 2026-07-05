@@ -315,11 +315,10 @@ fn resolve_workspace_scope(
     workspace: Option<&[String]>,
     changed_workspaces: Option<&str>,
 ) -> ProgrammaticResult<Option<Vec<PathBuf>>> {
-    fallow_engine::workspace_scope::resolve_workspace_scope_roots(
+    fallow_engine::workspace_scope::resolve_workspace_scope_roots_for_project(
         root,
         workspace,
         changed_workspaces,
-        &fallow_engine::discover::discover_workspace_packages(root),
     )
     .map_err(map_workspace_scope_error)
 }

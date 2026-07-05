@@ -1540,6 +1540,16 @@ fn api_and_cli_workspace_scope_resolution_routes_through_engine() {
             source.contains("fallow_engine::workspace_scope"),
             "{source_path} must route workspace-scope resolution through fallow-engine"
         );
+        if source_path == "crates/api/src/analysis_context.rs" {
+            assert!(
+                source.contains("resolve_workspace_scope_roots_for_project"),
+                "{source_path} must use the engine-owned project workspace-scope helper"
+            );
+            assert!(
+                !source.contains("discover_workspace_packages(root)"),
+                "{source_path} must not rediscover workspaces outside the engine workspace-scope helper"
+            );
+        }
         for forbidden in [
             "globset::Glob",
             "fn split_workspace_patterns",
