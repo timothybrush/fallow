@@ -1035,7 +1035,7 @@ Benchmarked on real open-source projects, cold runs (no cache) so each tool work
 |:--------|------:|-------:|-----:|-------:|
 | [astro](https://github.com/withastro/astro) | 2,859 | 3.76s | **1.21s** | knip 3.1x |
 | [fastify](https://github.com/fastify/fastify) | 286 | **64ms** | 205ms | fallow 3.2x |
-| [next.js](https://github.com/vercel/next.js) | 20,558 | 2.95s | errors* | fallow only |
+| [next.js](https://github.com/vercel/next.js) | 20,552 | 2.95s | errors* | fallow only |
 | [preact](https://github.com/preactjs/preact) | 244 | **74ms** | 2.01s | fallow 27.2x |
 | [TanStack/query](https://github.com/TanStack/query) | 901 | **560ms** | 1.04s | fallow 1.9x |
 | [svelte](https://github.com/sveltejs/svelte) | 3,337 | **611ms** | 632ms | fallow 1.0x |
