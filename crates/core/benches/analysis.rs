@@ -5,7 +5,7 @@
 )]
 #![expect(
     deprecated,
-    reason = "ADR-008: benchmark exercises the workspace path-dep fallow_core::analyze surface"
+    reason = "Core-internal policy: benchmark exercises the workspace path-dep fallow_core::analyze surface"
 )]
 
 use std::path::PathBuf;

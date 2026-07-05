@@ -4,7 +4,7 @@
 //! `run_boundary_violations`, `run_duplication`, `run_health`). The typed
 //! `run_*` functions are the primary embedder contract; serialize typed output
 //! with the matching `serialize_*_programmatic_json` helper only at a protocol
-//! boundary. See ADR-008 for the policy, and `docs/fallow-core-migration.md`
+//! boundary. See `docs/fallow-core-migration.md`
 //! for the function-by-function migration map. Items in this crate may change
 //! in any release, including patch releases. Publishing remains transitional
 //! while `fallow-engine` still depends on core internals.
@@ -330,7 +330,7 @@ fn warn_undeclared_workspaces(
 #[doc(hidden)]
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_dead_code for typed output; serialize with fallow_api::serialize_dead_code_programmatic_json for JSON output. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_dead_code for typed output; serialize with fallow_api::serialize_dead_code_programmatic_json for JSON output. See docs/fallow-core-migration.md."
 )]
 pub fn analyze(config: &ResolvedConfig) -> Result<AnalysisResults, FallowError> {
     let output = analyze_full(config, false, false, false, false)?;
@@ -345,7 +345,7 @@ pub fn analyze(config: &ResolvedConfig) -> Result<AnalysisResults, FallowError> 
 #[doc(hidden)]
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_dead_code for public typed output. NOTE: export-usage collection is not exposed in the programmatic surface today. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_dead_code for public typed output. NOTE: export-usage collection is not exposed in the programmatic surface today. See docs/fallow-core-migration.md."
 )]
 pub fn analyze_with_usages(config: &ResolvedConfig) -> Result<AnalysisResults, FallowError> {
     let output = analyze_full(config, false, true, false, false)?;
@@ -360,7 +360,7 @@ pub fn analyze_with_usages(config: &ResolvedConfig) -> Result<AnalysisResults, F
 #[doc(hidden)]
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_dead_code for public typed output. NOTE: trace timings are not exposed in the programmatic surface today; use `fallow dead-code --performance` for CLI-side timings. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_dead_code for public typed output. NOTE: trace timings are not exposed in the programmatic surface today; use `fallow dead-code --performance` for CLI-side timings. See docs/fallow-core-migration.md."
 )]
 pub fn analyze_with_trace(config: &ResolvedConfig) -> Result<AnalysisOutput, FallowError> {
     analyze_full(config, true, false, false, false)
@@ -378,7 +378,7 @@ pub fn analyze_with_trace(config: &ResolvedConfig) -> Result<AnalysisOutput, Fal
 #[doc(hidden)]
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_dead_code for public typed output. NOTE: combined-mode module retention is not exposed in the programmatic surface today. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_dead_code for public typed output. NOTE: combined-mode module retention is not exposed in the programmatic surface today. See docs/fallow-core-migration.md."
 )]
 pub fn analyze_retaining_modules(
     config: &ResolvedConfig,
@@ -1196,7 +1196,7 @@ fn analyze_dead_code_timed(
     input.progress.set_stage("analyzing...");
     #[expect(
         deprecated,
-        reason = "ADR-008 keeps workspace path-dependency calls while warning external fallow-core consumers"
+        reason = "Core-internal policy keeps workspace path-dependency calls while warning external fallow-core consumers"
     )]
     let mut result = analyze::find_dead_code_full(
         graph,

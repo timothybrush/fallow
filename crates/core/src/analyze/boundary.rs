@@ -16,7 +16,7 @@ use super::{LineOffsetsMap, byte_offset_to_line_col};
 /// is not allowed to import from, a `BoundaryViolation` is emitted.
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_boundary_violations for typed output; serialize with fallow_api::serialize_boundary_violations_programmatic_json for JSON output. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_boundary_violations for typed output; serialize with fallow_api::serialize_boundary_violations_programmatic_json for JSON output. See docs/fallow-core-migration.md."
 )]
 pub fn find_boundary_violations(
     graph: &ModuleGraph,
@@ -222,7 +222,7 @@ fn warn_unmatched_boundary_zones(
 #[cfg(test)]
 #[expect(
     deprecated,
-    reason = "ADR-008 keeps direct detector unit tests while the public warning targets external callers"
+    reason = "Core-internal policy keeps direct detector unit tests while the public warning targets external callers"
 )]
 mod tests {
     use super::*;

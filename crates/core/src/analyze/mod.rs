@@ -95,7 +95,7 @@ use unrendered_component::{
 };
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_catalog::{
     find_empty_catalog_groups, find_unresolved_catalog_references, find_unused_catalog_entries,
@@ -107,7 +107,7 @@ use unused_component_output::find_unused_component_outputs;
 use unused_component_prop::{find_unused_component_props, find_unused_react_props};
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_deps::{
     UnlistedDependencyInput, find_test_only_dependencies, find_type_only_dependencies,
@@ -115,7 +115,7 @@ use unused_deps::{
 };
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_exports::{
     collect_export_usages, find_private_type_leaks, find_unused_exports,
@@ -123,14 +123,14 @@ use unused_exports::{
 };
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_files::find_unused_files;
 use unused_load_data_key::find_unused_load_data_keys;
 use unused_members::{UnusedMemberScanInput, find_unused_members_with_public_api_entry_points};
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_overrides::{
     find_misconfigured_dependency_overrides, find_unused_dependency_overrides,
@@ -784,11 +784,11 @@ fn build_dead_code_run_context<'a>(
 /// Find all dead code, with optional resolved module data, plugin context, and workspace info.
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_dead_code for typed output; serialize with fallow_api::serialize_dead_code_programmatic_json for JSON output. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_dead_code for typed output; serialize with fallow_api::serialize_dead_code_programmatic_json for JSON output. See docs/fallow-core-migration.md."
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "frozen deprecated public API (ADR-008); signature must not change"
+    reason = "frozen deprecated public API; signature must not change"
 )]
 pub fn find_dead_code_full(
     graph: &ModuleGraph,
@@ -2048,7 +2048,7 @@ fn run_cycle_and_usage_detectors(
 
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn run_duplicate_export_detector(
     graph: &ModuleGraph,
@@ -2087,7 +2087,7 @@ fn run_duplicate_export_detector(
 
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn run_boundary_violation_detector(
     graph: &ModuleGraph,
@@ -2137,7 +2137,7 @@ fn filter_public_workspace_results(
 
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn populate_pnpm_catalog_findings(
     config: &ResolvedConfig,
@@ -2179,7 +2179,7 @@ fn populate_pnpm_catalog_findings(
 
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn populate_pnpm_override_findings(
     config: &ResolvedConfig,
@@ -2324,7 +2324,7 @@ fn boundary_crossings_by_file(
 
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn run_unused_file_detector(
     graph: &ModuleGraph,
@@ -2342,7 +2342,7 @@ fn run_unused_file_detector(
 
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn run_export_detectors(
     graph: &ModuleGraph,
@@ -2627,7 +2627,7 @@ fn populate_test_only_dependency_findings(
 /// `find_unused_dependencies` computation, so they are populated together.
 #[expect(
     deprecated,
-    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+    reason = "Core-internal policy deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 fn populate_unused_dependency_findings(
     input: DependencyDetectorInput<'_>,
@@ -2732,7 +2732,7 @@ fn run_unresolved_import_detector(
 #[cfg(test)]
 #[expect(
     deprecated,
-    reason = "ADR-008 keeps direct analyzer unit tests while the public warning targets external callers"
+    reason = "Core-internal policy keeps direct analyzer unit tests while the public warning targets external callers"
 )]
 mod tests {
     use fallow_types::extract::{byte_offset_to_line_col, compute_line_offsets};

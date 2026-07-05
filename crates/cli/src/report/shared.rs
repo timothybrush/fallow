@@ -4,7 +4,7 @@
 //! between, for example, the JSON `actions[].note` and the human `Duplicate
 //! exports` section. Wording is deliberately neutral (no JSON action names, no
 //! MCP tool names, no SARIF rule IDs) so it reads naturally in every consuming
-//! surface. See ADR-008 and incident 2026-05-11 in the implement skill log.
+//! surface. Kept shared to prevent cross-format drift.
 
 /// Namespace-barrel orientation hint shared between the JSON `remove-duplicate`
 /// action note and the human `Duplicate exports` section.

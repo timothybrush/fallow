@@ -385,7 +385,7 @@ fn script_used_set(
 /// determining whether a dependency is used (mirroring `find_unlisted_dependencies`).
 #[deprecated(
     since = "2.76.0",
-    note = "fallow_core is internal; use fallow_api::run_dead_code for typed output; serialize with fallow_api::serialize_dead_code_programmatic_json for JSON output. See docs/fallow-core-migration.md and ADR-008."
+    note = "fallow_core is internal; use fallow_api::run_dead_code for typed output; serialize with fallow_api::serialize_dead_code_programmatic_json for JSON output. See docs/fallow-core-migration.md."
 )]
 pub fn find_unused_dependencies(
     graph: &ModuleGraph,
@@ -1462,7 +1462,7 @@ fn unresolved_import_location(
 /// Find imports that could not be resolved.
 #[expect(
     clippy::too_many_arguments,
-    reason = "frozen deprecated public API (ADR-008); signature must not change"
+    reason = "frozen deprecated public API; signature must not change"
 )]
 pub fn find_unresolved_imports(
     resolved_modules: &[ResolvedModule],
@@ -1510,7 +1510,7 @@ pub fn find_unresolved_imports(
 #[cfg(test)]
 #[expect(
     deprecated,
-    reason = "ADR-008 keeps direct detector unit tests while the public warning targets external callers"
+    reason = "Core-internal policy keeps direct detector unit tests while the public warning targets external callers"
 )]
 #[path = "unused_deps_tests/mod.rs"]
 mod tests;
