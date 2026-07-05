@@ -33,8 +33,8 @@ use super::helpers::{
 };
 use super::{
     BindingTarget, ModuleInfoExtractor, PendingLocalExportSpecifier, SideEffectRegistrationTarget,
-    try_extract_arrow_wrapped_import, try_extract_dynamic_import, try_extract_import_then_callback,
-    try_extract_property_callback_import, try_extract_require,
+    collect_static_import_specifiers, extract_import_expression, try_extract_arrow_wrapped_import,
+    try_extract_import_then_callback, try_extract_property_callback_import, try_extract_require,
 };
 
 #[path = "visit_impl_di.rs"]
@@ -1341,10 +1341,15 @@ impl<'a> ModuleInfoExtractor {
             return;
         }
 
-        let Some((import_expr, source)) = try_extract_dynamic_import(init) else {
+        let Some(import_expr) = extract_import_expression(init) else {
             return;
         };
-        self.handle_dynamic_import_declaration(declarator, import_expr, source);
+        let mut sources = Vec::new();
+        collect_static_import_specifiers(&import_expr.source, &mut sources);
+        if sources.is_empty() {
+            return;
+        }
+        self.handle_dynamic_import_declaration(declarator, import_expr, &sources);
     }
 
     /// Record a CommonJS named export (`module.exports.X = ...` /
@@ -1909,49 +1914,36 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
             return;
         }
 
-        match &expr.source {
-            Expression::StringLiteral(lit) => {
-                self.dynamic_imports.push(DynamicImportInfo {
-                    source: lit.value.to_string(),
-                    span: expr.span,
-                    destructured_names: Vec::new(),
-                    local_name: None,
-                    is_speculative: false,
-                });
-            }
-            Expression::TemplateLiteral(tpl)
-                if !tpl.quasis.is_empty() && !tpl.expressions.is_empty() =>
-            {
-                self.record_dynamic_import_template_pattern(tpl, expr.span);
-            }
-            Expression::TemplateLiteral(tpl)
-                if !tpl.quasis.is_empty() && tpl.expressions.is_empty() =>
-            {
-                let value = tpl.quasis[0].value.raw.to_string();
-                if !value.is_empty() {
-                    self.dynamic_imports.push(DynamicImportInfo {
-                        source: value,
-                        span: expr.span,
-                        destructured_names: Vec::new(),
-                        local_name: None,
-                        is_speculative: false,
-                    });
-                }
-            }
-            Expression::BinaryExpression(bin)
-                if bin.operator == oxc_ast::ast::BinaryOperator::Addition =>
-            {
-                if let Some((prefix, suffix)) = extract_concat_parts(bin)
-                    && (prefix.starts_with("./") || prefix.starts_with("../"))
+        // Static specifiers first (string literals, no-substitution templates,
+        // and every statically-resolvable conditional/logical/parenthesized
+        // branch); only when none resolve, fall back to the pattern shapes
+        // (substitution templates and `'./x/' + y` concatenations).
+        let mut sources = Vec::new();
+        collect_static_import_specifiers(&expr.source, &mut sources);
+        if !sources.is_empty() {
+            self.push_dynamic_import_branches(&sources, expr.span, &[], None);
+        } else {
+            match &expr.source {
+                Expression::TemplateLiteral(tpl)
+                    if !tpl.quasis.is_empty() && !tpl.expressions.is_empty() =>
                 {
-                    self.dynamic_import_patterns.push(DynamicImportPattern {
-                        prefix,
-                        suffix,
-                        span: expr.span,
-                    });
+                    self.record_dynamic_import_template_pattern(tpl, expr.span);
                 }
+                Expression::BinaryExpression(bin)
+                    if bin.operator == oxc_ast::ast::BinaryOperator::Addition =>
+                {
+                    if let Some((prefix, suffix)) = extract_concat_parts(bin)
+                        && (prefix.starts_with("./") || prefix.starts_with("../"))
+                    {
+                        self.dynamic_import_patterns.push(DynamicImportPattern {
+                            prefix,
+                            suffix,
+                            span: expr.span,
+                        });
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         walk::walk_import_expression(self, expr);
@@ -1971,14 +1963,13 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
     fn visit_object_property(&mut self, prop: &ObjectProperty<'a>) {
         self.record_graphql_resolver_args_source(&prop.value);
 
-        if let Some((import_expr, source)) = try_extract_property_callback_import(prop) {
-            self.dynamic_imports.push(DynamicImportInfo {
-                source: source.to_string(),
-                span: import_expr.span,
-                destructured_names: vec!["default".to_string()],
-                local_name: None,
-                is_speculative: false,
-            });
+        if let Some((import_expr, sources)) = try_extract_property_callback_import(prop) {
+            self.push_dynamic_import_branches(
+                &sources,
+                import_expr.span,
+                &["default".to_string()],
+                None,
+            );
             self.handled_import_spans.insert(import_expr.span);
         }
 
