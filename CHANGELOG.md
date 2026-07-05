@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-07-05
+
 ### Added
 
 - **New `dev-dependency-in-production` rule (promote-side dependency drift).**
@@ -30,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Defaults to `warn`; configure via the `dev-dependencies-in-production` rule
   key or suppress a package with `ignoreDependencies`. Surfaces in human, JSON, SARIF,
   Code Climate, compact, and markdown output, in `fallow explain`, and as an LSP
-  diagnostic.
+  diagnostic. Thanks [@CallumHoward](https://github.com/CallumHoward) for the
+  implementation. (Closes [#1738](https://github.com/fallow-rs/fallow/issues/1738))
 
 - **`fallow dead-code --trace FILE:MEMBER` now traces class, enum, and store members.** Previously tracing a class member (e.g. `--trace src/foo.ts:createEstimate`) errored `export 'createEstimate' not found`, so a member finding could not be debugged from the trace tool. On an export miss the trace now falls back to a member trace that names the owning class, reports its reachability and usage (the precondition that gates member crediting), lists who imports it, and points at `fallow dead-code --unused-class-members --file <file>` to inspect the finding. Available in human and `--format json`. (Refs [#1744](https://github.com/fallow-rs/fallow/issues/1744))
 
@@ -4013,7 +4016,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/fallow-rs/fallow/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/fallow-rs/fallow/compare/v2.104.0...v3.0.0
 [2.104.0]: https://github.com/fallow-rs/fallow/compare/v2.103.0...v2.104.0
 [2.103.0]: https://github.com/fallow-rs/fallow/compare/v2.102.0...v2.103.0
