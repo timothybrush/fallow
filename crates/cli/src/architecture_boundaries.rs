@@ -21,6 +21,10 @@ fn repo_architecture_north_star_stays_documented() {
             "core migration doc must keep the architecture north star: {required}"
         );
     }
+    assert!(
+        !migration_doc.contains("ADR-008"),
+        "public core migration doc must stay self-contained instead of requiring private ADR context"
+    );
 }
 
 #[test]

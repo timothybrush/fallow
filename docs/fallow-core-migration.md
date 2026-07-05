@@ -1,12 +1,11 @@
 # Migrating from fallow-core analyzer functions
 
-ADR-008 makes `fallow-core` an internal implementation crate. Starting with
-2.76.0, the top-level `fallow_core::analyze*` entry points plus the
-detector helpers under `fallow_core::analyze::*` emit deprecation
-warnings. `fallow-core` remains a published implementation dependency while
-`fallow-engine` still builds on it, but it is no longer the supported Rust
-embedder surface. Use the published `fallow-api` facade or the typed
-`fallow-engine` layer instead.
+`fallow-core` is an internal implementation crate. Starting with 2.76.0, the
+top-level `fallow_core::analyze*` entry points plus the detector helpers under
+`fallow_core::analyze::*` emit deprecation warnings. `fallow-core` remains a
+published implementation dependency while `fallow-engine` still builds on it,
+but it is no longer the supported Rust embedder surface. Use the published
+`fallow-api` facade or the typed `fallow-engine` layer instead.
 
 Use the supported embedder API in `fallow_api`. New Rust consumers should call
 the typed `run_*` functions (`run_dead_code`, `run_duplication`,
