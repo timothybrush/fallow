@@ -624,6 +624,30 @@ fn list_surfaces_reuse_session_discovery() {
 }
 
 #[test]
+fn list_surfaces_delegate_inventory_composition_to_engine() {
+    for source_path in ["crates/cli/src/list.rs", "crates/api/src/list_runtime.rs"] {
+        let source = read_source_without_line_comments(source_path).expect("read source");
+        assert!(
+            source.contains("fallow_engine::list_inventory"),
+            "{source_path} must use engine-owned list inventory helpers"
+        );
+        for forbidden in [
+            "discover_entry_points(",
+            "discover_workspace_entry_points(",
+            "discover_plugin_entry_points(",
+            "PluginRegistry::new",
+            "PackageJson::load",
+            "merge_active_plugins_from",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{source_path} must not own list inventory composition helper `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn coverage_inventory_reuses_session_discovery() {
     let source = read_source_without_line_comments("crates/cli/src/coverage/upload_inventory.rs")
         .expect("read coverage upload inventory");

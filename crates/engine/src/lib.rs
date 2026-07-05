@@ -37,6 +37,7 @@ pub mod flags;
 mod git_env;
 pub mod guard;
 pub mod health;
+pub mod list_inventory;
 pub mod module_graph;
 pub mod plugins;
 pub mod project_analysis;

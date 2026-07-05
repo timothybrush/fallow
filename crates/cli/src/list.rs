@@ -155,27 +155,12 @@ fn collect_list_entry_points(
         return None;
     }
     let disc = discovered?;
-    let mut entries = fallow_engine::discover::discover_entry_points(config, disc);
-    if let Some(workspaces) = workspaces {
-        for ws in workspaces {
-            let ws_entries =
-                fallow_engine::discover::discover_workspace_entry_points(&ws.root, config, disc);
-            entries.extend(ws_entries);
-        }
-    } else {
-        let workspaces = fallow_engine::discover::discover_workspace_packages(opts.root);
-        for ws in &workspaces {
-            let ws_entries =
-                fallow_engine::discover::discover_workspace_entry_points(&ws.root, config, disc);
-            entries.extend(ws_entries);
-        }
-    }
-    if let Some(pr) = plugin_result {
-        let plugin_entries =
-            fallow_engine::discover::discover_plugin_entry_points(pr, config, disc);
-        entries.extend(plugin_entries);
-    }
-    Some(entries)
+    Some(fallow_engine::list_inventory::collect_entry_points(
+        config,
+        disc,
+        workspaces.unwrap_or(&[]),
+        plugin_result,
+    ))
 }
 
 fn collect_list_workspace_data(
@@ -271,76 +256,19 @@ fn collect_plugin_result(
     let Some(disc) = discovered else {
         return Ok(None);
     };
-    let file_paths: Vec<std::path::PathBuf> = disc.iter().map(|f| f.path.clone()).collect();
-    let registry = fallow_engine::plugins::PluginRegistry::new(config.external_plugins.clone());
-    let mut result = run_package_plugins(
-        &registry,
-        &opts.root.join("package.json"),
+    fallow_engine::list_inventory::collect_active_plugins(
         opts.root,
-        &file_paths,
-        opts.output,
-    )?
-    .unwrap_or_default();
-    merge_workspace_plugins(opts, &registry, &file_paths, workspaces, &mut result)?;
-    Ok(Some(result))
-}
-
-fn run_package_plugins(
-    registry: &fallow_engine::plugins::PluginRegistry,
-    package_path: &std::path::Path,
-    root: &std::path::Path,
-    file_paths: &[std::path::PathBuf],
-    output: OutputFormat,
-) -> Result<Option<fallow_engine::plugins::AggregatedPluginResult>, ExitCode> {
-    let Ok(pkg) = fallow_config::PackageJson::load(package_path) else {
-        return Ok(None);
-    };
-    registry
-        .try_run(&pkg, root, file_paths)
-        .map(Some)
-        .map_err(|errors| {
+        config,
+        disc,
+        workspaces.unwrap_or(&[]),
+    )
+    .map(Some)
+    .map_err(|err| match err {
+        fallow_engine::list_inventory::ListInventoryError::PluginRegex(errors) => {
             let message = fallow_engine::plugins::registry::format_plugin_regex_errors(&errors);
-            crate::error::emit_error(&message, 2, output)
-        })
-}
-
-fn merge_workspace_plugins(
-    opts: &ListOptions<'_>,
-    registry: &fallow_engine::plugins::PluginRegistry,
-    file_paths: &[std::path::PathBuf],
-    workspaces: Option<&[fallow_config::WorkspaceInfo]>,
-    result: &mut fallow_engine::plugins::AggregatedPluginResult,
-) -> Result<(), ExitCode> {
-    if let Some(workspaces) = workspaces {
-        for ws in workspaces {
-            let Some(ws_result) = run_package_plugins(
-                registry,
-                &ws.root.join("package.json"),
-                &ws.root,
-                file_paths,
-                opts.output,
-            )?
-            else {
-                continue;
-            };
-            result.merge_active_plugins_from(&ws_result);
+            crate::error::emit_error(&message, 2, opts.output)
         }
-        return Ok(());
-    }
-    for ws in &fallow_engine::discover::discover_workspace_packages(opts.root) {
-        let Some(ws_result) = run_package_plugins(
-            registry,
-            &ws.root.join("package.json"),
-            &ws.root,
-            file_paths,
-            opts.output,
-        )?
-        else {
-            continue;
-        };
-        result.merge_active_plugins_from(&ws_result);
-    }
-    Ok(())
+    })
 }
 
 /// Print list results as JSON and return the appropriate exit code.

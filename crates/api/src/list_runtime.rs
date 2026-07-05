@@ -335,55 +335,18 @@ fn collect_plugin_result(
     let Some(files) = discovered else {
         return Ok(None);
     };
-    let file_paths: Vec<std::path::PathBuf> = files.iter().map(|file| file.path.clone()).collect();
-    let registry = fallow_engine::plugins::PluginRegistry::new(config.external_plugins.clone());
-    let mut result = run_package_plugins(&registry, &root.join("package.json"), root, &file_paths)?
-        .unwrap_or_default();
-    merge_workspace_plugins(workspaces, &registry, &file_paths, &mut result)?;
-    Ok(Some(result))
-}
-
-fn run_package_plugins(
-    registry: &fallow_engine::plugins::PluginRegistry,
-    package_path: &Path,
-    root: &Path,
-    file_paths: &[std::path::PathBuf],
-) -> ProgrammaticResult<Option<fallow_engine::plugins::AggregatedPluginResult>> {
-    let Ok(package) = fallow_config::PackageJson::load(package_path) else {
-        return Ok(None);
-    };
-    registry
-        .try_run(&package, root, file_paths)
+    fallow_engine::list_inventory::collect_active_plugins(root, config, files, workspaces)
         .map(Some)
-        .map_err(|errors| {
-            ProgrammaticError::new(
-                fallow_engine::plugins::registry::format_plugin_regex_errors(&errors),
-                2,
-            )
-            .with_code("FALLOW_PLUGIN_REGEX_FAILED")
-            .with_context("project_info.plugins")
+        .map_err(|err| match err {
+            fallow_engine::list_inventory::ListInventoryError::PluginRegex(errors) => {
+                ProgrammaticError::new(
+                    fallow_engine::plugins::registry::format_plugin_regex_errors(&errors),
+                    2,
+                )
+                .with_code("FALLOW_PLUGIN_REGEX_FAILED")
+                .with_context("project_info.plugins")
+            }
         })
-}
-
-fn merge_workspace_plugins(
-    workspaces: &[fallow_config::WorkspaceInfo],
-    registry: &fallow_engine::plugins::PluginRegistry,
-    file_paths: &[std::path::PathBuf],
-    result: &mut fallow_engine::plugins::AggregatedPluginResult,
-) -> ProgrammaticResult<()> {
-    for workspace in workspaces {
-        let Some(workspace_result) = run_package_plugins(
-            registry,
-            &workspace.root.join("package.json"),
-            &workspace.root,
-            file_paths,
-        )?
-        else {
-            continue;
-        };
-        result.merge_active_plugins_from(&workspace_result);
-    }
-    Ok(())
 }
 
 fn collect_entry_points(
@@ -398,22 +361,12 @@ fn collect_entry_points(
         return None;
     }
     let discovered = discovered?;
-    let mut entries = fallow_engine::discover::discover_entry_points(config, discovered);
-    for workspace in workspaces {
-        entries.extend(fallow_engine::discover::discover_workspace_entry_points(
-            &workspace.root,
-            config,
-            discovered,
-        ));
-    }
-    if let Some(plugin_result) = plugin_result {
-        entries.extend(fallow_engine::discover::discover_plugin_entry_points(
-            plugin_result,
-            config,
-            discovered,
-        ));
-    }
-    Some(entries)
+    Some(fallow_engine::list_inventory::collect_entry_points(
+        config,
+        discovered,
+        workspaces,
+        plugin_result,
+    ))
 }
 
 fn entry_points_to_output(entries: &[EntryPoint], root: &Path) -> Vec<ListEntryPointOutput> {
