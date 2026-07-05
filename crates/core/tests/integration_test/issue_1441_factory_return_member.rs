@@ -30,6 +30,46 @@ fn factory_return_value_credits_class_member() {
 }
 
 #[test]
+fn return_type_annotated_factory_credits_class_member() {
+    // #1744: a factory whose body has NO `new` value-proof (`return
+    // registry.get() as ReadyAppController`) but an explicit `: ReadyAppController`
+    // return annotation must credit member reads on the cross-file consumer's
+    // binding (`const c = useController(); c.getServices()`), for both the
+    // function-declaration and arrow factory forms, while a genuinely unused
+    // method on the same class stays flagged. This is the reporter's exact shape
+    // (a hook/factory typed `: ReadyAppController` returning a cast value) and a
+    // deliberate widening of the #1441 value-vs-type doctrine to trust an explicit
+    // return-type annotation as a compiler-checked contract.
+    let root = fixture_path("issue-1744-return-type-factory-member");
+    let mut config = create_config(root);
+    config.rules.unused_class_members = fallow_config::Severity::Error;
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    let unused: Vec<String> = results
+        .unused_class_members
+        .iter()
+        .map(|m| format!("{}.{}", m.member.parent_name, m.member.member_name))
+        .collect();
+
+    for credited in [
+        "ReadyAppController.getServices",
+        "ReadyAppController.createEstimate",
+        "ReadyAppController.cloneEstimate",
+    ] {
+        assert!(
+            !unused.contains(&credited.to_string()),
+            "{credited} is reached through a return-type-annotated factory and must be credited \
+             (issue #1744), found: {unused:?}"
+        );
+    }
+    assert!(
+        unused.contains(&"ReadyAppController.neverUsedAnywhere".to_string()),
+        "ReadyAppController.neverUsedAnywhere has no call site and must stay flagged (the fix must \
+         not blanket-credit every member of a return-type-annotated class), found: {unused:?}"
+    );
+}
+
+#[test]
 fn cross_module_factory_return_credits_class_member() {
     // A consumer binds the result of an IMPORTED factory and reads a member:
     //   const a = useApi();    a.Plan()      -> typed module-local return

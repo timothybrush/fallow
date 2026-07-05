@@ -718,7 +718,14 @@ use crate::MemberKind;
 /// frontmatter-typed class array) now credits the element-class members, so
 /// `.astro` `member_accesses` gain the template-region item-member accesses a
 /// warm 219 cache lacks.
-pub(super) const CACHE_VERSION: u32 = 220;
+///
+/// Bumped to 221 for issue #1744: a factory function whose body yields no value
+/// proof but whose explicit return-TYPE annotation names a class (`function
+/// useController(): ReadyAppController { return registry.get() as ... }`) now
+/// records a strict factory-return entry, so its `exported_factory_returns`
+/// output credits `const c = useController(); c.method()` across the module
+/// boundary; a warm 220 cache lacks that entry.
+pub(super) const CACHE_VERSION: u32 = 221;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.

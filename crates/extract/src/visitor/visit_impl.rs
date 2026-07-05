@@ -178,6 +178,27 @@ impl ModuleInfoExtractor {
             }
             self.factory_return_alias_functions
                 .insert(name.to_string(), returned_id);
+        } else if strict_eligible
+            && let Some(return_type) = input.return_type
+            && let Some(class_name) = extract_type_annotation_name(return_type)
+        {
+            // #1744: no body value-proof (`return registry.get() as Ctrl`), but
+            // the function's explicit return-TYPE annotation names a class. Trust
+            // the declared contract as a TYPE claim: TypeScript enforces that every
+            // return conforms to the annotation, so the returned value IS an
+            // instance of that class. This deliberately widens the #1441
+            // value-vs-type doctrine (which rejects a returned-IDENTIFIER's
+            // variable annotation, `let api: RESTApi`, because an assignment can
+            // contradict it) because a FUNCTION return-type annotation is the
+            // author's own compiler-checked contract, not a contradictable local.
+            // It stays over-credit-safe: the analyze layer credits only when the
+            // name resolves to a real class-with-members export, so a wrong
+            // annotation (an interface, a primitive, a different class) is a
+            // harmless no-op, a false negative at worst, never a false positive.
+            self.strict_factory_return_functions
+                .insert(name.to_string(), class_name.clone());
+            self.factory_return_functions
+                .insert(name.to_string(), class_name);
         }
     }
 
@@ -679,6 +700,7 @@ impl ModuleInfoExtractor {
                     is_expression_body: false,
                     is_async: function.r#async,
                     is_generator: function.generator,
+                    return_type: function.return_type.as_deref(),
                 },
             );
             self.record_source_returning_function_declaration(function);

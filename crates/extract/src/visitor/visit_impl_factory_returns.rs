@@ -16,6 +16,10 @@ pub(super) struct FactoryReturnFunctionInput<'site, 'ast> {
     pub(super) is_expression_body: bool,
     pub(super) is_async: bool,
     pub(super) is_generator: bool,
+    /// The function's declared return-type annotation, used as a fallback
+    /// TYPE-claim proof when the body yields no value proof (`new Class()` /
+    /// returned identifier). See issue #1744.
+    pub(super) return_type: Option<&'site TSTypeAnnotation<'ast>>,
 }
 
 /// Visit every `return` statement reachable in `statements` in source order,

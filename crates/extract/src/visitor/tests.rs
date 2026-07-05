@@ -426,6 +426,47 @@ fn exported_factory_returns_records_direct_new_return() {
 }
 
 #[test]
+fn exported_factory_returns_records_return_type_annotation() {
+    // #1744: a factory with NO body value-proof (`return x as Ctrl`) but an
+    // explicit return-TYPE annotation is published as cross-module metadata via
+    // the annotation, so a cross-file `const c = useController(); c.method()`
+    // credits the class members. The reporter's exact shape.
+    let info = parse(
+        "class ReadyAppController { getServices() {} }\nexport function useController(): ReadyAppController { return {} as ReadyAppController }",
+    );
+    assert!(
+        has_exported_factory_return(&info, "useController", "ReadyAppController"),
+        "return-type-annotated factory should be recorded: {:?}",
+        info.exported_factory_returns
+    );
+}
+
+#[test]
+fn exported_factory_returns_records_return_type_annotation_arrow() {
+    // The arrow-factory variant of the return-type path (issue #1744).
+    let info = parse("class Ctrl { m() {} }\nexport const useCtrl = (): Ctrl => ({}) as Ctrl");
+    assert!(
+        has_exported_factory_return(&info, "useCtrl", "Ctrl"),
+        "arrow return-type-annotated factory should be recorded: {:?}",
+        info.exported_factory_returns
+    );
+}
+
+#[test]
+fn exported_factory_returns_return_type_abstains_on_async() {
+    // Even with a return-type annotation, an async factory returns a Promise, not
+    // the class instance, so the annotation must NOT record a strict entry.
+    let info = parse(
+        "class Ctrl { m() {} }\nexport async function make(): Promise<Ctrl> { return {} as Ctrl }",
+    );
+    assert!(
+        info.exported_factory_returns.is_empty(),
+        "async return-type factory must abstain: {:?}",
+        info.exported_factory_returns
+    );
+}
+
+#[test]
 fn exported_factory_returns_honors_aliased_export_name() {
     // `export { useApi as useRestApi }` publishes under the PUBLIC name while the
     // class local name stays the in-module name.

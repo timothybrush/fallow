@@ -131,6 +131,7 @@ impl ModuleInfoExtractor {
                         is_expression_body: arrow.expression,
                         is_async: arrow.r#async,
                         is_generator: false,
+                        return_type: arrow.return_type.as_deref(),
                     },
                 );
             }
@@ -148,6 +149,7 @@ impl ModuleInfoExtractor {
                         is_expression_body: false,
                         is_async: function.r#async,
                         is_generator: function.generator,
+                        return_type: function.return_type.as_deref(),
                     },
                 );
             }
