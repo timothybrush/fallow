@@ -36,7 +36,9 @@
         "pr-comment-gitlab",
         "review-github",
         "review-gitlab",
-        "badge"
+        "badge",
+        "github-annotations",
+        "github-summary"
       ]
     },
     {
@@ -265,6 +267,12 @@
       "required": false,
       "description": "Write the report to a file instead of stdout, for any --format (no ANSI codes). Useful on large projects where the terminal scrollback truncates the top. Progress and the confirmation stay on stderr",
       "short": "-o"
+    },
+    {
+      "name": "--annotations-path-prefix",
+      "type": "string",
+      "required": false,
+      "description": "Prefix prepended to every `file=` path in `--format github-annotations` output. GitHub resolves annotation paths against the repository root, so when the analyzed project lives in a subdirectory (e.g. `packages/app/`), paths need that offset. fallow detects the offset via the git toplevel automatically; this flag overrides the detection. Valid only with the GitHub-native formats"
     },
     {
       "name": "--fail-on-regression",
@@ -1762,6 +1770,18 @@
             "true",
             "false"
           ]
+        }
+      ]
+    },
+    {
+      "name": "report",
+      "description": "Render a saved `--format json` results file in another format without re-running analysis (analyze once, render annotations and the job summary from the same file). v1 renders the GitHub-native formats only: `--format github-annotations` or `--format github-summary`",
+      "flags": [
+        {
+          "name": "--from",
+          "type": "string",
+          "required": true,
+          "description": "Path to a fallow JSON results file produced by `--format json` (dead-code, dupes, health, audit, security, or bare combined)"
         }
       ]
     },

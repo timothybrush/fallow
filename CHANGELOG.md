@@ -23,6 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--changed-since`, and `--file` scoping. Read-only governance surface:
   always exits 0.
 
+- **Native GitHub workflow output: `--format github-annotations` and
+  `--format github-summary`.** Workflows that run fallow directly (without the
+  bundled action) previously got no inline PR annotations or job summary; that
+  rendering lived only in the action's jq layer. `github-annotations` emits
+  GitHub workflow-command lines (`::error` / `::warning` / `::notice`) for
+  dead-code, dupes, health, audit, security (net-new, at `::notice`), fix, and
+  the bare combined run, sorted most-severe-first with a trailing
+  `::notice` total so GitHub's 10-per-type display cap never hides the worst
+  findings silently. `file=` paths are rebased onto the git repository root
+  when the analysis root is a subdirectory (override with
+  `--annotations-path-prefix`), and dependency fix commands honor
+  `PKG_MANAGER` before lockfile sniffing (npm, pnpm, yarn, bun).
+  `github-summary` renders the job-summary markdown for
+  `>> "$GITHUB_STEP_SUMMARY"`. Both are log-based, so they render on fork PRs
+  without a write token, unlike the PR-comment/review formats.
+- **`fallow report --from <results.json>`: render a saved JSON envelope
+  without re-running analysis.** Analyze once with
+  `fallow --format json -o results.json`, then render annotations and the job
+  summary from the same file; output is byte-identical to the direct
+  `--format` run. v1 renders the two GitHub formats and dispatches on the
+  envelope's `kind` (dead-code, dupes, health, audit, security, combined).
+
 ## [3.3.0] - 2026-07-09
 
 ### Added
