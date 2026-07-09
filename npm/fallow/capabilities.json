@@ -1449,6 +1449,18 @@
       ]
     },
     {
+      "name": "suppressions",
+      "description": "List active fallow-ignore suppression markers (read-only inventory)",
+      "flags": [
+        {
+          "name": "--file",
+          "type": "string",
+          "required": false,
+          "description": "Only list suppressions in the specified files. Accepts multiple values"
+        }
+      ]
+    },
+    {
       "name": "explain",
       "description": "Explain one fallow issue type without running an analysis",
       "flags": [

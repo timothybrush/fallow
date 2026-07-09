@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Fallow JSON Output Schemas",
-  "description": "Schemas for the JSON output of fallow commands. Object-shaped envelopes covered by the `FallowOutput` contract carry a top-level `kind` discriminator. Current kind values: `audit`, `explain`, `inspect_target`, `trace`, `review-envelope`, `review-reconcile`, `coverage-setup`, `coverage-analyze`, `list-boundaries`, `list-workspaces`, `health`, `dupes`, `dead-code-grouped`, `impact`, `impact-cross-repo`, `security`, `security-survivors`, `security-blind-spots`, `dead-code`, `combined`, `feature-flags`, `audit-brief`, `decision-surface`, `review-walkthrough-guide`, `review-walkthrough-validation`. Consumers should branch on `kind` instead of probing for unique field presence. `CodeClimateOutput` is a bare JSON array (per the Code Climate / GitLab Code Quality spec) and stays a sibling root branch discriminated by checking whether the document root is an array.",
+  "description": "Schemas for the JSON output of fallow commands. Object-shaped envelopes covered by the `FallowOutput` contract carry a top-level `kind` discriminator. Current kind values: `audit`, `explain`, `inspect_target`, `trace`, `review-envelope`, `review-reconcile`, `coverage-setup`, `coverage-analyze`, `list-boundaries`, `list-workspaces`, `health`, `dupes`, `dead-code-grouped`, `impact`, `impact-cross-repo`, `security`, `security-survivors`, `security-blind-spots`, `dead-code`, `combined`, `feature-flags`, `audit-brief`, `decision-surface`, `review-walkthrough-guide`, `review-walkthrough-validation`, `suppression-inventory`. Consumers should branch on `kind` instead of probing for unique field presence. `CodeClimateOutput` is a bare JSON array (per the Code Climate / GitLab Code Quality spec) and stays a sibling root branch discriminated by checking whether the document root is an array.",
   "oneOf": [
     {
       "$ref": "#/definitions/FallowOutput"
@@ -8544,6 +8544,26 @@
                 "kind": {
                   "type": "string",
                   "const": "review-walkthrough-validation"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
+        },
+        {
+          "description": "`fallow suppressions --format json`. Required `schema_version: \"1\"`\nsingleton plus `summary` and per-file `files` listings. Read-only\nsuppression inventory; always emitted with exit 0.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SuppressionInventoryOutput"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "suppression-inventory"
                 }
               },
               "required": [
@@ -18284,6 +18304,187 @@
         "actions"
       ],
       "description": "Wire-shape envelope for a [`DevDependencyInProduction`] finding. Carries a\n`move-to-prod` primary (the promote-side mirror of\n[`TestOnlyDependencyFinding`]'s `move-to-dev`) plus the standard\n`ignoreDependencies` config suppress."
+    },
+    "SuppressionInventoryOutput": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Schema version of this envelope.",
+          "$ref": "#/definitions/SuppressionInventorySchemaVersion"
+        },
+        "summary": {
+          "description": "Project-level totals over the scoped inventory.",
+          "$ref": "#/definitions/SuppressionInventorySummary"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SuppressionInventoryFile"
+          },
+          "description": "Per-file suppression listings, sorted by path then line."
+        }
+      },
+      "required": [
+        "schema_version",
+        "summary",
+        "files"
+      ],
+      "title": "fallow suppressions --format json",
+      "description": "The `fallow suppressions --format json` envelope. `FallowOutput`\ndiscriminates it by the `kind: \"suppression-inventory\"` tag.\n\nA read-only projection over the suppression markers present in analyzed\nfiles this run: nothing here is a finding, and the command that emits it\nalways exits 0."
+    },
+    "SuppressionInventorySchemaVersion": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "1",
+          "description": "First release of the `fallow suppressions --format json` shape."
+        }
+      ],
+      "description": "The `fallow suppressions --format json` schema version. Independently\nversioned from the main contract, mirroring `SecuritySchemaVersion`."
+    },
+    "SuppressionInventorySummary": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "description": "Total suppression markers in scope."
+        },
+        "files": {
+          "type": "integer",
+          "description": "Number of files carrying at least one marker."
+        },
+        "without_reason": {
+          "type": "integer",
+          "description": "Markers without a human-authored `--` reason."
+        },
+        "stale": {
+          "type": "integer",
+          "description": "Markers that also appear as stale-suppression findings this run. This\nis a JOIN against the existing stale-suppression detector's output\n(matched by file and kind), not a new detection."
+        },
+        "by_kind": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SuppressionKindCount"
+          },
+          "description": "Marker counts per suppressed kind, sorted by count (descending) then\nkind. `kind` is `null` for blanket markers, mirroring the per-entry\ncontract."
+        }
+      },
+      "required": [
+        "total",
+        "files",
+        "without_reason",
+        "stale",
+        "by_kind"
+      ],
+      "description": "Project-level totals for the suppression inventory."
+    },
+    "SuppressionKindCount": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The suppressed issue kind in kebab-case, or `null` for blanket markers\n(rendered as \"blanket\" in human output; machine consumers branch on\n`null`)."
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of markers targeting this kind."
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "description": "One `by_kind` row in the suppression inventory summary."
+    },
+    "SuppressionInventoryFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Project-root-relative path, forward-slash separated."
+        },
+        "suppressions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SuppressionInventoryEntry"
+          },
+          "description": "Markers in this file, sorted by line."
+        }
+      },
+      "required": [
+        "path",
+        "suppressions"
+      ],
+      "description": "One file's suppression listing."
+    },
+    "SuppressionInventoryEntry": {
+      "type": "object",
+      "properties": {
+        "line": {
+          "type": "integer",
+          "description": "1-based line of the suppression comment itself; 0 only if unknown."
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The suppressed issue kind in kebab-case (e.g. `\"unused-export\"`), or\n`null` for a blanket marker that suppresses every kind on its target.\nHuman output renders the blanket case as the literal word \"blanket\";\nthe JSON contract deliberately keeps `null` so machine consumers\nbranch on `null` instead of a magic string."
+        },
+        "level": {
+          "description": "Whether the marker is file-wide (`fallow-ignore-file`) or line-scoped\n(`fallow-ignore-next-line`).",
+          "$ref": "#/definitions/SuppressionInventoryLevel"
+        },
+        "origin": {
+          "description": "How the suppression was authored. `\"comment\"` in v1; `\"jsdoc_tag\"` is\nreserved for a follow-up if `@expected-unused` entries enter the\nactive inventory.",
+          "$ref": "#/definitions/SuppressionInventoryOrigin"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-authored reason after `--`; `null` when absent."
+        },
+        "reason_present": {
+          "type": "boolean",
+          "description": "Whether a human-authored reason is present."
+        }
+      },
+      "required": [
+        "line",
+        "level",
+        "origin",
+        "reason_present"
+      ],
+      "description": "One suppression marker in the inventory."
+    },
+    "SuppressionInventoryLevel": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "file",
+          "description": "A `fallow-ignore-file` marker covering the whole file."
+        },
+        {
+          "type": "string",
+          "const": "line",
+          "description": "A `fallow-ignore-next-line` marker covering one line."
+        }
+      ],
+      "description": "Suppression marker scope."
+    },
+    "SuppressionInventoryOrigin": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "comment",
+          "description": "A `// fallow-ignore-next-line` or `// fallow-ignore-file` comment."
+        }
+      ],
+      "description": "How a suppression in the inventory was authored."
     }
   }
 }

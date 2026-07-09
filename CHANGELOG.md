@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`fallow suppressions`: a read-only inventory of every active suppression
+  marker.** Teams governing tech debt (and agents that need to distrust a
+  "clean" verdict) previously had to grep for `fallow-ignore` by hand; fallow
+  materialized every active suppression on each full run but exposed no way to
+  list them. The new command groups markers per file with line, kind, level
+  (`file` or `line`), origin, and reason, plus project totals (count by kind,
+  markers without a reason) and a stale count cross-referenced from this run's
+  stale-suppression findings (a join, not a new detection). Human and
+  `--format json` renderers (new `suppression-inventory` envelope, schema
+  version 1; blanket markers keep `kind: null` in JSON while human output
+  reads "blanket"), with `--workspace`, `--changed-workspaces`,
+  `--changed-since`, and `--file` scoping. Read-only governance surface:
+  always exits 0.
+
 ## [3.3.0] - 2026-07-09
 
 ### Added

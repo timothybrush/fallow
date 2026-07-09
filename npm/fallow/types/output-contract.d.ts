@@ -24,7 +24,7 @@
 
 
 /**
- * Schemas for the JSON output of fallow commands. Object-shaped envelopes covered by the `FallowOutput` contract carry a top-level `kind` discriminator. Current kind values: `audit`, `explain`, `inspect_target`, `trace`, `review-envelope`, `review-reconcile`, `coverage-setup`, `coverage-analyze`, `list-boundaries`, `list-workspaces`, `health`, `dupes`, `dead-code-grouped`, `impact`, `impact-cross-repo`, `security`, `security-survivors`, `security-blind-spots`, `dead-code`, `combined`, `feature-flags`, `audit-brief`, `decision-surface`, `review-walkthrough-guide`, `review-walkthrough-validation`. Consumers should branch on `kind` instead of probing for unique field presence. `CodeClimateOutput` is a bare JSON array (per the Code Climate / GitLab Code Quality spec) and stays a sibling root branch discriminated by checking whether the document root is an array.
+ * Schemas for the JSON output of fallow commands. Object-shaped envelopes covered by the `FallowOutput` contract carry a top-level `kind` discriminator. Current kind values: `audit`, `explain`, `inspect_target`, `trace`, `review-envelope`, `review-reconcile`, `coverage-setup`, `coverage-analyze`, `list-boundaries`, `list-workspaces`, `health`, `dupes`, `dead-code-grouped`, `impact`, `impact-cross-repo`, `security`, `security-survivors`, `security-blind-spots`, `dead-code`, `combined`, `feature-flags`, `audit-brief`, `decision-surface`, `review-walkthrough-guide`, `review-walkthrough-validation`, `suppression-inventory`. Consumers should branch on `kind` instead of probing for unique field presence. `CodeClimateOutput` is a bare JSON array (per the Code Climate / GitLab Code Quality spec) and stays a sibling root branch discriminated by checking whether the document root is an array.
  */
 export type FallowJsonOutput = (FallowOutput | CodeClimateOutput)
 /**
@@ -94,6 +94,8 @@ kind: "decision-surface"
 kind: "review-walkthrough-guide"
 }) | (WalkthroughValidation & {
 kind: "review-walkthrough-validation"
+}) | (SuppressionInventoryOutput & {
+kind: "suppression-inventory"
 }))
 /**
  * Schema version for this output format (independent of tool version). Bump
@@ -871,6 +873,19 @@ export type DecisionSurfaceSchemaVersion = number
  * The discriminated action kinds a decision can carry.
  */
 export type DecisionActionType = ("ask-expert" | "suppress")
+/**
+ * The `fallow suppressions --format json` schema version. Independently
+ * versioned from the main contract, mirroring `SecuritySchemaVersion`.
+ */
+export type SuppressionInventorySchemaVersion = "1"
+/**
+ * Suppression marker scope.
+ */
+export type SuppressionInventoryLevel = ("file" | "line")
+/**
+ * How a suppression in the inventory was authored.
+ */
+export type SuppressionInventoryOrigin = "comment"
 /**
  * Discriminator value for [`CodeClimateIssue::kind`].
  */
@@ -10134,6 +10149,106 @@ change_anchor: string
  * or `stale-snapshot` (the tree moved).
  */
 reason: string
+}
+/**
+ * The `fallow suppressions --format json` envelope. `FallowOutput`
+ * discriminates it by the `kind: "suppression-inventory"` tag.
+ *
+ * A read-only projection over the suppression markers present in analyzed
+ * files this run: nothing here is a finding, and the command that emits it
+ * always exits 0.
+ */
+export interface SuppressionInventoryOutput {
+schema_version: SuppressionInventorySchemaVersion
+summary: SuppressionInventorySummary
+/**
+ * Per-file suppression listings, sorted by path then line.
+ */
+files: SuppressionInventoryFile[]
+}
+/**
+ * Project-level totals for the suppression inventory.
+ */
+export interface SuppressionInventorySummary {
+/**
+ * Total suppression markers in scope.
+ */
+total: number
+/**
+ * Number of files carrying at least one marker.
+ */
+files: number
+/**
+ * Markers without a human-authored `--` reason.
+ */
+without_reason: number
+/**
+ * Markers that also appear as stale-suppression findings this run. This
+ * is a JOIN against the existing stale-suppression detector's output
+ * (matched by file and kind), not a new detection.
+ */
+stale: number
+/**
+ * Marker counts per suppressed kind, sorted by count (descending) then
+ * kind. `kind` is `null` for blanket markers, mirroring the per-entry
+ * contract.
+ */
+by_kind: SuppressionKindCount[]
+}
+/**
+ * One `by_kind` row in the suppression inventory summary.
+ */
+export interface SuppressionKindCount {
+/**
+ * The suppressed issue kind in kebab-case, or `null` for blanket markers
+ * (rendered as "blanket" in human output; machine consumers branch on
+ * `null`).
+ */
+kind?: (string | null)
+/**
+ * Number of markers targeting this kind.
+ */
+count: number
+}
+/**
+ * One file's suppression listing.
+ */
+export interface SuppressionInventoryFile {
+/**
+ * Project-root-relative path, forward-slash separated.
+ */
+path: string
+/**
+ * Markers in this file, sorted by line.
+ */
+suppressions: SuppressionInventoryEntry[]
+}
+/**
+ * One suppression marker in the inventory.
+ */
+export interface SuppressionInventoryEntry {
+/**
+ * 1-based line of the suppression comment itself; 0 only if unknown.
+ */
+line: number
+/**
+ * The suppressed issue kind in kebab-case (e.g. `"unused-export"`), or
+ * `null` for a blanket marker that suppresses every kind on its target.
+ * Human output renders the blanket case as the literal word "blanket";
+ * the JSON contract deliberately keeps `null` so machine consumers
+ * branch on `null` instead of a magic string.
+ */
+kind?: (string | null)
+level: SuppressionInventoryLevel
+origin: SuppressionInventoryOrigin
+/**
+ * Human-authored reason after `--`; `null` when absent.
+ */
+reason?: (string | null)
+/**
+ * Whether a human-authored reason is present.
+ */
+reason_present: boolean
 }
 /**
  * Single CodeClimate-compatible issue inside [`CodeClimateOutput`].
