@@ -63,6 +63,7 @@ mod review_envelopes;
 mod root_envelopes;
 mod sarif;
 mod security;
+mod suppressions;
 mod trace_envelopes;
 mod walkthrough_render;
 
@@ -303,6 +304,12 @@ pub use security::{
     SecurityVerifierVerdictStatus, build_security_summary,
     serialize_security_blind_spots_json_output, serialize_security_json_output,
     serialize_security_summary_json_output, serialize_security_survivors_json_output,
+};
+pub use suppressions::{
+    SuppressionInventoryEntry, SuppressionInventoryFile, SuppressionInventoryLevel,
+    SuppressionInventoryOrigin, SuppressionInventoryOutput, SuppressionInventoryOutputInput,
+    SuppressionInventorySchemaVersion, SuppressionInventorySummary, SuppressionKindCount,
+    build_suppression_inventory_output, serialize_suppression_inventory_json_output,
 };
 pub use trace_envelopes::serialize_trace_json_output;
 pub use walkthrough_render::{
