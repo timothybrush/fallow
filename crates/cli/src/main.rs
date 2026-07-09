@@ -34,6 +34,7 @@ mod cli_format;
 mod cli_hooks;
 mod cli_impact;
 mod cli_production;
+mod cli_report;
 mod cli_startup;
 use fallow_engine::codeowners;
 mod combined;
@@ -148,6 +149,7 @@ Setup and configuration:
 Automation and CI:
   ci             Build PR/MR feedback envelopes
   ci-template    Print or vendor CI integration templates
+  report         Re-render a saved --format json results file (GitHub formats)
   hooks          Install or remove fallow-managed Git and agent hooks
   setup-hooks    Legacy agent-hook installer
 
@@ -1431,6 +1433,16 @@ enum Command {
         surface: bool,
     },
 
+    /// Render a saved `--format json` results file in another format without
+    /// re-running analysis (analyze once, render annotations and the job
+    /// summary from the same file). v1 renders the GitHub-native formats only:
+    /// `--format github-annotations` or `--format github-summary`.
+    Report {
+        /// Path to a fallow JSON results file produced by `--format json`
+        /// (dead-code, dupes, health, audit, security, or bare combined).
+        #[arg(long, value_name = "PATH")]
+        from: PathBuf,
+    },
     /// Dump fallow's capability manifest (CLI commands and flags, issue types, MCP tools, framework plugins, env vars) as machine-readable JSON for agent introspection. Always JSON, regardless of --format
     Schema,
 
@@ -2813,6 +2825,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             ImpactCrossRepoOpts { all, sort, limit },
         ),
         security @ Command::Security { .. } => dispatch_security_command(security, dispatch),
+        Command::Report { from } => cli_report::run_report(&from, output, root),
         Command::Schema => unreachable!("handled above"),
         migrate @ Command::Migrate { .. } => dispatch_migrate_command(migrate, root),
         Command::License { subcommand } => dispatch_license_command(subcommand, output),

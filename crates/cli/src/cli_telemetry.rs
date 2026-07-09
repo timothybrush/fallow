@@ -238,6 +238,9 @@ pub fn telemetry_workflow_for_command(
             _ => telemetry::Workflow::GithubAction,
         },
         Some(Command::Coverage { .. }) => telemetry::Workflow::RuntimeCoverageSetup,
+        // `report` re-renders a saved envelope for a GitHub workflow surface
+        // (github-annotations / github-summary are the only accepted formats).
+        Some(Command::Report { .. }) => telemetry::Workflow::GithubAction,
         Some(Command::Impact { .. }) => telemetry::Workflow::Impact,
         Some(Command::Security { .. }) => telemetry::Workflow::Security,
         Some(Command::Fix { .. }) => telemetry::Workflow::Fix,
