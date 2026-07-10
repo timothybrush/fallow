@@ -82,7 +82,11 @@ jobs:
               - 'npm/fallow/skills/fallow/**'
               - 'editors/vscode/src/generated/output-contract.d.ts'
               - 'editors/vscode/src/generated/lsp-initialization-options.d.ts'
+              - 'editors/vscode/src/generated/issue-types.ts'
+              - 'editors/vscode/package.json'
               - 'scripts/generate-all.mjs'
+              - 'scripts/generation-transaction.mjs'
+              - 'scripts/contract-surfaces.mjs'
               - 'scripts/generate-agent-docs.mjs'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -248,6 +252,10 @@ jobs:
       - name: Install contract bundle dependencies
         if: matrix.os == 'ubuntu-latest'
         run: cd editors/vscode && pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Run staged subgenerator integration tests
+        if: matrix.os == 'ubuntu-latest'
+        run: node --test scripts/subgenerator-staging.test.mjs
 
       - name: Run contract bundle drift gate
         if: matrix.os == 'ubuntu-latest'

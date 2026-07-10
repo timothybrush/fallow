@@ -1,5 +1,7 @@
 //! Module extraction types.
 
+use std::path::PathBuf;
+
 use oxc_span::Span;
 
 use crate::discover::FileId;
@@ -299,6 +301,11 @@ pub struct ModuleInfo {
     /// (`const all = $page.data`) are not whole-object-tracked and stay out of
     /// scope, matching the syntactic analyzer's conservative posture.
     pub has_page_data_store_whole_use: bool,
+    /// `true` when a React Router or Remix route consumes the whole
+    /// `useLoaderData()` result opaquely. Derived by `prepare_analysis_facts`
+    /// from the synthetic route-loader marker before the owned release path
+    /// clears `whole_object_uses`. It is recomputed from cached extraction data.
+    pub has_route_loader_data_whole_use: bool,
     /// React/JSX component definitions: functions/arrows whose body returns JSX.
     /// Captured only for `.jsx`/`.tsx` files when a React/Preact dependency is
     /// plausible. Consumed by the React `unused-component-prop` arm and the
@@ -360,6 +367,10 @@ impl ModuleInfo {
             .whole_object_uses
             .iter()
             .any(|name| name == "page.data" || name == "$page.data");
+        self.has_route_loader_data_whole_use = self
+            .whole_object_uses
+            .iter()
+            .any(|name| name == "$fallow.routeLoaderData");
     }
 
     /// Release extraction payload that resolution has already copied into the graph.
@@ -2523,12 +2534,25 @@ pub struct RequireCallInfo {
 pub struct ParseResult {
     /// Extracted module information for all successfully parsed files.
     pub modules: Vec<ModuleInfo>,
+    /// Files discovered with stable IDs but unreadable by the parser.
+    pub read_failures: Vec<SourceReadFailure>,
     /// Number of files whose parse results were loaded from cache (unchanged).
     pub cache_hits: usize,
     /// Number of files that required a full parse (new or changed).
     pub cache_misses: usize,
     /// Summed wall-clock time of the actual AST parses across all rayon workers.
     pub parse_cpu_ms: f64,
+}
+
+/// A discovered source that could not be read as UTF-8 text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceReadFailure {
+    /// Stable discovery identity retained even though no module was produced.
+    pub file_id: FileId,
+    /// Absolute discovered source path.
+    pub path: PathBuf,
+    /// Underlying filesystem or UTF-8 decoding error.
+    pub error: String,
 }
 
 #[cfg(test)]
@@ -2998,6 +3022,7 @@ mod tests {
             has_unharvestable_load: false,
             has_load_data_whole_use: false,
             has_page_data_store_whole_use: false,
+            has_route_loader_data_whole_use: false,
             component_functions: Vec::new(),
             react_props: Vec::new(),
             hook_uses: Vec::new(),
@@ -4063,6 +4088,14 @@ mod tests {
         assert!(!m.has_page_data_store_whole_use);
     }
 
+    #[test]
+    fn release_payload_derives_route_loader_data_whole_use() {
+        let mut m = minimal_module_info();
+        m.whole_object_uses = vec!["$fallow.routeLoaderData".to_string()].into();
+        m.release_resolution_payload();
+        assert!(m.has_route_loader_data_whole_use);
+    }
+
     // --- release_resolution_payload: referenced_import_bindings derivation ---
 
     #[test]
@@ -4219,6 +4252,7 @@ mod tests {
             has_unharvestable_load: false,
             has_load_data_whole_use: false,
             has_page_data_store_whole_use: false,
+            has_route_loader_data_whole_use: false,
             component_functions: Vec::new(),
             react_props: Vec::new(),
             hook_uses: Vec::new(),

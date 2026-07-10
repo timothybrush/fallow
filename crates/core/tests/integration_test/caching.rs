@@ -3,6 +3,90 @@ use std::path::PathBuf;
 use super::common::{create_config, create_config_with_cache, fixture_path};
 
 #[test]
+fn source_read_failure_preserves_sparse_file_ids() {
+    use fallow_types::discover::{DiscoveredFile, FileId};
+
+    let project = tempfile::tempdir().expect("create project");
+    let files = ["a.ts", "b.ts", "c.ts"].map(|name| project.path().join(name));
+    for (index, path) in files.iter().enumerate() {
+        std::fs::write(path, format!("export const value{index} = {index};\n"))
+            .expect("write source");
+    }
+    let discovered: Vec<DiscoveredFile> = files
+        .iter()
+        .enumerate()
+        .map(|(index, path)| DiscoveredFile {
+            id: FileId(u32::try_from(index).expect("test index fits u32")),
+            path: path.clone(),
+            size_bytes: std::fs::metadata(path).expect("source metadata").len(),
+        })
+        .collect();
+    std::fs::remove_file(&files[1]).expect("remove middle source after discovery");
+
+    let result = fallow_core::extract::parse_all_files(&discovered, None, false);
+
+    assert_eq!(
+        result
+            .modules
+            .iter()
+            .map(|module| module.file_id)
+            .collect::<Vec<_>>(),
+        vec![FileId(0), FileId(2)]
+    );
+    assert_eq!(result.read_failures.len(), 1);
+    assert_eq!(result.read_failures[0].file_id, FileId(1));
+    assert_eq!(result.read_failures[0].path, files[1]);
+    assert!(!result.read_failures[0].error.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn warm_metadata_cache_reports_source_that_becomes_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use fallow_core::cache::{CacheStore, module_to_cached};
+    use fallow_types::discover::{DiscoveredFile, FileId};
+    use fallow_types::source_fingerprint::SourceFingerprint;
+
+    let project = tempfile::tempdir().expect("create project");
+    let path = project.path().join("cached.ts");
+    std::fs::write(&path, "export const cached = 1;\n").expect("write source");
+    let metadata = std::fs::metadata(&path).expect("source metadata");
+    let discovered = [DiscoveredFile {
+        id: FileId(0),
+        path: path.clone(),
+        size_bytes: metadata.len(),
+    }];
+
+    let cold = fallow_core::extract::parse_all_files(&discovered, None, false);
+    let mut cache = CacheStore::new();
+    cache.insert(
+        &path,
+        module_to_cached(
+            cold.modules.first().expect("cold parse produces module"),
+            SourceFingerprint::from_metadata(&metadata),
+        ),
+    );
+
+    let original_mode = metadata.permissions().mode();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o0))
+        .expect("make source unreadable");
+    let warm = fallow_core::extract::parse_all_files(&discovered, Some(&cache), false);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(original_mode))
+        .expect("restore source permissions");
+
+    assert!(
+        warm.modules.is_empty(),
+        "stale cached module must not be used"
+    );
+    assert_eq!(warm.cache_hits, 0);
+    assert_eq!(warm.read_failures.len(), 1);
+    assert_eq!(warm.read_failures[0].file_id, FileId(0));
+    assert_eq!(warm.read_failures[0].path, path);
+    assert!(!warm.read_failures[0].error.is_empty());
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "roundtrip fixture enumerates cache fields"

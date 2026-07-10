@@ -60,8 +60,8 @@ pub use fallow_types::extract::{
     ImportedName, InstanceExportBindingFact, LocalTypeDeclaration, MemberAccess, MemberInfo,
     MemberKind, ModuleInfo, ParseResult, PlaywrightFixtureAliasFact,
     PlaywrightFixtureDefinitionFact, PlaywrightFixtureTypeFact, PlaywrightFixtureUseFact,
-    PublicSignatureTypeReference, ReExportInfo, RequireCallInfo, SemanticFact, TypeMemberTypeEntry,
-    TypedPropertyMemberAccessFact, VisibilityTag, compute_line_offsets,
+    PublicSignatureTypeReference, ReExportInfo, RequireCallInfo, SemanticFact, SourceReadFailure,
+    TypeMemberTypeEntry, TypedPropertyMemberAccessFact, VisibilityTag, compute_line_offsets,
 };
 
 pub use astro::{
@@ -152,6 +152,7 @@ pub fn parse_all_files(
     };
 
     let mut modules = Vec::with_capacity(results.len());
+    let mut read_failures = Vec::new();
     let mut hits = 0usize;
     let mut misses = 0usize;
     let mut parse_cpu_nanos = 0u64;
@@ -162,6 +163,9 @@ pub fn parse_all_files(
         parse_cpu_nanos = parse_cpu_nanos.saturating_add(result.parse_cpu_nanos);
         if let Some(module) = result.module {
             modules.push(module);
+        }
+        if let Some(failure) = result.read_failure {
+            read_failures.push(failure);
         }
     }
 
@@ -175,6 +179,7 @@ pub fn parse_all_files(
 
     ParseResult {
         modules,
+        read_failures,
         cache_hits: hits,
         cache_misses: misses,
         parse_cpu_ms: parse_cpu_nanos as f64 / 1_000_000.0,
@@ -183,6 +188,7 @@ pub fn parse_all_files(
 
 struct ParseFileResult {
     module: Option<ModuleInfo>,
+    read_failure: Option<SourceReadFailure>,
     cache_hits: usize,
     cache_misses: usize,
     parse_cpu_nanos: u64,
@@ -192,6 +198,7 @@ impl ParseFileResult {
     fn cache_hit(module: ModuleInfo) -> Self {
         Self {
             module: Some(module),
+            read_failure: None,
             cache_hits: 1,
             cache_misses: 0,
             parse_cpu_nanos: 0,
@@ -201,15 +208,21 @@ impl ParseFileResult {
     fn cache_miss(module: ModuleInfo, parse_cpu_nanos: u64) -> Self {
         Self {
             module: Some(module),
+            read_failure: None,
             cache_hits: 0,
             cache_misses: 1,
             parse_cpu_nanos,
         }
     }
 
-    const fn skipped() -> Self {
+    fn read_failure(file: &DiscoveredFile, error: &std::io::Error) -> Self {
         Self {
             module: None,
+            read_failure: Some(SourceReadFailure {
+                file_id: file.id,
+                path: file.path.clone(),
+                error: error.to_string(),
+            }),
             cache_hits: 0,
             cache_misses: 0,
             parse_cpu_nanos: 0,
@@ -220,11 +233,12 @@ impl ParseFileResult {
 /// Parse a single file, consulting the cache first.
 ///
 /// Cache validation strategy (fast path -> slow path):
-/// 1. `stat()` the file to get mtime + size (single syscall, no file read)
-/// 2. If mtime+size match the cached entry -> cache hit, return immediately
-/// 3. If mtime+size differ -> read file, compute content hash
-/// 4. If content hash matches cached entry -> cache hit (file was `touch`ed but unchanged)
-/// 5. Otherwise -> cache miss, full parse
+/// 1. Open the file so unreadable sources cannot use stale cached analysis
+/// 2. Read mtime + size from the open handle
+/// 3. If mtime+size match the cached entry -> cache hit, return immediately
+/// 4. If mtime+size differ -> read file, compute content hash
+/// 5. If content hash matches cached entry -> cache hit (file was `touch`ed but unchanged)
+/// 6. Otherwise -> cache miss, full parse
 fn parse_single_file_cached(
     file: &DiscoveredFile,
     cache: Option<&CacheStore>,
@@ -234,25 +248,32 @@ fn parse_single_file_cached(
 
     if let Some(cached) = cached_by_path
         && cached.file_size == file.size_bytes
-        && let Ok(metadata) = std::fs::metadata(&file.path)
-        && metadata.len() == cached.file_size
     {
-        let fingerprint =
-            fallow_types::source_fingerprint::SourceFingerprint::from_metadata(&metadata);
-        if cached.source_fingerprint() == fingerprint
-            && fingerprint.has_known_mtime()
-            && (!need_complexity || !cached.complexity.is_empty())
+        let source_file = match std::fs::File::open(&file.path) {
+            Ok(source_file) => source_file,
+            Err(error) => return ParseFileResult::read_failure(file, &error),
+        };
+        if let Ok(metadata) = source_file.metadata()
+            && metadata.len() == cached.file_size
         {
-            return ParseFileResult::cache_hit(cache::cached_to_module_opts(
-                cached,
-                file.id,
-                need_complexity,
-            ));
+            let fingerprint =
+                fallow_types::source_fingerprint::SourceFingerprint::from_metadata(&metadata);
+            if cached.source_fingerprint() == fingerprint
+                && fingerprint.has_known_mtime()
+                && (!need_complexity || !cached.complexity.is_empty())
+            {
+                return ParseFileResult::cache_hit(cache::cached_to_module_opts(
+                    cached,
+                    file.id,
+                    need_complexity,
+                ));
+            }
         }
     }
 
-    let Ok(raw) = std::fs::read_to_string(&file.path) else {
-        return ParseFileResult::skipped();
+    let raw = match std::fs::read_to_string(&file.path) {
+        Ok(raw) => raw,
+        Err(error) => return ParseFileResult::read_failure(file, &error),
     };
     let source = strip_bom(&raw);
     let content_hash = xxhash_rust::xxh3::xxh3_64(source.as_bytes());
