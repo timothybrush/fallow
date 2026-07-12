@@ -14,7 +14,7 @@ use crate::suppress::ParsedSuppressions;
 use crate::{
     AngularComponentFieldArrayTypeFact, AngularTemplateMemberAccessFact, AngularThisSpreadFact,
     DynamicCustomElementRenderFact, DynamicImportInfo, DynamicImportPattern, ExportInfo,
-    ExportName, FactoryCallMemberAccessFact, FactoryFnMemberAccessFact,
+    ExportName, FactoryCallMemberAccessFact, FactoryFnMemberAccessFact, FactoryFnWholeObjectFact,
     FluentChainMemberAccessFact, FluentChainNewMemberAccessFact, ImportInfo, ImportedName,
     InstanceExportBindingFact, MemberAccess, MemberInfo, MemberKind, ModuleInfo,
     PlaywrightFixtureAliasFact, PlaywrightFixtureDefinitionFact, PlaywrightFixtureTypeFact,
@@ -284,6 +284,12 @@ pub(crate) struct ModuleInfoExtractor {
     /// Same-file functions whose body returns `new Class()`, mapped to the class
     /// name, plus the `const x = fn()` bindings to resolve against them. See #1441.
     factory_return_functions: FxHashMap<String, String>,
+    /// Callees of a factory call destructured opaquely (`const { a, ...rest } = f()`,
+    /// a computed key). The returned class must be credited wholesale.
+    factory_whole_object_candidates: Vec<String>,
+    /// `(callee, member)` for a factory result read without ever being named:
+    /// `f().member`, `const { member } = f()`.
+    factory_unnamed_result_accesses: Vec<(String, String)>,
     factory_return_candidates: Vec<FactoryReturnCandidate>,
     /// Same-file functions whose body returns a bare identifier (e.g.
     /// `useApi() { return api }`). Resolved against `binding_target_names` at
@@ -809,6 +815,12 @@ impl ModuleInfoExtractor {
                     member,
                 },
             ));
+    }
+
+    fn record_factory_fn_whole_object_fact(&mut self, callee_name: String) {
+        self.semantic_facts.push(SemanticFact::FactoryFnWholeObject(
+            FactoryFnWholeObjectFact { callee_name },
+        ));
     }
 
     fn record_typed_property_member_fact(
@@ -1559,6 +1571,78 @@ impl ModuleInfoExtractor {
         }
     }
 
+    /// Credit a member read straight off a factory result the source never named
+    /// (`f().member`, `const { member } = f()`).
+    ///
+    /// The callee and the member are both known at capture time, so resolve them
+    /// directly rather than routing through a stand-in local: a stand-in would make
+    /// every `helper().x` in a file a candidate, and candidate resolution rescans
+    /// every member access, which is quadratic on a file full of such calls.
+    ///
+    /// A same-file factory binds the class immediately. An imported callee emits the
+    /// typed fact the analyze layer resolves through `exported_factory_returns`; any
+    /// other callee resolves to no proven factory export and is a no-op there.
+    ///
+    /// The callee is matched by name and not by scope, so a local binding that shadows
+    /// an imported factory is treated as that factory. It can only ADD credit, so the
+    /// worst case is a member that stays unreported.
+    fn resolve_factory_unnamed_result_accesses(&mut self) {
+        if self.factory_unnamed_result_accesses.is_empty() {
+            return;
+        }
+        let inline_accesses = std::mem::take(&mut self.factory_unnamed_result_accesses);
+        // Indexed once: a file with many `helper().x` reads would otherwise rescan
+        // every import per access.
+        let imported_locals: FxHashSet<&str> = self
+            .imports
+            .iter()
+            .map(|import| import.local_name.as_str())
+            .collect();
+        let mut deferred_facts = Vec::new();
+        for (callee_name, member) in inline_accesses {
+            if let Some(class_name) = self.factory_return_functions.get(&callee_name) {
+                let object = class_name.clone();
+                self.member_accesses.push(MemberAccess { object, member });
+                continue;
+            }
+            if imported_locals.contains(callee_name.as_str()) {
+                deferred_facts.push((callee_name, member));
+            }
+        }
+        for (callee_name, member) in deferred_facts {
+            self.record_factory_fn_member_fact(callee_name, member);
+        }
+    }
+
+    /// `const { a, ...rest } = f()` and `const { [k]: v } = f()` can read ANY property
+    /// of the factory result, so no set of visible keys describes what is used.
+    /// Credit the returned class wholesale rather than credit the keys we happen to
+    /// see: crediting only `a` would leave every other live member reported as dead,
+    /// the exact false positive this change removes.
+    fn resolve_factory_whole_object_candidates(&mut self) {
+        if self.factory_whole_object_candidates.is_empty() {
+            return;
+        }
+        let callees = std::mem::take(&mut self.factory_whole_object_candidates);
+        for callee_name in callees {
+            // Same-file factory: the class is known, mark it used wholesale.
+            if let Some(class_name) = self.factory_return_functions.get(&callee_name) {
+                let class_name = class_name.clone();
+                self.whole_object_uses.push(class_name);
+                continue;
+            }
+            // Cross-module: the analyze layer resolves the callee to the class it
+            // returns and suppresses that export.
+            if self
+                .imports
+                .iter()
+                .any(|import| import.local_name == callee_name)
+            {
+                self.record_factory_fn_whole_object_fact(callee_name);
+            }
+        }
+    }
+
     /// Build the cross-module `exported_factory_returns` metadata: join the
     /// strict (all-paths-unanimous) factory map against this module's exports, so
     /// a `const x = useApi()` consumer can credit the returned class across the
@@ -1645,6 +1729,72 @@ impl ModuleInfoExtractor {
             })
             .max_by_key(|(len, _)| *len)
             .map(|(_, object_name)| object_name)
+    }
+
+    /// Credit a member reached through a local subclass onto the class that declares it.
+    ///
+    /// `class Sub extends Base {}` without an `export` is never an export, so
+    /// `Sub.someStatic` names nothing the analyze layer can resolve: its import/export
+    /// map holds only imports and exports, and the heritage `parent -> children` map is
+    /// built from exports alone. The static is then reported unused even though it is
+    /// called. Exporting the subclass makes the identical code resolve, which is the
+    /// tell.
+    ///
+    /// Walk the local `extends` chain to the first name that is NOT a locally declared
+    /// class -- the imported or exported base -- and re-emit the access against it.
+    ///
+    /// `class Sub extends mixin(Base) {}` records no superclass name and abstains here,
+    /// which is correct: a mixin can redefine what the subclass exposes.
+    ///
+    /// A namespace-qualified base (`class Sub extends ns.Base {}`) re-emits the dotted
+    /// name verbatim. The analyze layer resolves only bare local names, so that access
+    /// is inert and the base's members stay reported. This is NOT a regression: a
+    /// direct `ns.Base.someStatic()` is equally uncredited today, because a
+    /// namespace-imported class is not in the import/export map either. Fixing it means
+    /// resolving namespace aliases in the analyze layer, which is a separate change.
+    ///
+    /// Crediting a base whose subclass shadows the member is a false negative, never a
+    /// false positive, which is the direction this rule must err in.
+    fn propagate_local_subclass_member_accesses(&mut self) {
+        if self.local_class_exports.is_empty() {
+            return;
+        }
+        let additional: Vec<MemberAccess> = self
+            .member_accesses
+            .iter()
+            .filter_map(|access| {
+                let base = self.resolve_local_subclass_base(&access.object)?;
+                Some(MemberAccess {
+                    object: base,
+                    member: access.member.clone(),
+                })
+            })
+            .collect();
+        self.member_accesses.extend(additional);
+    }
+
+    /// The nearest ancestor of a locally declared class that is not itself locally
+    /// declared -- the imported or exported base the members actually live on.
+    ///
+    /// `None` when `name` is not a local class, when the chain reaches a class with no
+    /// `extends`, or when it revisits a name. The `visited` set, rather than a depth
+    /// cap, is what terminates a malformed cyclic `extends`: a depth cap would silently
+    /// abstain on a legitimately deep chain and leave its members falsely reported.
+    fn resolve_local_subclass_base(&self, name: &str) -> Option<String> {
+        let mut visited: FxHashSet<&str> = FxHashSet::default();
+        visited.insert(name);
+        let mut current = self.local_class_exports.get(name)?.super_class.as_deref()?;
+        loop {
+            let Some(info) = self.local_class_exports.get(current) else {
+                // Not locally declared, so it is the imported / exported base.
+                return Some(current.to_string());
+            };
+            if !visited.insert(current) {
+                // Cyclic `extends`; malformed source, credit nothing.
+                return None;
+            }
+            current = info.super_class.as_deref()?;
+        }
     }
 
     fn resolve_bound_member_accesses(&mut self) {
@@ -1926,12 +2076,22 @@ impl ModuleInfoExtractor {
         // the typed local, so the `const x = useApi()` candidate below resolves.
         self.resolve_factory_return_aliases();
         self.resolve_factory_return_candidates();
+        // Separate from the candidate pass, which early-returns when no member
+        // candidate exists: an unnamed factory result records no member candidate.
+        self.resolve_factory_unnamed_result_accesses();
+        self.resolve_factory_whole_object_candidates();
         self.record_exported_instance_bindings();
         self.resolve_object_binding_candidates();
         self.resolve_factory_call_candidates();
         self.resolve_playwright_factory_call_definitions();
         self.resolve_structural_class_calls();
         self.resolve_bound_member_accesses();
+        // AFTER `resolve_bound_member_accesses`, which is what materializes the
+        // class-qualified accesses for `const s = new Sub(); s.member`. Running
+        // earlier would only see the statics written as `Sub.member` in source and
+        // would leave every instance member reached through a local subclass
+        // reported as unused.
+        self.propagate_local_subclass_member_accesses();
         self.map_local_signature_refs_to_exports();
         self.apply_side_effect_registrations();
         self.resolve_typed_react_props();
@@ -2145,6 +2305,34 @@ impl ModuleInfoExtractor {
     }
 }
 
+/// The statically named keys of a destructuring pattern, or `None` when the pattern
+/// can expose properties it does not name: a rest element captures every remaining
+/// property, and a computed key names one that cannot be read from source.
+///
+/// Contrast `extract_destructured_names`, which silently drops a computed key. Here a
+/// single unnameable key makes the WHOLE pattern opaque, because a caller crediting
+/// class members off it must abstain rather than credit only the keys it can see.
+///
+/// A nested pattern (`{ a: { b } }`) yields `a` only. `b` belongs to whatever type
+/// `a` has, not to the factory's class, and crediting it would credit a same-named
+/// member of an unrelated class.
+pub(super) fn destructured_factory_keys(obj_pat: &ObjectPattern<'_>) -> Option<Vec<String>> {
+    if obj_pat.rest.is_some() {
+        return None;
+    }
+    obj_pat
+        .properties
+        .iter()
+        .map(|prop| prop.key.static_name().map(|name| name.to_string()))
+        .collect()
+}
+
+/// The statically named keys of a destructuring pattern, SKIPPING any it cannot name.
+///
+/// Deliberately not `destructured_factory_keys`: this one drops a computed key and
+/// keeps the rest, which is what callers tracking local bindings want. A caller that
+/// must know the pattern could expose an unnamed property has to abstain instead, and
+/// wants that function.
 pub(super) fn extract_destructured_names(obj_pat: &ObjectPattern<'_>) -> Vec<String> {
     if obj_pat.rest.is_some() {
         return Vec::new();
