@@ -2,7 +2,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-pub use fallow_output::{DiffIndex, MAX_DIFF_BYTES, parse_new_hunk_start, relative_to_diff_path};
+pub use fallow_output::{DiffIndex, MAX_DIFF_BYTES, parse_new_hunk_start};
 
 use fallow_output::CiIssue;
 
@@ -269,10 +269,161 @@ static SHARED_DIFF: OnceLock<Option<LoadedDiff>> = OnceLock::new();
 /// Pass `None` to lock the cache to "no diff" without reading anything,
 /// so a subsequent errant load attempt cannot accidentally populate the
 /// cache later.
-pub fn init_shared_diff(source: Option<&DiffSource>, quiet: bool) -> Option<&'static DiffIndex> {
-    let loaded = source.and_then(|src| load_diff_index_for_findings(src, quiet));
+pub fn init_shared_diff(
+    source: Option<&DiffSource>,
+    root: &Path,
+    candidate_bases: &[PathBuf],
+    quiet: bool,
+) -> Option<&'static DiffIndex> {
+    let loaded = source
+        .and_then(|src| load_diff_index_for_findings(src, quiet))
+        .and_then(|loaded| {
+            // A diff that parsed but names no analyzable head-side file (empty,
+            // deletion-only, or binary-only) changed nothing a finding can be
+            // attributed to. That is a real, EMPTY scope, not an unplaceable
+            // base: keep the empty index so every source-anchored finding
+            // filters out (report clean) rather than falling open to full scope.
+            // Only a diff we cannot place (foreign or ambiguous base) falls open.
+            // The empty index needs no base: with no keys every lookup misses,
+            // and `key_for` still yields a key for in-root paths, so findings are
+            // dropped rather than retained.
+            if loaded.index.touched_files().next().is_none() {
+                return Some(loaded);
+            }
+            let label = source.map(DiffSource::label).unwrap_or_default();
+            let chosen = choose_diff_base(&loaded.index, candidate_bases);
+            match chosen {
+                // The diff names files, but none under any candidate base
+                // (foreign), or equally under two at once (ambiguous). Either way
+                // we cannot express findings in its namespace. `check::filtering`
+                // sets the convention for that: an unfilterable path is RETAINED,
+                // never silently dropped. So drop the diff instead of the findings
+                // and report at full scope.
+                None => {
+                    if !quiet {
+                        warn_on_foreign_diff_namespace(&loaded.index, candidate_bases, &label);
+                    }
+                    None
+                }
+                Some(chosen) if chosen.ambiguous => {
+                    if !quiet {
+                        warn_on_ambiguous_diff_base(candidate_bases, &label);
+                    }
+                    None
+                }
+                Some(chosen) => {
+                    let offset = root_offset_below(&chosen.base, root);
+                    Some(LoadedDiff {
+                        index: loaded.index.with_base(chosen.base).with_root_offset(offset),
+                        raw: loaded.raw,
+                    })
+                }
+            }
+        });
     let _ = SHARED_DIFF.set(loaded);
     shared_diff_index()
+}
+
+/// Where the analysis root sits below `base`, forward-slashed, empty when they
+/// are the same directory.
+fn root_offset_below(base: &Path, root: &Path) -> String {
+    root.strip_prefix(base)
+        .map(|offset| offset.display().to_string().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+/// The base a diff's paths were written relative to, plus whether the evidence
+/// actually distinguished it from the runner-up.
+struct ChosenBase {
+    base: PathBuf,
+    ambiguous: bool,
+}
+
+/// Decide which directory the diff's paths are relative to.
+///
+/// A unified diff carries no statement of its own base. `git diff` writes paths
+/// relative to the repository toplevel, but `git diff --relative` writes them
+/// relative to the invoking directory, and both reach fallow through
+/// `--diff-file` / `--diff-stdin`. Assuming either one silently drops every
+/// source-anchored finding for users of the other.
+///
+/// The paths themselves settle it: they name files that exist on disk. Score
+/// each candidate by how many of the diff's paths resolve under it and take the
+/// best. `candidate_bases` is ordered most-preferred first, so an exact tie
+/// keeps the caller's precedence.
+///
+/// A tie is not a decision. A repo with both `<toplevel>/src/a.ts` and
+/// `<root>/src/a.ts` resolves the diff path `src/a.ts` under either candidate,
+/// and existence alone cannot say which the diff meant. Picking the preferred
+/// one and staying silent would reproduce the empty-report-looks-clean failure
+/// this whole mechanism exists to prevent, so the tie is reported.
+/// `None` means the diff names nothing under any candidate.
+fn choose_diff_base(index: &DiffIndex, candidate_bases: &[PathBuf]) -> Option<ChosenBase> {
+    let mut scored: Vec<(usize, &PathBuf)> = candidate_bases
+        .iter()
+        .map(|base| {
+            let resolved = index
+                .touched_files()
+                .filter(|path| base.join(path).exists())
+                .count();
+            (resolved, base)
+        })
+        .filter(|(resolved, _)| *resolved > 0)
+        .collect();
+
+    // Stable sort by score, descending: equal scores keep caller precedence.
+    scored.sort_by(|(a, _), (b, _)| b.cmp(a));
+    let (best_score, best_base) = *scored.first()?;
+    let ambiguous = scored
+        .get(1)
+        .is_some_and(|(runner_up, _)| *runner_up == best_score);
+
+    Some(ChosenBase {
+        base: best_base.clone(),
+        ambiguous,
+    })
+}
+
+/// The diff's paths resolve equally well under two different directories, so
+/// existence alone cannot place its base. Rather than filter against a guess
+/// (whose wrong half drops every source-anchored finding), the run discards the
+/// diff and reports at full scope, so the message names the ambiguity and says
+/// so rather than letting silence imply the report was scoped.
+fn warn_on_ambiguous_diff_base(candidate_bases: &[PathBuf], label: &str) {
+    let bases = candidate_bases
+        .iter()
+        .map(|base| base.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" and ");
+    eprintln!(
+        "fallow: warning [diff-file]: the paths in {label} name existing files under \
+         {bases}, so their base is ambiguous and fallow cannot tell which one the diff \
+         is relative to. It will not filter against a guess: every finding is reported \
+         (full scope, not scoped to the diff). Generate the diff from the repository \
+         root (plain `git diff`, not `git diff --relative`) to scope the report."
+    );
+}
+
+/// A diff whose paths name no file under any candidate base was almost
+/// certainly generated relative to some other directory. fallow cannot place it,
+/// so it discards the diff and reports at full scope. Say so, once, rather than
+/// let the unscoped report imply the diff was applied.
+fn warn_on_foreign_diff_namespace(index: &DiffIndex, candidate_bases: &[PathBuf], label: &str) {
+    let total = index.touched_files().count();
+    if total == 0 {
+        return;
+    }
+    let bases = candidate_bases
+        .iter()
+        .map(|base| base.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "fallow: warning [diff-file]: none of the {total} file(s) named by {label} exist \
+         under {bases}; the diff's paths look relative to a different directory. fallow \
+         cannot place the diff, so every finding is reported (full scope, not scoped to \
+         the diff). Regenerate the diff from one of those directories to scope the report."
+    );
 }
 
 /// Read the cached diff index populated by [`init_shared_diff`]. Returns
@@ -303,17 +454,46 @@ fn context_radius_from_env() -> u64 {
         .unwrap_or(3)
 }
 
+/// Filter issues against this run's diff.
+///
+/// Gated on the shared cache, not on `$FALLOW_DIFF_FILE`: `--diff-file` takes
+/// precedence when resolving that cache, so gating on the env var would leave
+/// `--diff-file --format review-gitlab` rendering unfiltered comments, and
+/// would filter against the flag's diff while claiming to honour the env var's.
+/// The shared index also carries the base its paths were written against;
+/// re-parsing here would yield an unbased index whose every lookup misses for
+/// an analysis root below that base.
+///
+/// The three cache states are distinct and must stay so. When `init_shared_diff`
+/// discarded the diff (unplaceable base), that full-scope decision is
+/// authoritative here too: re-reading the env var would re-filter and contradict
+/// it. The env-var fallback is only for the case where `init_shared_diff` never
+/// ran (an embedder or a test), so those callers keep working.
 #[must_use]
 pub fn filter_issues_from_env(issues: Vec<CiIssue>) -> Vec<CiIssue> {
-    let Some(raw_path) = std::env::var_os("FALLOW_DIFF_FILE") else {
-        return issues;
-    };
-    filter_issues_from_path(
-        issues,
-        Path::new(&raw_path),
-        DiffFilterMode::from_env(),
-        context_radius_from_env(),
-    )
+    let mode = DiffFilterMode::from_env();
+    let radius = context_radius_from_env();
+    match SHARED_DIFF.get() {
+        // A diff was resolved for this run (a placed base, or a parsed-but-empty
+        // scope). Filter against it; an empty-scope index drops every
+        // source-anchored issue, matching the finding filter.
+        Some(Some(loaded)) => issues
+            .into_iter()
+            .filter(|issue| diff_index_keeps_issue(&loaded.index, issue, mode, radius))
+            .collect(),
+        // `init_shared_diff` ran and deliberately discarded the diff (foreign or
+        // ambiguous base): report at full scope, the same decision the finding
+        // filter made. Re-reading FALLOW_DIFF_FILE here would contradict it.
+        Some(None) => issues,
+        // `init_shared_diff` never ran: an embedder or a test, not a CLI run.
+        // Honour the env var directly so those callers keep working.
+        None => {
+            let Some(raw_path) = std::env::var_os("FALLOW_DIFF_FILE") else {
+                return issues;
+            };
+            filter_issues_from_path(issues, Path::new(&raw_path), mode, radius)
+        }
+    }
 }
 
 /// Filter for the typed PR-comment renderer (`print_pr_comment`).
@@ -409,13 +589,14 @@ fn diff_index_keeps_issue(
     mode: DiffFilterMode,
     radius: u64,
 ) -> bool {
+    // `issue.path` is analysis-root-relative; the index's keys live in the
+    // diff's own namespace. Presentation prefixes are applied later, at render.
+    let key = index.key_for_root_relative(&issue.path);
     match mode {
         DiffFilterMode::NoFilter => true,
-        DiffFilterMode::File => index.touches_file(&issue.path),
-        DiffFilterMode::DiffContext => {
-            index.line_within_added_context(&issue.path, issue.line, radius)
-        }
-        DiffFilterMode::Added => index.line_is_added(&issue.path, issue.line),
+        DiffFilterMode::File => index.touches_file(&key),
+        DiffFilterMode::DiffContext => index.line_within_added_context(&key, issue.line, radius),
+        DiffFilterMode::Added => index.line_is_added(&key, issue.line),
     }
 }
 
@@ -424,6 +605,7 @@ mod tests {
     use std::io::Write as _;
 
     use super::*;
+    use fallow_output::relative_to_diff_path;
 
     #[test]
     fn filter_issues_from_path_skips_oversize_diff() {
