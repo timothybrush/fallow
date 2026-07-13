@@ -1,11 +1,12 @@
 //! Audit brief output contracts.
 
 use crate::root_envelopes::{RootEnvelopeMode, attach_telemetry_meta, serialize_named_json_output};
+use fallow_types::envelope::{ElapsedMs, Meta, ToolVersion};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// Wire version for the `fallow audit --brief --format json` envelope.
-pub const REVIEW_BRIEF_SCHEMA_VERSION: u32 = 5;
+pub const REVIEW_BRIEF_SCHEMA_VERSION: u32 = 6;
 
 /// Independently-versioned wire-version newtype for the brief envelope.
 /// Serializes as the integer `REVIEW_BRIEF_SCHEMA_VERSION`.
@@ -48,18 +49,17 @@ pub enum ReviewEffort {
 
 /// Stage 0 of the brief: triage facts derived purely from the diff size.
 ///
-/// `hunks` and `net_lines` are `None` in v1: the file-level audit does not yet
-/// thread a `DiffIndex` (from `report/ci/diff_filter.rs`). They populate later,
-/// on `--diff-file` / `--diff-stdin`, without a schema bump.
+/// `hunks` and `net_lines` are populated when the caller supplies parsed diff
+/// evidence. They remain absent when no diff is available.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiffTriage {
     /// Number of changed files in the audit scope.
     pub files: usize,
-    /// Number of diff hunks. `None` in v1 (no diff index threaded yet).
+    /// Number of diff hunks, or `None` when no diff evidence was supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hunks: Option<usize>,
-    /// Net added-minus-removed lines. `None` in v1 (no diff index threaded yet).
+    /// Net added-minus-removed lines, or `None` without diff evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net_lines: Option<i64>,
     /// Coarse risk class derived from the change size.
@@ -73,16 +73,18 @@ pub struct DiffTriage {
 /// `boundaries_touched` is derived from the run's boundary-violation zones;
 /// `reachable_from` is populated by the impact closure (the affected-not-shown
 /// set: modules the changed code is reachable from / affects, none in the diff).
-/// `exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the
-/// export-surface delta lands. The fields are present and correctly typed so
-/// values fill in later without a schema bump.
+/// `exports_added` and `api_width_delta` both report the exports-aware public API
+/// widening count. Removed exports are not represented in this widening-only
+/// signal.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphFacts {
-    /// Number of exports added by the changeset. Stubbed to `0` in v1.
+    /// Number of public API exports added by the changeset. Zero means the
+    /// changeset adds no public API exports.
     pub exports_added: usize,
-    /// Change in public API width (added minus removed exports). Stubbed to `0`
-    /// in v1.
+    /// Widening-only public API delta, currently equal to `exports_added`.
+    /// Removed exports are not represented, so zero means no public API exports
+    /// were added.
     pub api_width_delta: i64,
     /// Root-relative paths of modules the changed code is reachable from / affects
     /// (the impact closure's affected-but-not-in-diff set), deduped and sorted.
@@ -238,78 +240,189 @@ pub type StandardReviewBriefOutput = ReviewBriefOutput<
     crate::audit_decision_surface::DecisionSurface,
 >;
 
+/// Informational audit metadata carried by the review brief wire envelope.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ReviewBriefHeader<Verdict, Summary, Attribution> {
+    /// Fallow CLI version that produced this output.
+    pub version: ToolVersion,
+    /// Audit verdict, informational only on the brief path.
+    pub verdict: Verdict,
+    /// Number of changed files in the audit scope.
+    pub changed_files_count: u32,
+    /// Base ref used to determine the changeset.
+    pub base_ref: String,
+    /// Human-readable description of the resolved base, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_description: Option<String>,
+    /// Head commit SHA, when the audit ran against a committed head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    /// Analysis duration in milliseconds.
+    pub elapsed_ms: ElapsedMs,
+    /// Whether base-snapshot analysis was skipped for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_snapshot_skipped: Option<bool>,
+    /// Per-category audit summary.
+    pub summary: Summary,
+    /// Introduced-versus-inherited issue attribution.
+    pub attribution: Attribution,
+}
+
+/// Complete `fallow audit --brief --format json` wire envelope.
+///
+/// This is distinct from [`ReviewBriefOutput`], which is the reusable review
+/// digest embedded in walkthrough output. The wire envelope also carries audit
+/// metadata, optional telemetry, and the subtract-style analysis subreports.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    schemars(title = "fallow audit --brief --format json")
+)]
+pub struct ReviewBriefWireOutput<
+    Focus,
+    Weakening,
+    Routing,
+    Decisions,
+    Verdict,
+    Summary,
+    Attribution,
+    DeadCode,
+    Duplication,
+    Complexity,
+> {
+    /// Independently-versioned brief schema version.
+    pub schema_version: ReviewBriefSchemaVersion,
+    /// Fallow CLI version that produced this output.
+    pub version: ToolVersion,
+    /// Command discriminator singleton: always `"audit-brief"`.
+    pub command: String,
+    /// Audit verdict, informational only on the brief path.
+    pub verdict: Verdict,
+    /// Number of changed files in the audit scope.
+    pub changed_files_count: u32,
+    /// Base ref used to determine the changeset.
+    pub base_ref: String,
+    /// Human-readable description of the resolved base, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_description: Option<String>,
+    /// Head commit SHA, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    /// Analysis duration in milliseconds.
+    pub elapsed_ms: ElapsedMs,
+    /// Whether base-snapshot analysis was skipped for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_snapshot_skipped: Option<bool>,
+    /// Per-category audit summary.
+    pub summary: Summary,
+    /// Introduced-versus-inherited issue attribution.
+    pub attribution: Attribution,
+    /// Optional metric definitions and local telemetry correlation metadata.
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+    /// Ranked, capped review decisions.
+    pub decisions: Decisions,
+    /// Diff-size triage facts.
+    pub triage: DiffTriage,
+    /// Graph-derived orientation facts.
+    pub graph_facts: GraphFacts,
+    /// Changed-file partition and review order.
+    pub partition: PartitionFacts,
+    /// Transitive impact closure outside the diff.
+    pub impact_closure: ImpactClosureFacts,
+    /// Weighted focus map for changed-file units.
+    pub focus: Focus,
+    /// Deterministic introduced deltas against the base snapshot.
+    pub deltas: ReviewDeltas,
+    /// Reviewer-private weakening signals.
+    pub weakening: Vec<Weakening>,
+    /// Ownership-aware reviewer routing.
+    pub routing: Routing,
+    /// Dead-code findings scoped to the audit changeset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_code: Option<DeadCode>,
+    /// Duplication findings scoped to the audit changeset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplication: Option<Duplication>,
+    /// Complexity findings scoped to the audit changeset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<Complexity>,
+}
+
 /// CLI-built audit subreports that are embedded in the audit brief envelope.
 ///
 /// The brief envelope and field ordering belong to `fallow-output`; the
 /// underlying subreport payloads are still supplied by the CLI until their
 /// builders are fully command-neutral.
 #[derive(Debug, Clone, Default)]
-pub struct ReviewBriefSubtractSections {
-    pub dead_code: Option<Value>,
-    pub duplication: Option<Value>,
-    pub complexity: Option<Value>,
-}
-
-fn insert_serialized<T: Serialize>(
-    obj: &mut Map<String, Value>,
-    key: &'static str,
-    value: &T,
-) -> Result<(), serde_json::Error> {
-    obj.insert(key.to_string(), serde_json::to_value(value)?);
-    Ok(())
+pub struct ReviewBriefSubtractSections<DeadCode = Value, Duplication = Value, Complexity = Value> {
+    pub dead_code: Option<DeadCode>,
+    pub duplication: Option<Duplication>,
+    pub complexity: Option<Complexity>,
 }
 
 /// Build the complete `fallow audit --brief --format json` value.
 ///
-/// `audit_header` carries informational audit scope fields such as verdict,
-/// base ref, summary, and attribution. This function restamps the independent
-/// brief schema and command after merging that header so the resulting document
-/// advertises the brief contract rather than the regular audit JSON contract.
-pub fn build_review_brief_json_output<Focus, Weakening, Routing, Decisions>(
-    brief: &ReviewBriefOutput<Focus, Weakening, Routing, Decisions>,
-    audit_header: Map<String, Value>,
-    subtract: ReviewBriefSubtractSections,
+/// `header` carries informational audit scope fields such as verdict, base ref,
+/// summary, and attribution. The independent brief schema and command always
+/// come from the typed brief payload.
+pub fn build_review_brief_json_output<
+    Focus,
+    Weakening,
+    Routing,
+    Decisions,
+    Verdict,
+    Summary,
+    Attribution,
+    DeadCode,
+    Duplication,
+    Complexity,
+>(
+    brief: ReviewBriefOutput<Focus, Weakening, Routing, Decisions>,
+    header: ReviewBriefHeader<Verdict, Summary, Attribution>,
+    subtract: ReviewBriefSubtractSections<DeadCode, Duplication, Complexity>,
 ) -> Result<Value, serde_json::Error>
 where
     Focus: Serialize,
     Weakening: Serialize,
     Routing: Serialize,
     Decisions: Serialize,
+    Verdict: Serialize,
+    Summary: Serialize,
+    Attribution: Serialize,
+    DeadCode: Serialize,
+    Duplication: Serialize,
+    Complexity: Serialize,
 {
-    let mut obj = Map::new();
-
-    insert_serialized(&mut obj, "schema_version", &brief.schema_version)?;
-    obj.insert("version".into(), Value::String(brief.version.clone()));
-    obj.insert("command".into(), Value::String(brief.command.clone()));
-
-    for (key, value) in audit_header {
-        obj.insert(key, value);
-    }
-
-    insert_serialized(&mut obj, "schema_version", &brief.schema_version)?;
-    obj.insert("command".into(), Value::String(brief.command.clone()));
-
-    insert_serialized(&mut obj, "decisions", &brief.decisions)?;
-    insert_serialized(&mut obj, "triage", &brief.triage)?;
-    insert_serialized(&mut obj, "graph_facts", &brief.graph_facts)?;
-    insert_serialized(&mut obj, "partition", &brief.partition)?;
-    insert_serialized(&mut obj, "impact_closure", &brief.impact_closure)?;
-    insert_serialized(&mut obj, "focus", &brief.focus)?;
-    insert_serialized(&mut obj, "deltas", &brief.deltas)?;
-    insert_serialized(&mut obj, "weakening", &brief.weakening)?;
-    insert_serialized(&mut obj, "routing", &brief.routing)?;
-
-    if let Some(value) = subtract.dead_code {
-        obj.insert("dead_code".into(), value);
-    }
-    if let Some(value) = subtract.duplication {
-        obj.insert("duplication".into(), value);
-    }
-    if let Some(value) = subtract.complexity {
-        obj.insert("complexity".into(), value);
-    }
-
-    Ok(Value::Object(obj))
+    serde_json::to_value(ReviewBriefWireOutput {
+        schema_version: brief.schema_version,
+        version: header.version,
+        command: brief.command,
+        verdict: header.verdict,
+        changed_files_count: header.changed_files_count,
+        base_ref: header.base_ref,
+        base_description: header.base_description,
+        head_sha: header.head_sha,
+        elapsed_ms: header.elapsed_ms,
+        base_snapshot_skipped: header.base_snapshot_skipped,
+        summary: header.summary,
+        attribution: header.attribution,
+        meta: None,
+        decisions: brief.decisions,
+        triage: brief.triage,
+        graph_facts: brief.graph_facts,
+        partition: brief.partition,
+        impact_closure: brief.impact_closure,
+        focus: brief.focus,
+        deltas: brief.deltas,
+        weakening: brief.weakening,
+        routing: brief.routing,
+        dead_code: subtract.dead_code,
+        duplication: subtract.duplication,
+        complexity: subtract.complexity,
+    })
 }
 
 fn serialize_agent_contract_json_output<T: Serialize>(
@@ -389,7 +502,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn review_brief_json_output_restamps_audit_header_contract() {
+    fn review_brief_json_output_assembles_typed_wire_contract() {
         let brief = ReviewBriefOutput {
             schema_version: ReviewBriefSchemaVersion::default(),
             version: "1.2.3".to_string(),
@@ -415,15 +528,23 @@ mod tests {
             routing: json!({"units": []}),
             decisions: json!({"decisions": []}),
         };
-        let mut audit_header = Map::new();
-        audit_header.insert("schema_version".into(), json!(999));
-        audit_header.insert("command".into(), json!("audit"));
-        audit_header.insert("verdict".into(), json!("fail"));
+        let header = ReviewBriefHeader {
+            version: ToolVersion("1.2.3".to_string()),
+            verdict: json!("fail"),
+            changed_files_count: 1,
+            base_ref: "main".to_string(),
+            base_description: Some("merge base".to_string()),
+            head_sha: Some("abc123".to_string()),
+            elapsed_ms: ElapsedMs(12),
+            base_snapshot_skipped: Some(false),
+            summary: json!({"dead_code_issues": 0}),
+            attribution: json!({"gate": "new_only"}),
+        };
 
         let value = build_review_brief_json_output(
-            &brief,
-            audit_header,
-            ReviewBriefSubtractSections {
+            brief,
+            header,
+            ReviewBriefSubtractSections::<Value, Value, Value> {
                 dead_code: Some(json!({"issues": []})),
                 duplication: None,
                 complexity: None,
@@ -434,6 +555,9 @@ mod tests {
         assert_eq!(value["schema_version"], REVIEW_BRIEF_SCHEMA_VERSION);
         assert_eq!(value["command"], "audit-brief");
         assert_eq!(value["verdict"], "fail");
+        assert_eq!(value["base_ref"], "main");
+        assert_eq!(value["summary"]["dead_code_issues"], 0);
+        assert_eq!(value["attribution"]["gate"], "new_only");
         assert_eq!(value["dead_code"]["issues"], json!([]));
     }
 

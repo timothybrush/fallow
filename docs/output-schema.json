@@ -8480,10 +8480,10 @@
           ]
         },
         {
-          "description": "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, `triage`, and\n`graph_facts`. Independently versioned via `ReviewBriefSchemaVersion`;\nalways emitted with exit 0.",
+          "description": "`fallow audit --brief --format json` (alias `fallow review`). Required\n`schema_version`, `version`, `command: \"audit-brief\"`, audit metadata,\n`triage`, and `graph_facts`, with optional analysis subreports. Independently\nversioned via `ReviewBriefSchemaVersion`; always emitted with exit 0.",
           "allOf": [
             {
-              "$ref": "#/definitions/ReviewBriefOutput"
+              "$ref": "#/definitions/ReviewBriefWireOutput"
             },
             {
               "type": "object",
@@ -15939,6 +15939,17 @@
           "description": "Impact closure scoped to the inspected file as the seed: the transitive\naffected-but-not-in-diff set + coordination gap.",
           "$ref": "#/definitions/InspectEvidenceSection"
         },
+        "churn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InspectEvidenceSection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OPT-IN target-level git churn. Omitted unless historical evidence was\nexplicitly requested by the caller."
+        },
         "symbol_chain": {
           "anyOf": [
             {
@@ -16122,6 +16133,7 @@
       "type": "string",
       "enum": [
         "ok",
+        "unavailable",
         "error"
       ]
     },
@@ -16252,14 +16264,14 @@
             "integer",
             "null"
           ],
-          "description": "Number of diff hunks. `None` in v1 (no diff index threaded yet)."
+          "description": "Number of diff hunks, or `None` when no diff evidence was supplied."
         },
         "net_lines": {
           "type": [
             "integer",
             "null"
           ],
-          "description": "Net added-minus-removed lines. `None` in v1 (no diff index threaded yet)."
+          "description": "Net added-minus-removed lines, or `None` without diff evidence."
         },
         "risk_class": {
           "description": "Coarse risk class derived from the change size.",
@@ -16275,18 +16287,18 @@
         "risk_class",
         "review_effort"
       ],
-      "description": "Stage 0 of the brief: triage facts derived purely from the diff size.\n\n`hunks` and `net_lines` are `None` in v1: the file-level audit does not yet\nthread a `DiffIndex` (from `report/ci/diff_filter.rs`). They populate later,\non `--diff-file` / `--diff-stdin`, without a schema bump."
+      "description": "Stage 0 of the brief: triage facts derived purely from the diff size.\n\n`hunks` and `net_lines` are populated when the caller supplies parsed diff\nevidence. They remain absent when no diff is available."
     },
     "GraphFacts": {
       "type": "object",
       "properties": {
         "exports_added": {
           "type": "integer",
-          "description": "Number of exports added by the changeset. Stubbed to `0` in v1."
+          "description": "Number of public API exports added by the changeset. Zero means the\nchangeset adds no public API exports."
         },
         "api_width_delta": {
           "type": "integer",
-          "description": "Change in public API width (added minus removed exports). Stubbed to `0`\nin v1."
+          "description": "Widening-only public API delta, currently equal to `exports_added`.\nRemoved exports are not represented, so zero means no public API exports\nwere added."
         },
         "reachable_from": {
           "type": "array",
@@ -16309,7 +16321,7 @@
         "reachable_from",
         "boundaries_touched"
       ],
-      "description": "Stage 1 of the brief: graph-derived orientation facts.\n\n`boundaries_touched` is derived from the run's boundary-violation zones;\n`reachable_from` is populated by the impact closure (the affected-not-shown\nset: modules the changed code is reachable from / affects, none in the diff).\n`exports_added` / `api_width_delta` stay honestly stubbed (`0`) until the\nexport-surface delta lands. The fields are present and correctly typed so\nvalues fill in later without a schema bump."
+      "description": "Stage 1 of the brief: graph-derived orientation facts.\n\n`boundaries_touched` is derived from the run's boundary-violation zones;\n`reachable_from` is populated by the impact closure (the affected-not-shown\nset: modules the changed code is reachable from / affects, none in the diff).\n`exports_added` and `api_width_delta` both report the exports-aware public API\nwidening count. Removed exports are not represented in this widening-only\nsignal."
     },
     "ImpactClosureFacts": {
       "type": "object",
@@ -18510,6 +18522,173 @@
         }
       ],
       "description": "How a suppression in the inventory was authored."
+    },
+    "ReviewBriefWireOutput": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Independently-versioned brief schema version.",
+          "$ref": "#/definitions/ReviewBriefSchemaVersion"
+        },
+        "version": {
+          "description": "Fallow CLI version that produced this output.",
+          "$ref": "#/definitions/ToolVersion"
+        },
+        "command": {
+          "type": "string",
+          "description": "Command discriminator singleton: always `\"audit-brief\"`."
+        },
+        "verdict": {
+          "description": "Audit verdict, informational only on the brief path.",
+          "$ref": "#/definitions/AuditVerdict"
+        },
+        "changed_files_count": {
+          "type": "integer",
+          "description": "Number of changed files in the audit scope."
+        },
+        "base_ref": {
+          "type": "string",
+          "description": "Base ref used to determine the changeset."
+        },
+        "base_description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable description of the resolved base, when available."
+        },
+        "head_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Head commit SHA, when available."
+        },
+        "elapsed_ms": {
+          "description": "Analysis duration in milliseconds.",
+          "$ref": "#/definitions/ElapsedMs"
+        },
+        "base_snapshot_skipped": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether base-snapshot analysis was skipped for this run."
+        },
+        "summary": {
+          "description": "Per-category audit summary.",
+          "$ref": "#/definitions/AuditSummary"
+        },
+        "attribution": {
+          "description": "Introduced-versus-inherited issue attribution.",
+          "$ref": "#/definitions/AuditAttribution"
+        },
+        "_meta": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Meta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional metric definitions and local telemetry correlation metadata."
+        },
+        "decisions": {
+          "description": "Ranked, capped review decisions.",
+          "$ref": "#/definitions/DecisionSurface"
+        },
+        "triage": {
+          "description": "Diff-size triage facts.",
+          "$ref": "#/definitions/DiffTriage"
+        },
+        "graph_facts": {
+          "description": "Graph-derived orientation facts.",
+          "$ref": "#/definitions/GraphFacts"
+        },
+        "partition": {
+          "description": "Changed-file partition and review order.",
+          "$ref": "#/definitions/PartitionFacts"
+        },
+        "impact_closure": {
+          "description": "Transitive impact closure outside the diff.",
+          "$ref": "#/definitions/ImpactClosureFacts"
+        },
+        "focus": {
+          "description": "Weighted focus map for changed-file units.",
+          "$ref": "#/definitions/FocusMap"
+        },
+        "deltas": {
+          "description": "Deterministic introduced deltas against the base snapshot.",
+          "$ref": "#/definitions/ReviewDeltas"
+        },
+        "weakening": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WeakeningSignal"
+          },
+          "description": "Reviewer-private weakening signals."
+        },
+        "routing": {
+          "description": "Ownership-aware reviewer routing.",
+          "$ref": "#/definitions/RoutingFacts"
+        },
+        "dead_code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CheckOutput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Dead-code findings scoped to the audit changeset."
+        },
+        "duplication": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DupesReportPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Duplication findings scoped to the audit changeset."
+        },
+        "complexity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HealthReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Complexity findings scoped to the audit changeset."
+        }
+      },
+      "required": [
+        "schema_version",
+        "version",
+        "command",
+        "verdict",
+        "changed_files_count",
+        "base_ref",
+        "elapsed_ms",
+        "summary",
+        "attribution",
+        "decisions",
+        "triage",
+        "graph_facts",
+        "partition",
+        "impact_closure",
+        "focus",
+        "deltas",
+        "weakening",
+        "routing"
+      ],
+      "title": "fallow audit --brief --format json",
+      "description": "Complete `fallow audit --brief --format json` wire envelope.\n\nThis is distinct from [`ReviewBriefOutput`], which is the reusable review\ndigest embedded in walkthrough output. The wire envelope also carries audit\nmetadata, optional telemetry, and the subtract-style analysis subreports."
     }
   }
 }

@@ -20,8 +20,12 @@ pub const MAX_ADDED_LINES: usize = 1_000_000;
 #[derive(Debug, Default, Clone)]
 pub struct DiffIndex {
     added_lines: FxHashMap<String, FxHashSet<u64>>,
+    changed_paths: FxHashSet<String>,
     touched_files: FxHashSet<String>,
     added_line_count: usize,
+    total_added_lines: usize,
+    total_removed_lines: usize,
+    hunk_count: usize,
     rename_pairs: FxHashMap<String, String>,
     base: Option<PathBuf>,
     root_offset: String,
@@ -32,6 +36,7 @@ pub struct DiffIndex {
 struct DiffParseState {
     current_file: Option<String>,
     new_line: u64,
+    pending_old_path: Option<String>,
     pending_rename_from: Option<String>,
 }
 
@@ -53,6 +58,8 @@ impl DiffIndex {
 
     fn handle_diff_header_line(&mut self, line: &str, state: &mut DiffParseState) -> bool {
         if line.starts_with("diff --git ") {
+            state.current_file = None;
+            state.pending_old_path = None;
             state.pending_rename_from = None;
             return true;
         }
@@ -63,22 +70,37 @@ impl DiffIndex {
         if let Some(rest) = line.strip_prefix("rename to ") {
             if let Some(from) = state.pending_rename_from.take() {
                 self.rename_pairs.insert(rest.to_owned(), from);
+                self.changed_paths.insert(rest.to_owned());
                 self.touched_files.insert(rest.to_owned());
             }
             return true;
         }
+        if let Some(path) = line.strip_prefix("--- a/") {
+            state.pending_old_path = Some(path.to_string());
+            return true;
+        }
+        if line.starts_with("--- /dev/null") {
+            state.pending_old_path = None;
+            return true;
+        }
         if let Some(path) = line.strip_prefix("+++ b/") {
+            state.pending_old_path = None;
             state.current_file = Some(path.to_string());
+            self.changed_paths.insert(path.to_string());
             self.touched_files.insert(path.to_string());
             return true;
         }
         if line.starts_with("+++ /dev/null") {
-            state.current_file = None;
+            state.current_file = state.pending_old_path.take();
+            if let Some(path) = state.current_file.as_ref() {
+                self.changed_paths.insert(path.clone());
+            }
             return true;
         }
         if let Some(header) = line.strip_prefix("@@ ") {
             if let Some(start) = parse_new_hunk_start(header) {
                 state.new_line = start;
+                self.hunk_count += 1;
             }
             return true;
         }
@@ -89,8 +111,9 @@ impl DiffIndex {
         let Some(path) = state.current_file.as_ref() else {
             return;
         };
-        if line.starts_with('+') && !line.starts_with("+++") {
-            if self.added_line_count < MAX_ADDED_LINES {
+        if line.starts_with('+') {
+            self.total_added_lines += 1;
+            if !line.starts_with("+++") && self.added_line_count < MAX_ADDED_LINES {
                 self.added_lines
                     .entry(path.clone())
                     .or_default()
@@ -98,7 +121,9 @@ impl DiffIndex {
                 self.added_line_count += 1;
             }
             state.new_line += 1;
-        } else if !line.starts_with('-') {
+        } else if line.starts_with('-') {
+            self.total_removed_lines += 1;
+        } else {
             state.new_line += 1;
         }
     }
@@ -113,6 +138,33 @@ impl DiffIndex {
         self.added_line_count
     }
 
+    /// Number of parsed unified-diff hunk headers.
+    #[must_use]
+    pub fn hunk_count(&self) -> usize {
+        self.hunk_count
+    }
+
+    /// Total added lines minus total removed lines, independent of the added
+    /// line indexing cap.
+    #[must_use]
+    pub fn net_lines(&self) -> i64 {
+        let added = i64::try_from(self.total_added_lines).unwrap_or(i64::MAX);
+        let removed = i64::try_from(self.total_removed_lines).unwrap_or(i64::MAX);
+        added.saturating_sub(removed)
+    }
+
+    /// Whether this diff changes the path, including when the path is deleted.
+    #[must_use]
+    pub fn changes_path(&self, path: &str) -> bool {
+        self.changed_paths.contains(path)
+    }
+
+    /// Paths changed by the diff, using the old path for deleted files.
+    pub fn changed_paths(&self) -> impl Iterator<Item = &str> {
+        self.changed_paths.iter().map(String::as_str)
+    }
+
+    /// Whether this diff touches an analyzable path in the head tree.
     #[must_use]
     pub fn touches_file(&self, path: &str) -> bool {
         self.touched_files.contains(path)
@@ -277,6 +329,49 @@ mod tests {
             "indexed {} lines, cap is {MAX_ADDED_LINES}",
             index.added_line_count()
         );
+        assert_eq!(index.net_lines(), (MAX_ADDED_LINES + 100) as i64);
+        assert_eq!(index.hunk_count(), 1);
+    }
+
+    #[test]
+    fn from_unified_diff_counts_additions_removals_and_hunks() {
+        let diff = "\
+diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@
+-old
++new
++extra
++++flag
+ context
+@@ -10,2 +11,1 @@
+-removed
+---flag
+ kept
+";
+        let index = DiffIndex::from_unified_diff(diff);
+
+        assert_eq!(index.hunk_count(), 2);
+        assert_eq!(index.net_lines(), 0);
+        assert!(index.changes_path("src/a.ts"));
+        assert!(index.touches_file("src/a.ts"));
+    }
+
+    #[test]
+    fn rename_only_diff_has_no_line_or_hunk_changes() {
+        let diff = "\
+diff --git a/src/old.ts b/src/new.ts
+similarity index 100%
+rename from src/old.ts
+rename to src/new.ts
+";
+        let index = DiffIndex::from_unified_diff(diff);
+
+        assert_eq!(index.hunk_count(), 0);
+        assert_eq!(index.net_lines(), 0);
+        assert!(index.changes_path("src/new.ts"));
+        assert!(index.touches_file("src/new.ts"));
     }
 
     #[test]
@@ -322,7 +417,7 @@ rename to src/new.ts
     }
 
     #[test]
-    fn delete_only_diff_records_no_added_lines() {
+    fn delete_only_diff_records_removal_without_touching_head_file() {
         let diff = "\
 diff --git a/src/a.ts b/src/a.ts
 --- a/src/a.ts
@@ -332,6 +427,9 @@ diff --git a/src/a.ts b/src/a.ts
 ";
         let index = DiffIndex::from_unified_diff(diff);
         assert_eq!(index.added_line_count(), 0);
+        assert_eq!(index.hunk_count(), 1);
+        assert_eq!(index.net_lines(), -1);
+        assert!(index.changes_path("src/a.ts"));
         assert!(!index.touches_file("src/a.ts"));
     }
 
