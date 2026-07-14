@@ -260,6 +260,15 @@ struct CrapPathProcessingInput<'a, 'maps, 'b> {
     merge: &'b mut CrapFindingMergeInput<'a>,
 }
 
+struct NewCrapFindingInput<'a, 'b> {
+    path: &'a std::path::Path,
+    pf: &'a scoring::PerFunctionCrap,
+    fc: &'a fallow_types::extract::FunctionComplexity,
+    hook_profile: Option<fallow_output::ReactHookProfile>,
+    merge: &'b CrapFindingMergeInput<'a>,
+    applied_thresholds: AppliedHealthThresholds,
+}
+
 /// Process one path's per-function CRAP entries: record threshold state, skip
 /// below-threshold / suppressed frames, then merge into an existing finding or
 /// append a new one to `new_findings`.
@@ -310,14 +319,14 @@ fn process_crap_findings_for_path(input: CrapPathProcessingInput<'_, '_, '_>) {
                 .hook_profiles_by_pos
                 .get(path)
                 .and_then(|m| m.get(&(pf.line, pf.col)).cloned());
-            new_findings.push(new_crap_finding(
+            new_findings.push(new_crap_finding(NewCrapFindingInput {
                 path,
                 pf,
                 fc,
                 hook_profile,
                 merge,
                 applied_thresholds,
-            ));
+            }));
         }
     }
 }
@@ -493,54 +502,49 @@ fn merge_existing_crap_finding(
     );
 }
 
-fn new_crap_finding(
-    path: &std::path::Path,
-    pf: &scoring::PerFunctionCrap,
-    fc: &fallow_types::extract::FunctionComplexity,
-    hook_profile: Option<fallow_output::ReactHookProfile>,
-    input: &CrapFindingMergeInput<'_>,
-    applied_thresholds: AppliedHealthThresholds,
-) -> ComplexityViolation {
-    let exceeds_cyclomatic = fc.cyclomatic > applied_thresholds.effective.max_cyclomatic;
-    let exceeds_cognitive = fc.cognitive > applied_thresholds.effective.max_cognitive;
+fn new_crap_finding(args: NewCrapFindingInput<'_, '_>) -> ComplexityViolation {
+    let exceeds_cyclomatic = args.fc.cyclomatic > args.applied_thresholds.effective.max_cyclomatic;
+    let exceeds_cognitive = args.fc.cognitive > args.applied_thresholds.effective.max_cognitive;
     ComplexityViolation {
-        path: path.to_path_buf(),
-        name: fc.name.clone(),
-        line: fc.line,
-        col: fc.col,
-        cyclomatic: fc.cyclomatic,
-        cognitive: fc.cognitive,
-        line_count: fc.line_count,
-        param_count: fc.param_count,
-        react_hook_count: fc.react_hook_count,
-        react_jsx_max_depth: fc.react_jsx_max_depth,
-        react_prop_count: fc.react_prop_count,
-        react_hook_profile: hook_profile,
+        path: args.path.to_path_buf(),
+        name: args.fc.name.clone(),
+        line: args.fc.line,
+        col: args.fc.col,
+        cyclomatic: args.fc.cyclomatic,
+        cognitive: args.fc.cognitive,
+        line_count: args.fc.line_count,
+        param_count: args.fc.param_count,
+        react_hook_count: args.fc.react_hook_count,
+        react_jsx_max_depth: args.fc.react_jsx_max_depth,
+        react_prop_count: args.fc.react_prop_count,
+        react_hook_profile: args.hook_profile,
         exceeded: ExceededThreshold::from_bools(exceeds_cyclomatic, exceeds_cognitive, true),
         severity: compute_finding_severity(
-            fc.cognitive,
-            fc.cyclomatic,
-            Some(pf.crap),
+            args.fc.cognitive,
+            args.fc.cyclomatic,
+            Some(args.pf.crap),
             DEFAULT_COGNITIVE_HIGH,
             DEFAULT_COGNITIVE_CRITICAL,
             DEFAULT_CYCLOMATIC_HIGH,
             DEFAULT_CYCLOMATIC_CRITICAL,
         ),
-        crap: Some(pf.crap),
-        coverage_pct: pf.coverage_pct,
-        coverage_tier: Some(pf.coverage_tier),
-        coverage_source: Some(pf.coverage_source),
+        crap: Some(args.pf.crap),
+        coverage_pct: args.pf.coverage_pct,
+        coverage_tier: Some(args.pf.coverage_tier),
+        coverage_source: Some(args.pf.coverage_source),
         inherited_from: inherited_from_for(
-            pf.coverage_source,
-            path,
-            input.template_inherit_provenance,
+            args.pf.coverage_source,
+            args.path,
+            args.merge.template_inherit_provenance,
         ),
         component_rollup: None,
-        contributions: contributions_for(input.complexity_breakdown, fc),
-        effective_thresholds: applied_thresholds
+        contributions: contributions_for(args.merge.complexity_breakdown, args.fc),
+        effective_thresholds: args
+            .applied_thresholds
             .override_index
-            .map(|_| applied_thresholds.effective),
-        threshold_source: applied_thresholds
+            .map(|_| args.applied_thresholds.effective),
+        threshold_source: args
+            .applied_thresholds
             .override_index
             .map(|_| fallow_output::ThresholdSource::Override),
     }
