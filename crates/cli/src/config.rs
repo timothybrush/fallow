@@ -40,36 +40,39 @@ pub fn run_config(
     output: OutputFormat,
     quiet: bool,
 ) -> ExitCode {
-    run_config_with_options(
+    run_config_with_options(RunConfigInput {
         root,
         explicit_config,
         path_only,
         output,
         quiet,
-        fallow_config::ConfigLoadOptions::default(),
-    )
+        load_options: fallow_config::ConfigLoadOptions::default(),
+    })
 }
 
-pub fn run_config_with_options(
-    root: &Path,
-    explicit_config: Option<&Path>,
-    path_only: bool,
-    output: OutputFormat,
-    quiet: bool,
-    load_options: fallow_config::ConfigLoadOptions,
-) -> ExitCode {
-    let result = if let Some(path) = explicit_config {
-        FallowConfig::load_with_options(path, load_options)
+#[derive(Clone, Copy)]
+pub struct RunConfigInput<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) explicit_config: Option<&'a Path>,
+    pub(crate) path_only: bool,
+    pub(crate) output: OutputFormat,
+    pub(crate) quiet: bool,
+    pub(crate) load_options: fallow_config::ConfigLoadOptions,
+}
+
+pub fn run_config_with_options(input: RunConfigInput<'_>) -> ExitCode {
+    let output = input.output;
+    let result = match input.explicit_config {
+        Some(path) => FallowConfig::load_with_options(path, input.load_options)
             .map(|c| Some((c, path.to_path_buf())))
-            .map_err(|e| format!("failed to load config '{}': {e}", path.display()))
-    } else {
-        FallowConfig::find_and_load_with_options(root, load_options)
+            .map_err(|e| format!("failed to load config '{}': {e}", path.display())),
+        None => FallowConfig::find_and_load_with_options(input.root, input.load_options),
     };
 
     match result {
         Ok(Some((config, path))) => {
             crate::runtime_support::warn_unknown_security_categories(&config.security);
-            if let Err(errors) = config.validate_resolved_boundaries(root) {
+            if let Err(errors) = config.validate_resolved_boundaries(input.root) {
                 let joined = errors
                     .iter()
                     .map(ToString::to_string)
@@ -78,14 +81,14 @@ pub fn run_config_with_options(
                 let msg = format!("invalid boundary configuration:\n  - {joined}");
                 return emit_error(&msg, 2, output);
             }
-            if path_only {
+            if input.path_only {
                 // Machine payload for `--path`: the config file path on stdout.
                 println!("{}", path.display());
             } else {
                 // The resolved config JSON is the machine payload on stdout; the
                 // provenance line is chrome and goes to stderr so `fallow config
                 // | jq` (any format) gets clean, parseable JSON.
-                if !quiet {
+                if !input.quiet {
                     eprintln!("loaded config: {}", path.display());
                 }
                 match serde_json::to_string_pretty(&config) {
@@ -98,7 +101,7 @@ pub fn run_config_with_options(
             ExitCode::SUCCESS
         }
         Ok(None) => {
-            if path_only {
+            if input.path_only {
                 // No config file exists, so there is no path to print. Preserve
                 // the not-found exit code for scripts that probe for a config.
                 return ExitCode::from(EXIT_NO_CONFIG);
@@ -108,7 +111,7 @@ pub fn run_config_with_options(
             // the command succeeds: exit 0 with the defaults on stdout so
             // `fallow config | jq` works and an agent does not read a non-zero
             // code as an error. The provenance line stays stderr chrome.
-            if !quiet {
+            if !input.quiet {
                 eprintln!("no config file found, using defaults");
             }
             match serde_json::to_string_pretty(&FallowConfig::default()) {

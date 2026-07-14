@@ -2821,16 +2821,16 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
         Command::RulePack { subcommand } => dispatch_rule_pack_command(dispatch, subcommand),
         Command::Guard { files } => dispatch_guard_command(dispatch, &files),
         Command::CiTemplate { subcommand } => dispatch_ci_template_command(subcommand),
-        Command::Config { path } => config::run_config_with_options(
+        Command::Config { path } => config::run_config_with_options(config::RunConfigInput {
             root,
-            cli.config.as_deref(),
-            path,
+            explicit_config: cli.config.as_deref(),
+            path_only: path,
             output,
             quiet,
-            fallow_config::ConfigLoadOptions {
+            load_options: fallow_config::ConfigLoadOptions {
                 allow_remote_extends: cli.allow_remote_extends,
             },
-        ),
+        }),
         Command::Recommend => onboarding::run_recommend(root, output),
         list @ (Command::Workspaces | Command::List { .. }) => {
             dispatch_list_command(&list, dispatch)
