@@ -156,14 +156,14 @@ pub(super) fn apply_enum_member_fixes(input: EnumMemberFixInput<'_, '_>) {
             folded.iter().map(|f| f.parent_name.as_str()).collect();
 
         if dry_run {
-            record_enum_member_dry_run(
-                &member_fixes,
-                &folded,
-                &folded_parents,
+            record_enum_member_dry_run(EnumMemberDryRunInput {
+                member_fixes: &member_fixes,
+                folded: &folded,
+                folded_parents: &folded_parents,
                 relative,
                 output,
                 fixes,
-            );
+            });
         } else {
             let mut new_lines: Vec<String> = lines.iter().map(ToString::to_string).collect();
             let mut apply_ctx = EnumMemberApplyContext {
@@ -223,22 +223,25 @@ fn collect_enum_member_fixes(
     member_fixes
 }
 
-fn record_enum_member_dry_run(
-    member_fixes: &[EnumMemberFix],
-    folded: &[FoldedEnum],
-    folded_parents: &rustc_hash::FxHashSet<&str>,
-    relative: &Path,
+struct EnumMemberDryRunInput<'a, 'b> {
+    member_fixes: &'a [EnumMemberFix],
+    folded: &'a [FoldedEnum],
+    folded_parents: &'a rustc_hash::FxHashSet<&'a str>,
+    relative: &'a Path,
     output: OutputFormat,
-    fixes: &mut Vec<serde_json::Value>,
-) {
-    for fix in member_fixes {
-        if folded_parents.contains(fix.parent_name.as_str()) {
+    fixes: &'b mut Vec<serde_json::Value>,
+}
+
+fn record_enum_member_dry_run(input: EnumMemberDryRunInput<'_, '_>) {
+    let fixes = input.fixes;
+    for fix in input.member_fixes {
+        if input.folded_parents.contains(fix.parent_name.as_str()) {
             continue;
         }
-        if !matches!(output, OutputFormat::Json) {
+        if !matches!(input.output, OutputFormat::Json) {
             eprintln!(
                 "Would remove enum member from {}:{} `{}.{}`",
-                relative.display(),
+                input.relative.display(),
                 fix.line_idx + 1,
                 fix.parent_name,
                 fix.member_name,
@@ -246,25 +249,25 @@ fn record_enum_member_dry_run(
         }
         fixes.push(serde_json::json!({
             "type": "remove_enum_member",
-            "path": relative.display().to_string(),
+            "path": input.relative.display().to_string(),
             "line": fix.line_idx + 1,
             "parent": fix.parent_name,
             "name": fix.member_name,
         }));
     }
-    for fold in folded {
-        if !matches!(output, OutputFormat::Json) {
+    for fold in input.folded {
+        if !matches!(input.output, OutputFormat::Json) {
             eprintln!(
                 "Would remove enum declaration from {}:{} `{}` (every member is unused; \
                  importers in other files will need cleanup, run your TypeScript build to find them)",
-                relative.display(),
+                input.relative.display(),
                 fold.decl_line + 1,
                 fold.parent_name,
             );
         }
         fixes.push(serde_json::json!({
             "type": "remove_export",
-            "path": relative.display().to_string(),
+            "path": input.relative.display().to_string(),
             "line": fold.decl_line + 1,
             "name": fold.parent_name,
         }));
