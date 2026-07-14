@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-07-14
+
 ### Fixed
 
 - **Next.js metadata route config exports are no longer reported as unused.**
@@ -16,10 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arbitrary helper exports remain reportable because Next.js does not re-export
   them from generated metadata route handlers.
 
-- **Knip migration suggestions use recognized suppression issue kinds.** The
-  `ignoreUnresolved` warning now suggests the singular `unresolved-import`
-  token, and a regression test validates every concrete suppression token in
-  the migration table against fallow's parser.
+- **`fallow migrate` suggestions use recognized suppression issue kinds.** When
+  migrating an `ignoreUnresolved` entry, the generated warning now suggests the
+  singular `unresolved-import` token, and a regression test validates every
+  concrete suppression token in the migration table against fallow's parser.
 
 - **Regression baseline help explains the existing config update flow.**
   Running `--save-regression-baseline` without a path updates
@@ -4705,7 +4707,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.5.1...HEAD
+[3.5.1]: https://github.com/fallow-rs/fallow/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/fallow-rs/fallow/compare/v3.4.2...v3.5.0
 [3.4.2]: https://github.com/fallow-rs/fallow/compare/v3.3.0...v3.4.2
 [3.3.0]: https://github.com/fallow-rs/fallow/compare/v3.2.0...v3.3.0
