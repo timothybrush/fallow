@@ -109,6 +109,16 @@ struct DuplicationTokenizeContext<'a> {
     skip_imports: bool,
 }
 
+#[derive(Clone, Copy)]
+struct TokenizeCorpusInput<'a> {
+    root: &'a Path,
+    files: &'a [DiscoveredFile],
+    config: &'a DuplicatesConfig,
+    extra_ignores: Option<&'a IgnoreSet>,
+    default_skip_counts: &'a [AtomicUsize],
+    cache_root: Option<&'a Path>,
+}
+
 /// Run duplication detection on the given files.
 ///
 /// This is the main entry point for the duplication analysis. It:
@@ -208,18 +218,13 @@ pub fn find_duplicates_touching_files_cached_with_default_ignore_skips(
 /// cache config, tokenizes files (writing the token cache when enabled), and
 /// returns the per-file token data alongside the corpus totals.
 fn tokenize_corpus_for_duplicates(
-    root: &Path,
-    files: &[DiscoveredFile],
-    config: &DuplicatesConfig,
-    extra_ignores: Option<&IgnoreSet>,
-    default_skip_counts: &[AtomicUsize],
-    cache_root: Option<&Path>,
+    input: TokenizeCorpusInput<'_>,
 ) -> (Vec<TokenizedFile>, detect::CorpusTotals) {
+    let (files, config) = (input.files, input.config);
     let normalization =
         fallow_config::ResolvedNormalization::resolve(config.mode, &config.normalization);
 
-    let strip_types = config.cross_language;
-    let skip_imports = config.ignore_imports;
+    let (strip_types, skip_imports) = (config.cross_language, config.ignore_imports);
 
     tracing::debug!(
         ignore_imports = skip_imports,
@@ -227,16 +232,18 @@ fn tokenize_corpus_for_duplicates(
     );
 
     let token_cache_mode = TokenCacheMode::new(normalization, strip_types, skip_imports);
-    let cache_root = cache_root.filter(|_| files.len() >= config.min_corpus_size_for_token_cache);
+    let cache_root = input
+        .cache_root
+        .filter(|_| files.len() >= config.min_corpus_size_for_token_cache);
     let token_cache = cache_root.map(TokenCache::load);
 
     let file_data = tokenize_duplication_files(
         files,
         &DuplicationTokenizeContext {
-            root,
+            root: input.root,
             config,
-            extra_ignores,
-            default_skip_counts,
+            extra_ignores: input.extra_ignores,
+            default_skip_counts: input.default_skip_counts,
             token_cache: token_cache.as_ref(),
             token_cache_mode,
             normalization,
@@ -338,14 +345,14 @@ fn find_duplicates_inner(
         })
         .unwrap_or_default();
 
-    let (file_data, corpus_totals) = tokenize_corpus_for_duplicates(
+    let (file_data, corpus_totals) = tokenize_corpus_for_duplicates(TokenizeCorpusInput {
         root,
         files,
         config,
-        extra_ignores.as_ref(),
-        &default_skip_counts,
+        extra_ignores: extra_ignores.as_ref(),
+        default_skip_counts: &default_skip_counts,
         cache_root,
-    );
+    });
 
     let report = detect_and_postprocess(root, config, file_data, corpus_totals, focus_files);
 
