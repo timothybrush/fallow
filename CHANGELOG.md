@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-07-15
+
 ### Changed
 
 - **`--format json` now emits compact JSON by default.** Machine consumers get
@@ -18,13 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persisted JSON keep their existing presentation. (Closes
   [#1861](https://github.com/fallow-rs/fallow/issues/1861))
 
-- **Reusable audit base snapshots are root-owned and safe to clean while audits run.** Each requested project root now has one base-worktree cache that is rebuilt in place when the full resolved base SHA changes. The reuse lock stays held for the audit lifetime, old SHA-keyed caches remain reclaimable, and `fallow audit-cache remove --root <PATH>` provides explicit preview and confirmation controls. Temporary source snapshots are private on Unix, predictable sidecars reject symlinks, and Git administration cleanup is restricted to the current repository's verified worktree entry.
+- **Reusable audit base snapshots are root-owned and safe to clean while audits run.** Each requested project root now has one base-worktree cache that is rebuilt in place when the full resolved base SHA changes. The reuse lock stays held for the audit lifetime, old SHA-keyed caches remain reclaimable, and `fallow audit-cache remove --root <PATH>` provides explicit preview and confirmation controls. Temporary source snapshots are private on Unix, predictable sidecars reject symlinks, and Git administration cleanup is restricted to the current repository's verified worktree entry. Thanks [@ryolambert](https://github.com/ryolambert) for the contribution ([#1893](https://github.com/fallow-rs/fallow/pull/1893)).
 
 ### Fixed
 
 - **Windows editor diagnostics use valid file URIs.** LSP paths no longer retain
   the Windows verbatim path prefix that prevented diagnostics from rendering.
   (Closes [#1899](https://github.com/fallow-rs/fallow/issues/1899))
+
+- **Package-less TypeScript project references keep dependency ownership at the
+  parent package.** Unused-dependency attribution now credits each imported
+  package to the deepest workspace root that actually declares a `package.json`,
+  so a `tsconfig` project reference without its own manifest no longer captures
+  (and then misreports) dependencies that belong to its parent package.
 
 ## [3.5.1] - 2026-07-14
 
@@ -4726,7 +4734,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.5.1...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.6.0...HEAD
+[3.6.0]: https://github.com/fallow-rs/fallow/compare/v3.5.1...v3.6.0
 [3.5.1]: https://github.com/fallow-rs/fallow/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/fallow-rs/fallow/compare/v3.4.2...v3.5.0
 [3.4.2]: https://github.com/fallow-rs/fallow/compare/v3.3.0...v3.4.2
