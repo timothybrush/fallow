@@ -105,6 +105,10 @@ AGENTS.md
 # .plans/, never committed. Ignored so `git add -A` cannot sweep one in again.
 plans/
 
+# Superpowers workflow artefacts are local agent state, never repository content.
+.superpowers/
+docs/superpowers/
+
 # Crash-handover markers from sdk-cli automation
 /HANDOVER-CRASH-*.md
 
