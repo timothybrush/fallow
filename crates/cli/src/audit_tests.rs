@@ -1083,6 +1083,86 @@ fn retained_reusable_lock_makes_remove_skip_then_succeed_and_preserve_lock() {
 }
 
 #[test]
+fn dry_run_removal_does_not_create_lock_sidecars() {
+    let tmp = tempfile::TempDir::new().expect("temp dir should be created");
+    let repo = init_throwaway_repo(tmp.path(), "repo-dry-run-no-lock");
+    let cache_path = reusable_audit_worktree_path(&repo);
+    fs::create_dir_all(&cache_path).expect("cache directory should be created");
+    fs::write(
+        reusable_worktree_sha_path(&cache_path),
+        format!("{TEST_BASE_SHA}\n"),
+    )
+    .expect("readiness sidecar should be written");
+    fs::write(reusable_worktree_last_used_path(&cache_path), "")
+        .expect("last-used sidecar should be written");
+    let lock_path = reusable_worktree_lock_path(&cache_path);
+    assert!(
+        !lock_path.exists(),
+        "precondition: entry has no lock sidecar yet"
+    );
+
+    let report = remove_reusable_audit_caches(&repo, true).expect("dry-run removal should succeed");
+
+    assert!(report.dry_run, "report must reflect dry-run mode");
+    assert_eq!(report.found, 1, "the entry must be counted as found");
+    assert_eq!(report.removed, 0, "dry-run must remove nothing");
+    assert_eq!(report.skipped, 0, "dry-run must not report contention");
+    assert!(
+        !lock_path.exists(),
+        "dry-run must not create a .lock sidecar (documented as filesystem-inert)",
+    );
+    assert!(
+        cache_path.is_dir(),
+        "dry-run must preserve the cache directory"
+    );
+
+    cleanup_reusable_worktree(&repo, &cache_path);
+}
+
+#[test]
+fn removal_on_repo_without_caches_reports_zero() {
+    let tmp = tempfile::TempDir::new().expect("temp dir should be created");
+    let repo = init_throwaway_repo(tmp.path(), "repo-remove-empty");
+
+    let report = remove_reusable_audit_caches(&repo, false)
+        .expect("removal on an empty repo should succeed");
+
+    assert_eq!(report.found, 0, "no caches means nothing found");
+    assert_eq!(report.removed, 0, "no caches means nothing removed");
+    assert_eq!(report.skipped, 0, "no caches means nothing skipped");
+}
+
+#[cfg(unix)]
+#[test]
+fn removal_surfaces_filesystem_errors() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::TempDir::new().expect("temp dir should be created");
+    let repo = init_throwaway_repo(tmp.path(), "repo-remove-eacces");
+    let cache_path = reusable_audit_worktree_path(&repo);
+    fs::create_dir_all(&cache_path).expect("cache directory should be created");
+    fs::write(cache_path.join("child"), "blocked\n").expect("inner file should be written");
+    // r-x only: the directory can be read and traversed, but its entries cannot
+    // be unlinked, so remove_dir_all fails with a permission error.
+    fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o500))
+        .expect("cache mode should be set");
+
+    let result = remove_reusable_audit_caches(&repo, false);
+
+    // Restore write permission before asserting, so a failed assertion still
+    // leaves the TempDir removable.
+    fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o700))
+        .expect("cache mode should be restored");
+
+    assert!(
+        result.is_err(),
+        "a filesystem error during removal must surface as Err (maps to exit 2)",
+    );
+
+    cleanup_reusable_worktree(&repo, &cache_path);
+}
+
+#[test]
 fn cache_removal_does_not_follow_untrusted_gitdir_outside_repo_admin() {
     let tmp = tempfile::TempDir::new().expect("temp dir should be created");
     let repo = init_throwaway_repo(tmp.path(), "repo-remove-untrusted-gitdir");

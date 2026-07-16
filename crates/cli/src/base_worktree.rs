@@ -911,11 +911,18 @@ pub fn remove_reusable_audit_caches(
             continue;
         }
         report.found += 1;
+        if dry_run {
+            // A preview must not touch the filesystem. Acquiring the lock would
+            // create the `.lock` sidecar (create_new) for entries that lack one,
+            // violating the documented --dry-run contract. Contention is a race
+            // only the real removal reports.
+            continue;
+        }
         let Some(_lock) = ReusableWorktreeLock::try_acquire(&path) else {
             report.skipped += 1;
             continue;
         };
-        if !dry_run && remove_reusable_cache_entry_locked(requested_root, &path)? {
+        if remove_reusable_cache_entry_locked(requested_root, &path)? {
             report.removed += 1;
         }
     }
