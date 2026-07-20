@@ -504,19 +504,71 @@ fn ensure_matching_star_exports(input: EnsureMatchingStarExports<'_>) -> bool {
     } = input;
 
     let mut changed = false;
-    if needs_type_export && exports.type_indices.is_empty() && can_synthesize {
-        changed |= create_empty_synthetic_export(source, source_id, name, true, synthetic_stubs);
-        if let Some(idx) = matching_synthetic_export_index(source, name, true) {
-            exports.type_indices.push(idx);
-        }
+    if needs_type_export
+        && exports.type_indices.is_empty()
+        && can_synthesize
+        && let Some(idx) = synthesize_and_locate_star_export(
+            source,
+            source_id,
+            name,
+            true,
+            synthetic_stubs,
+            &mut changed,
+        )
+    {
+        exports.type_indices.push(idx);
     }
-    if needs_value_export && exports.value_indices.is_empty() && can_synthesize {
-        changed |= create_empty_synthetic_export(source, source_id, name, false, synthetic_stubs);
-        if let Some(idx) = matching_synthetic_export_index(source, name, false) {
-            exports.value_indices.push(idx);
-        }
+    if needs_value_export
+        && exports.value_indices.is_empty()
+        && can_synthesize
+        && let Some(idx) = synthesize_and_locate_star_export(
+            source,
+            source_id,
+            name,
+            false,
+            synthetic_stubs,
+            &mut changed,
+        )
+    {
+        exports.value_indices.push(idx);
     }
     changed
+}
+
+/// Synthesize the star-re-export stub for `name`/`is_type_only` (if not already
+/// present) and return the index star references should attach to, preserving the
+/// exact first-match semantics of the positional [`matching_synthetic_export_index`]
+/// scan it replaces.
+///
+/// Fast path: a freshly appended stub lands at `exports.len() - 1`, and reaching this
+/// branch guarantees that stub is the sole match, so the O(source_exports) `.position()`
+/// scan is elided (issue #1916, follow-up to the #1914 main-path index). The branch only
+/// runs when `exports.{type,value}_indices` is empty, i.e. the source carries no earlier
+/// `Named(name)` export of that type-ness (otherwise `build_named_export_index` would have
+/// populated the index and this branch would have been skipped, which also means an
+/// already-synthesized stub from a prior fixpoint visit cannot re-enter it, so `create`
+/// always appends here). `name` is likewise never `"default"` on this path: the caller
+/// `apply_star_refs_to_source` returns early for `"default"` before ever calling into the
+/// matching-exports synthesis.
+///
+/// The positional [`matching_synthetic_export_index`] fallback is retained as a defensive
+/// exact-semantics preserver should either upstream invariant ever change (a `"default"`
+/// name, whose exports are not keyed into the named index, or a non-appending `create`).
+fn synthesize_and_locate_star_export(
+    source: &mut ModuleNode,
+    source_id: FileId,
+    name: &str,
+    is_type_only: bool,
+    synthetic_stubs: &mut FxHashSet<(FileId, String, bool)>,
+    changed: &mut bool,
+) -> Option<usize> {
+    let appended =
+        create_empty_synthetic_export(source, source_id, name, is_type_only, synthetic_stubs);
+    *changed |= appended;
+    if appended && name != "default" {
+        return Some(source.exports.len() - 1);
+    }
+    matching_synthetic_export_index(source, name, is_type_only)
 }
 
 fn matching_synthetic_export_index(
