@@ -185,9 +185,10 @@ jobs:
       - name: Run version
         # Asserts the image reports the version pinned in the Dockerfile's own
         # ARG default, not just that the binary runs. This is what makes this
-        # required check a real end-to-end proof for a docker-lockstep PR
-        # (release.yml): the new pins download, checksum-verify, and report
-        # the just-released version instead of merely not crashing.
+        # required check a real end-to-end proof for the release's Docker pin
+        # commit (fallow-release skill step 13): the new pins download,
+        # checksum-verify, and report the just-released version instead of
+        # merely not crashing.
         shell: bash
         run: |
           set -euo pipefail
