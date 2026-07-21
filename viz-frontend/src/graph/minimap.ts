@@ -8,7 +8,14 @@ import { select } from "d3-selection";
 import "d3-transition";
 import { zoomIdentity } from "d3-zoom";
 import type { AppState } from "../state";
-import { type GraphViewState, type Pt, PANEL_WIDTH, clusterBounds, easeOut, getGVS } from "./shared";
+import {
+  type GraphViewState,
+  type Pt,
+  PANEL_WIDTH,
+  clusterBounds,
+  easeOut,
+  getGVS,
+} from "./shared";
 
 const MINIMAP_W = 172;
 const MINIMAP_H = 112;

@@ -672,7 +672,9 @@ interface RankColumn {
 }
 
 /** The importer-count column shared by every used-by ranked list. */
-const usedByColumns: RankColumn[] = [{ header: "used by", hint: "How many files import this one." }];
+const usedByColumns: RankColumn[] = [
+  { header: "used by", hint: "How many files import this one." },
+];
 
 /** The shared shape a ranked table renders from. */
 interface RankView {
