@@ -1,6 +1,8 @@
 [files]
 extend-exclude = [
     "editors/vscode/dist/",
+    "crates/cli/viz-assets/",
+    "viz-frontend/package-lock.json",
     "*.js.map",
     "tests/fixtures/",
     "reference/",
@@ -18,6 +20,8 @@ xdescribe = "xdescribe"
 xit = "xit"
 
 [default.extend-words]
+# Level-of-detail rendering tiers in the viz frontend
+LOD = "LOD"
 ba = "ba"
 daa = "daa"
 ist = "ist"
