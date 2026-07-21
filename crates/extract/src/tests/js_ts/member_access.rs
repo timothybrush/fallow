@@ -487,7 +487,7 @@ fn cyclic_object_binding_candidates_terminate() {
     // instance seeding real binding targets) used to make the
     // object-binding fixpoint deepen and multiply every copied path per
     // iteration: exponential time and memory on minified bundles. The
-    // depth and size caps bound it; this test regresses on hang.
+    // resolver's per-module caps bound it; this test regresses on hang.
     use std::fmt::Write as _;
     let mut source = String::from("class C { m() {} }\nconst c = new C();\n");
     let nodes = 40;
