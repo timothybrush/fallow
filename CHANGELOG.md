@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-07-22
+
 ### Added
 
 - **`fallow viz` renders your codebase as an interactive map.** A new command that runs one project analysis and writes a single self-contained HTML file (no server, no external assets) styled like the rest of fallow: a nested treemap of files sized by bytes, plus a force-directed import graph with directory and import-community clustering. Both views share four lenses that recolor the same map: dead code (unused files, unused exports, entry points), duplication (share of duplicated lines per file, with clone previews), boundaries (architecture zones from your `boundaries` config, with violating imports drawn in red), and complexity hotspots (per-function cyclomatic and cognitive scores, including React context such as hook counts and JSX depth). Clicking any file opens a detail panel with the evidence: unused export names, clone groups and their other locations, boundary crossings, cycle membership, importers and imports as click-through navigation, and a runnable `fallow ... --trace` command to verify each finding. Search, breadcrumb drill-down, keyboard shortcuts, shareable URL deep links, and dark/light themes are built in; findings carry a hatch texture and `[E]`/`[W]` prefixes so color is never the only signal, and all motion honors `prefers-reduced-motion`. The HTML opens in your browser by default (`--no-open` to skip, `--out <path>` to choose the file); `--viz-format dot` and `--viz-format mermaid` emit the import graph as text for piping into other tools. Read-only, and respects `--production`, `--config`, and `--no-cache` like the analysis commands.
@@ -4848,7 +4850,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.7.1...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.8.0...HEAD
+[3.8.0]: https://github.com/fallow-rs/fallow/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/fallow-rs/fallow/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/fallow-rs/fallow/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/fallow-rs/fallow/compare/v3.5.1...v3.6.0

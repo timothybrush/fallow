@@ -45,10 +45,6 @@ how its multiple signals contribute to each result, and helping teams adopt
 baselines and thresholds that fit their project context. This direction improves
 confidence and multi-signal explainability rather than adding another grade.
 
-### Visualization
-
-`fallow viz`: a self-contained interactive HTML report. Treemap with dead code highlighted, dependency graph, cycle visualization, duplication heatmaps. No server, opens in any browser. Scoping depends on which view actually unblocks a user workflow rather than just looking good in screenshots.
-
 ---
 
 ## Ongoing
