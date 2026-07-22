@@ -115,7 +115,7 @@ pub fn find_duplicates(
 
 /// Run cached duplication detection inside the engine boundary.
 #[must_use]
-pub fn find_duplicates_cached(
+pub(crate) fn find_duplicates_cached(
     root: &Path,
     files: &[DiscoveredFile],
     config: &DuplicatesConfig,

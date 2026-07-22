@@ -5,54 +5,55 @@ pub(super) use super::coverage_gaps::{CoverageGapData, build_coverage_summary};
 
 /// Output from `compute_file_scores`, including auxiliary data for refactoring targets.
 pub struct FileScoreOutput {
-    pub scores: Vec<FileHealthScore>,
+    pub(crate) scores: Vec<FileHealthScore>,
     /// Static coverage gaps derived from runtime-vs-test reachability.
-    pub coverage: CoverageGapData,
+    pub(crate) coverage: CoverageGapData,
     /// Files participating in circular dependencies (absolute paths).
-    pub circular_files: rustc_hash::FxHashSet<std::path::PathBuf>,
+    pub(crate) circular_files: rustc_hash::FxHashSet<std::path::PathBuf>,
     /// Top 3 functions by cognitive complexity per file (name, line, cognitive score).
-    pub top_complex_fns: rustc_hash::FxHashMap<std::path::PathBuf, Vec<(String, u32, u16)>>,
+    pub(crate) top_complex_fns: rustc_hash::FxHashMap<std::path::PathBuf, Vec<(String, u32, u16)>>,
     /// Files that are configured entry points.
-    pub entry_points: rustc_hash::FxHashSet<std::path::PathBuf>,
+    pub(crate) entry_points: rustc_hash::FxHashSet<std::path::PathBuf>,
     /// Total number of value exports per file (for dead code gate: total_value_exports >= 3).
-    pub value_export_counts: rustc_hash::FxHashMap<std::path::PathBuf, usize>,
+    pub(crate) value_export_counts: rustc_hash::FxHashMap<std::path::PathBuf, usize>,
     /// Unused export names per file (for evidence linking).
-    pub unused_export_names: rustc_hash::FxHashMap<std::path::PathBuf, Vec<String>>,
+    pub(crate) unused_export_names: rustc_hash::FxHashMap<std::path::PathBuf, Vec<String>>,
     /// Cycle members per file: maps each file to the other files in its cycle.
-    pub cycle_members: rustc_hash::FxHashMap<std::path::PathBuf, Vec<std::path::PathBuf>>,
+    pub(crate) cycle_members: rustc_hash::FxHashMap<std::path::PathBuf, Vec<std::path::PathBuf>>,
     /// Direct importers per file, with the symbols imported by each caller.
-    pub direct_callers: rustc_hash::FxHashMap<std::path::PathBuf, Vec<DirectCallerEvidence>>,
+    pub(crate) direct_callers: rustc_hash::FxHashMap<std::path::PathBuf, Vec<DirectCallerEvidence>>,
     /// Aggregate counts from AnalysisResults for vital signs (project-wide).
-    pub analysis_counts: crate::vital_signs::AnalysisCounts,
+    pub(crate) analysis_counts: crate::vital_signs::AnalysisCounts,
     /// Located prop-drilling chains from the analysis results (empty when the
     /// opt-in `prop-drilling` rule is off, since the detector populates no chains
     /// then). Drives the small capped health penalty, the hotspot surface, and
     /// the `health --format json` `prop_drilling_chains` array.
-    pub prop_drilling_chains: Vec<fallow_types::output_dead_code::PropDrillingChainFinding>,
+    pub(crate) prop_drilling_chains: Vec<fallow_types::output_dead_code::PropDrillingChainFinding>,
     /// Per-component render fan-in (JSX render SITES + distinct parents) plus the
     /// precomputed concentration aggregates, cloned from the analysis results.
     /// `None` on non-React projects. Descriptive blast-radius signal: feeds the
     /// `VitalSigns` render-fan-in aggregates and the hotspot/react drill-down
     /// `rendered in N places` line (keyed back to file paths).
-    pub render_fan_in: Option<fallow_types::results::RenderFanInMetric>,
+    pub(crate) render_fan_in: Option<fallow_types::results::RenderFanInMetric>,
     /// Per-path snapshot of analysis findings, used to recompute
     /// [`crate::vital_signs::AnalysisCounts`] for an arbitrary subset of files
     /// (workspace scoping, `--group-by` partitioning).
-    pub analysis_snapshot: AnalysisCountsSnapshot,
+    pub(crate) analysis_snapshot: AnalysisCountsSnapshot,
     /// Istanbul match stats: functions matched / total (only meaningful with Istanbul model).
-    pub istanbul_matched: usize,
-    pub istanbul_total: usize,
+    pub(crate) istanbul_matched: usize,
+    pub(crate) istanbul_total: usize,
     /// Per-file, per-function CRAP data used to emit `--max-crap` findings.
     /// Absolute paths match `FileHealthScore.path`. Absent entries indicate the
     /// file had zero functions.
-    pub per_function_crap: rustc_hash::FxHashMap<std::path::PathBuf, Vec<PerFunctionCrap>>,
+    pub(crate) per_function_crap: rustc_hash::FxHashMap<std::path::PathBuf, Vec<PerFunctionCrap>>,
     /// Provenance map for synthetic Angular `<template>` findings whose CRAP
     /// was inherited from the owning `.component.ts` via the inverse
     /// `templateUrl` edge. Keys are the template `.html` absolute paths,
     /// values are the owner `.ts` absolute paths (the path used for the
     /// `inherited from foo.component.ts` human-output suffix). Absent for
     /// non-template files and for templates with no `.ts` owner.
-    pub template_inherit_provenance: rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
+    pub(crate) template_inherit_provenance:
+        rustc_hash::FxHashMap<std::path::PathBuf, std::path::PathBuf>,
 }
 
 struct FileScoreOutputParts<'a> {
@@ -82,20 +83,20 @@ struct FileScoreOutputParts<'a> {
 #[derive(Clone, Default)]
 pub struct AnalysisCountsSnapshot {
     /// One entry per unused file.
-    pub unused_file_paths: Vec<std::path::PathBuf>,
+    unused_file_paths: Vec<std::path::PathBuf>,
     /// One entry per unused value or type export, keyed by the file containing
     /// the export.
-    pub unused_export_paths: Vec<std::path::PathBuf>,
+    unused_export_paths: Vec<std::path::PathBuf>,
     /// One entry per unused dependency across `dependencies`,
     /// `devDependencies`, and `optionalDependencies`, keyed by the
     /// `package.json` path that declared it.
-    pub unused_dep_package_paths: Vec<std::path::PathBuf>,
+    unused_dep_package_paths: Vec<std::path::PathBuf>,
     /// Each cycle as the set of file paths it contains. Used to count cycles
     /// that touch any file inside a workspace.
-    pub circular_dep_groups: Vec<Vec<std::path::PathBuf>>,
+    circular_dep_groups: Vec<Vec<std::path::PathBuf>>,
     /// Total exports per module (`module.exports.len()` in the graph), used
     /// as the denominator for `dead_export_pct`.
-    pub module_export_counts: rustc_hash::FxHashMap<std::path::PathBuf, usize>,
+    module_export_counts: rustc_hash::FxHashMap<std::path::PathBuf, usize>,
 }
 
 impl AnalysisCountsSnapshot {
@@ -114,7 +115,7 @@ impl AnalysisCountsSnapshot {
     ///
     /// `total_deps` is propagated unchanged from `defaults`; it is not
     /// available per-subset today (mirrors the project-wide behaviour).
-    pub fn counts_for(
+    pub(crate) fn counts_for(
         &self,
         subset: &crate::health::SubsetFilter<'_>,
         defaults: &crate::vital_signs::AnalysisCounts,
@@ -184,7 +185,7 @@ fn dep_in_subset(subset: &crate::health::SubsetFilter<'_>, dep_path: &std::path:
     clippy::cast_possible_truncation,
     reason = "line count is bounded by source file size"
 )]
-pub(super) fn aggregate_complexity(module: &crate::source::ModuleInfo) -> (u32, u32, usize, u32) {
+fn aggregate_complexity(module: &crate::source::ModuleInfo) -> (u32, u32, usize, u32) {
     let cyc: u32 = module
         .complexity
         .iter()
@@ -207,7 +208,7 @@ pub(super) fn aggregate_complexity(module: &crate::source::ModuleInfo) -> (u32, 
 /// numerator and denominator to avoid inflating the ratio for well-typed
 /// codebases. Returns 1.0 if the entire file is unused, 0.0 if it has no
 /// value exports.
-pub(super) fn compute_dead_code_ratio(
+fn compute_dead_code_ratio(
     path: &std::path::Path,
     exports: &[fallow_graph::graph::ExportSymbol],
     unused_files: &rustc_hash::FxHashSet<&std::path::Path>,
@@ -227,7 +228,7 @@ pub(super) fn compute_dead_code_ratio(
 /// Compute complexity density: total cyclomatic / lines of code.
 ///
 /// Returns 0.0 when the file has no lines.
-pub(super) fn compute_complexity_density(total_cyclomatic: u32, lines: u32) -> f64 {
+fn compute_complexity_density(total_cyclomatic: u32, lines: u32) -> f64 {
     if lines > 0 {
         f64::from(total_cyclomatic) / f64::from(lines)
     } else {
@@ -275,33 +276,33 @@ fn compute_crap_scores_binary(
 #[derive(Debug, Clone, Copy)]
 pub struct PerFunctionCrap {
     /// 1-based line number of the function's definition.
-    pub line: u32,
+    pub(crate) line: u32,
     /// 0-based column of the function's definition. Required alongside `line`
     /// to disambiguate curried arrows that share a start line, e.g.
     /// `(x) => (y) => {...}`. Without `col`, two `PerFunctionCrap` entries
     /// would collide in the (path, line) finding index and one function's
     /// CRAP score could be attached to another function's identity.
-    pub col: u32,
+    pub(crate) col: u32,
     /// Computed CRAP score, rounded to one decimal place.
-    pub crap: f64,
+    pub(crate) crap: f64,
     /// Coverage percentage used to compute `crap`, when Istanbul matched the
     /// function. `None` for estimated coverage or unmatched functions.
-    pub coverage_pct: Option<f64>,
+    pub(crate) coverage_pct: Option<f64>,
     /// Bucketed coverage tier used to drive action selection in JSON output.
     /// Populated for both Istanbul-matched and estimated CRAP rows so the
     /// action builder does not need to recompute reachability state.
-    pub coverage_tier: fallow_output::CoverageTier,
+    pub(crate) coverage_tier: fallow_output::CoverageTier,
     /// Provenance of `coverage_tier` and `crap`. `Istanbul` for direct fnMap
     /// matches, `Estimated` for graph-based fallbacks against the finding's
     /// own file, `EstimatedComponentInherited` for the template-inherit path
     /// that reaches the owning Angular `.component.ts` through the inverse
     /// `templateUrl` edge. Threaded into `ComplexityViolation.coverage_source` by
     /// `merge_crap_findings`.
-    pub coverage_source: fallow_output::CoverageSource,
+    pub(crate) coverage_source: fallow_output::CoverageSource,
 }
 
 /// Istanbul CRAP result: CRAP scores plus match statistics.
-pub(super) struct IstanbulCrapResult {
+struct IstanbulCrapResult {
     pub max_crap: f64,
     pub above_threshold: usize,
     /// Functions that found a match in Istanbul data.
@@ -431,7 +432,7 @@ const MAX_DIRECT_CALLER_EVIDENCE: usize = 5;
 /// Applies the canonical CRAP formula with these estimates.
 /// Returns `(max_crap, count_above_threshold)`.
 /// Estimated CRAP result: score aggregates plus per-function data.
-pub(super) struct EstimatedCrapResult {
+struct EstimatedCrapResult {
     pub max_crap: f64,
     pub above_threshold: usize,
     pub per_function: Vec<PerFunctionCrap>,
@@ -1030,7 +1031,7 @@ fn compute_function_statement_coverage(
 ///
 /// Type-only exports (interfaces, type aliases) are intentionally excluded ---
 /// they are a different concern than unused functions/components.
-pub(super) fn count_unused_exports_by_path(
+fn count_unused_exports_by_path(
     unused_exports: &[crate::results::UnusedExportFinding],
 ) -> rustc_hash::FxHashMap<&std::path::Path, usize> {
     let mut map: rustc_hash::FxHashMap<&std::path::Path, usize> = rustc_hash::FxHashMap::default();
@@ -1059,7 +1060,7 @@ pub(super) fn count_unused_exports_by_path(
 /// composition-root files from being unfairly penalized.
 ///
 /// Clamped to \[0, 100\]. Higher is better.
-pub(super) fn compute_maintainability_index(
+fn compute_maintainability_index(
     complexity_density: f64,
     dead_code_ratio: f64,
     fan_out: usize,

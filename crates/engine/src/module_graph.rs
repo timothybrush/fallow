@@ -33,7 +33,7 @@ pub struct RetainedModuleGraph {
 impl RetainedModuleGraph {
     /// Wrap a freshly built module graph for engine result contracts.
     #[must_use]
-    pub(crate) const fn new(inner: ModuleGraph) -> Self {
+    const fn new(inner: ModuleGraph) -> Self {
         Self { inner }
     }
 
@@ -55,7 +55,7 @@ impl RetainedModuleGraph {
 
     /// Build public export keys for a precomputed public-entry set.
     #[must_use]
-    pub fn public_export_keys(
+    pub(crate) fn public_export_keys(
         &self,
         public_entries: &FxHashSet<FileId>,
         root: &Path,

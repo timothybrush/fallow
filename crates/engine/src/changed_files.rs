@@ -69,7 +69,7 @@ pub fn set_spawn_hook(hook: ChangedFilesSpawnHook) {
 }
 
 /// Validate a user-supplied git ref before passing it to git.
-pub fn validate_git_ref(s: &str) -> Result<&str, String> {
+pub(crate) fn validate_git_ref(s: &str) -> Result<&str, String> {
     if s.is_empty() {
         return Err("git ref cannot be empty".to_string());
     }
@@ -149,7 +149,7 @@ pub fn resolve_git_common_dir(cwd: &Path) -> Result<PathBuf, ChangedFilesError> 
 }
 
 /// Get files changed since a git ref.
-pub fn try_get_changed_files(
+fn try_get_changed_files(
     root: &Path,
     git_ref: &str,
 ) -> Result<FxHashSet<PathBuf>, ChangedFilesError> {
@@ -208,7 +208,7 @@ pub fn try_get_changed_files_with_toplevel(
 /// Return the raw git diff from a ref's merge base through the working tree.
 ///
 /// The result includes committed, staged, unstaged, and untracked changes so it
-/// covers the same scope as [`try_get_changed_files`].
+/// covers the same scope as `try_get_changed_files`.
 pub fn try_get_changed_diff(root: &Path, git_ref: &str) -> Result<String, ChangedFilesError> {
     validate_git_ref(git_ref).map_err(ChangedFilesError::InvalidRef)?;
     let toplevel = resolve_git_toplevel(root)?;

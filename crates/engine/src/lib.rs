@@ -168,7 +168,7 @@ pub struct EngineError {
 impl EngineError {
     /// Create an engine error from a user-facing message.
     #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
+    fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }

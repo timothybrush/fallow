@@ -128,15 +128,15 @@ pub struct PluginRegistry {
 }
 
 /// Inputs for the workspace-fast plugin path.
-pub struct WorkspacePluginRunInput<'a> {
-    pub pkg: &'a PackageJson,
-    pub root: &'a Path,
-    pub project_root: &'a Path,
-    pub precompiled_config_matchers: &'a [(&'a dyn Plugin, Vec<globset::GlobMatcher>)],
-    pub relative_files: &'a [(PathBuf, String)],
-    pub skip_config_plugins: &'a FxHashSet<&'a str>,
-    pub production_mode: bool,
-    pub candidate_index: Option<&'a ConfigCandidateIndex>,
+pub(crate) struct WorkspacePluginRunInput<'a> {
+    pub(crate) pkg: &'a PackageJson,
+    pub(crate) root: &'a Path,
+    pub(crate) project_root: &'a Path,
+    pub(crate) precompiled_config_matchers: &'a [(&'a dyn Plugin, Vec<globset::GlobMatcher>)],
+    pub(crate) relative_files: &'a [(PathBuf, String)],
+    pub(crate) skip_config_plugins: &'a FxHashSet<&'a str>,
+    pub(crate) production_mode: bool,
+    pub(crate) candidate_index: Option<&'a ConfigCandidateIndex>,
 }
 
 struct PluginRunContext<'a> {
@@ -167,7 +167,7 @@ pub struct PluginRegexValidationError {
 }
 
 impl PluginRegexValidationError {
-    pub(crate) fn new(input: PluginRegexValidationErrorInput<'_>) -> Self {
+    fn new(input: PluginRegexValidationErrorInput<'_>) -> Self {
         Self {
             plugin_name: input.plugin_name.to_owned(),
             config_path: input.config_path.map(Path::to_path_buf),
@@ -182,13 +182,13 @@ impl PluginRegexValidationError {
 
 #[derive(Clone, Copy)]
 pub(crate) struct PluginRegexValidationErrorInput<'a> {
-    pub(crate) plugin_name: &'a str,
-    pub(crate) config_path: Option<&'a Path>,
-    pub(crate) rule_kind: &'static str,
-    pub(crate) field: &'static str,
-    pub(crate) rule_pattern: &'a str,
-    pub(crate) regex_pattern: &'a str,
-    pub(crate) source: &'a regex::Error,
+    plugin_name: &'a str,
+    config_path: Option<&'a Path>,
+    rule_kind: &'static str,
+    field: &'static str,
+    rule_pattern: &'a str,
+    regex_pattern: &'a str,
+    source: &'a regex::Error,
 }
 
 impl fmt::Display for PluginRegexValidationError {
@@ -213,7 +213,7 @@ impl fmt::Display for PluginRegexValidationError {
 }
 
 #[must_use]
-pub fn format_plugin_regex_errors(errors: &[PluginRegexValidationError]) -> String {
+pub(crate) fn format_plugin_regex_errors(errors: &[PluginRegexValidationError]) -> String {
     let joined = errors
         .iter()
         .map(ToString::to_string)
@@ -325,7 +325,7 @@ impl AggregatedPluginResult {
     /// boundaries (referenced/tooling deps, setup files, static dir mappings,
     /// auto-imports, virtual prefixes/suffixes, generated patterns) are left
     /// untouched, matching the pre-#444 merge loop.
-    pub fn apply_workspace_prefix(&mut self, ws_prefix: &str) {
+    pub(crate) fn apply_workspace_prefix(&mut self, ws_prefix: &str) {
         for (rule, _) in &mut self.entry_patterns {
             *rule = rule.prefixed(ws_prefix);
         }
@@ -361,7 +361,7 @@ impl AggregatedPluginResult {
     /// prefix/suffix and generated-pattern lists) deduplicate the incoming
     /// values against the contents already in `self`, matching the pre-#444
     /// `seen`-set behavior. `entry_point_roles` is first-writer-wins.
-    pub fn merge_into(&mut self, other: Self) {
+    pub(crate) fn merge_into(&mut self, other: Self) {
         let Self {
             entry_patterns,
             entry_point_roles,
@@ -462,7 +462,7 @@ impl PluginRegistry {
     /// This discovers which plugins are active, collects their static patterns,
     /// then parses any config files to extract dynamic information.
     #[cfg(test)]
-    pub fn run(
+    fn run(
         &self,
         pkg: &PackageJson,
         root: &Path,
@@ -488,7 +488,7 @@ impl PluginRegistry {
         clippy::too_many_arguments,
         reason = "public PluginRegistry API; signature is part of the crate surface for embedders"
     )]
-    pub fn try_run_with_search_roots(
+    pub(crate) fn try_run_with_search_roots(
         &self,
         pkg: &PackageJson,
         root: &Path,
@@ -571,7 +571,7 @@ impl PluginRegistry {
     /// Reuses pre-compiled config matchers and pre-computed relative files from the root
     /// project run, avoiding repeated glob compilation and path computation per workspace.
     /// Skips package.json inline config (workspace packages rarely have inline configs).
-    pub fn try_run_workspace_fast(
+    pub(crate) fn try_run_workspace_fast(
         &self,
         input: &WorkspacePluginRunInput<'_>,
     ) -> Result<AggregatedPluginResult, Vec<PluginRegexValidationError>> {
@@ -626,7 +626,9 @@ impl PluginRegistry {
     /// Pre-compile config pattern glob matchers for all plugins that have config patterns.
     /// Returns a vec of (plugin, matchers) pairs that can be reused across multiple `run_workspace_fast` calls.
     #[must_use]
-    pub fn precompile_config_matchers(&self) -> Vec<(&dyn Plugin, Vec<globset::GlobMatcher>)> {
+    pub(crate) fn precompile_config_matchers(
+        &self,
+    ) -> Vec<(&dyn Plugin, Vec<globset::GlobMatcher>)> {
         self.plugins
             .iter()
             .filter(|p| !p.config_patterns().is_empty())
@@ -1073,7 +1075,7 @@ pub(crate) enum PluginDiagnostic {
 /// [`builtin::create_builtin_plugins`]. External plugins (file-loaded plus
 /// inline `framework[]`) run AFTER built-ins, so they cannot displace a
 /// built-in's `resolve_config` result for the same file.
-pub(crate) fn detect_pattern_collisions(
+fn detect_pattern_collisions(
     builtin_active: &[&dyn Plugin],
     external_active: &[&ExternalPluginDef],
 ) -> Vec<PluginDiagnostic> {
@@ -1148,7 +1150,7 @@ pub(crate) fn detect_pattern_collisions(
 ///
 /// Matches the established #467 / #510 pattern: tracing-warn with a `did you
 /// mean` suggestion at the call site. No exit non-zero, no new CLI flag.
-pub(crate) fn detect_enabler_typos(
+fn detect_enabler_typos(
     external_plugins: &[ExternalPluginDef],
     all_deps: &[String],
 ) -> Vec<PluginDiagnostic> {
