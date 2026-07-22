@@ -7,10 +7,63 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::SystemTime;
 
 use fallow_config::WorkspaceInfo;
+use fallow_types::audit_cache::{
+    AuditContextDirectoryFingerprint, AuditContextFileFingerprint, AuditContextPathState,
+    AuditMaterializedContextFingerprint,
+};
+use fallow_types::source_fingerprint::SourceFingerprint;
+use xxhash_rust::xxh3::xxh3_64;
 
 use crate::{EngineError, EngineResult};
 
 const RAW_MATERIALIZATION_MARKER: &str = "fallow-raw-materialized-v1";
+
+/// Host directories shared with detached audit base views.
+pub const AUDIT_MATERIALIZED_CONTEXT_DIRS: &[&str] = &["node_modules", ".nuxt", ".astro"];
+const AUDIT_WORKSPACE_GENERATED_CONTEXT_DIRS: &[&str] = &[".nuxt", ".astro"];
+
+const AUDIT_LOCKFILES: &[&str] = &[
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+];
+
+const NODE_MODULES_MARKERS: &[&str] = &[".package-lock.json", ".modules.yaml", ".yarn-state.yml"];
+const NUXT_MARKERS: &[&str] = &[
+    "tsconfig.json",
+    "tsconfig.app.json",
+    "imports.d.ts",
+    "components.d.ts",
+    "types/nitro-routes.d.ts",
+    "types/nitro-imports.d.ts",
+];
+const ASTRO_MARKERS: &[&str] = &["types.d.ts", "content.d.ts", "env.d.ts"];
+const AUDIT_CONTEXT_FILE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const CONTEXT_SYMLINK_STATE: &str = "symlink";
+const CONTEXT_SPECIAL_FILE_STATE: &str = "not_regular_file";
+const CONTEXT_OVERSIZED_FILE_STATE: &str = "file_too_large";
+const CONTEXT_PARENT_UNAVAILABLE_STATE: &str = "parent_context_unavailable";
+const CONTEXT_CHANGED_DURING_READ_STATE: &str = "changed_during_read";
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const UNIX_CONTEXT_OPEN_FLAGS: i32 = 0x0002_0800;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
+const UNIX_CONTEXT_OPEN_FLAGS: i32 = 0x0104;
+
+#[cfg(windows)]
+const WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+#[cfg(windows)]
+const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
 /// Resolved base ref for changed-code audit.
 #[derive(Debug, Clone)]
@@ -38,6 +91,7 @@ impl TemporaryBaseWorktree {
     pub fn create(repo_root: &Path, base_ref: &str) -> EngineResult<Self> {
         let path = base_worktree_path()?;
         create_detached_base_worktree(repo_root, &path, base_ref)?;
+        materialize_base_dependency_context(repo_root, &path);
         Ok(Self {
             repo_root: repo_root.to_path_buf(),
             path,
@@ -49,6 +103,376 @@ impl TemporaryBaseWorktree {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Share dependency and generated context from the host checkout with a base view.
+pub fn materialize_base_dependency_context(repo_root: &Path, worktree_path: &Path) {
+    for slot in audit_materialized_context_slots(repo_root) {
+        let Ok(source) = canonical_context_directory(&slot.source) else {
+            continue;
+        };
+
+        if validate_materialized_path(&slot.relative).is_err()
+            || create_safe_parent_directories(worktree_path, &slot.relative).is_err()
+        {
+            continue;
+        }
+        let destination = worktree_path.join(&slot.relative);
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_dir() => continue,
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                if fs::remove_file(&destination).is_err() {
+                    continue;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) | Err(_) => continue,
+        }
+
+        let _ = symlink_dependency_dir(&source, &destination);
+    }
+}
+
+/// Build a bounded fingerprint of the host context materialized into a base view.
+#[must_use]
+pub fn audit_materialized_context_fingerprint(root: &Path) -> AuditMaterializedContextFingerprint {
+    let lockfiles = AUDIT_LOCKFILES
+        .iter()
+        .map(|name| fingerprint_context_file(root, &root.join(name)))
+        .collect();
+    let directories = audit_materialized_context_slots(root)
+        .iter()
+        .map(fingerprint_context_directory)
+        .collect();
+    AuditMaterializedContextFingerprint {
+        lockfiles,
+        directories,
+    }
+}
+
+#[derive(Debug)]
+struct AuditMaterializedContextSlot {
+    kind: &'static str,
+    relative: PathBuf,
+    source: PathBuf,
+}
+
+fn audit_materialized_context_slots(root: &Path) -> Vec<AuditMaterializedContextSlot> {
+    let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut slots = AUDIT_MATERIALIZED_CONTEXT_DIRS
+        .iter()
+        .map(|&kind| AuditMaterializedContextSlot {
+            kind,
+            relative: PathBuf::from(kind),
+            source: canonical_root.join(kind),
+        })
+        .collect::<Vec<_>>();
+
+    for workspace in crate::discover::discover_workspace_packages(root) {
+        let Ok(canonical_workspace) = dunce::canonicalize(&workspace.root) else {
+            continue;
+        };
+        let Ok(relative_workspace) = canonical_workspace.strip_prefix(&canonical_root) else {
+            continue;
+        };
+        if relative_workspace.as_os_str().is_empty() {
+            continue;
+        }
+        for &kind in AUDIT_WORKSPACE_GENERATED_CONTEXT_DIRS {
+            slots.push(AuditMaterializedContextSlot {
+                kind,
+                relative: relative_workspace.join(kind),
+                source: canonical_workspace.join(kind),
+            });
+        }
+    }
+
+    slots.sort_by(|left, right| left.relative.cmp(&right.relative));
+    slots.dedup_by(|left, right| left.relative == right.relative);
+    slots
+}
+
+fn fingerprint_context_directory(
+    slot: &AuditMaterializedContextSlot,
+) -> AuditContextDirectoryFingerprint {
+    let path = &slot.source;
+    let (state, canonical_path, source) = match canonical_context_directory(path) {
+        Ok(canonical_path) => {
+            let source = fs::symlink_metadata(&canonical_path)
+                .ok()
+                .as_ref()
+                .map(SourceFingerprint::from_metadata);
+            (AuditContextPathState::Present, Some(canonical_path), source)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (AuditContextPathState::Missing, None, None)
+        }
+        Err(error) => (
+            AuditContextPathState::Unreadable(error.kind().to_string()),
+            None,
+            fs::symlink_metadata(path)
+                .ok()
+                .as_ref()
+                .map(SourceFingerprint::from_metadata),
+        ),
+    };
+    let canonical_path_display = canonical_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().replace('\\', "/"));
+    let markers = context_markers(slot.kind)
+        .iter()
+        .map(|marker| {
+            let relative = slot
+                .relative
+                .join(marker)
+                .to_string_lossy()
+                .replace('\\', "/");
+            canonical_path.as_ref().map_or_else(
+                || unavailable_context_file(&relative, &state),
+                |path| fingerprint_context_file_at(&path.join(marker), &relative),
+            )
+        })
+        .collect();
+    AuditContextDirectoryFingerprint {
+        name: slot.relative.to_string_lossy().replace('\\', "/"),
+        state,
+        canonical_path: canonical_path_display,
+        source,
+        markers,
+    }
+}
+
+fn canonical_context_directory(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical_path = dunce::canonicalize(path)?;
+    match fs::symlink_metadata(&canonical_path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(canonical_path),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            CONTEXT_SPECIAL_FILE_STATE,
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn context_markers(name: &str) -> &'static [&'static str] {
+    match name {
+        "node_modules" => NODE_MODULES_MARKERS,
+        ".nuxt" => NUXT_MARKERS,
+        ".astro" => ASTRO_MARKERS,
+        _ => &[],
+    }
+}
+
+fn fingerprint_context_file(root: &Path, path: &Path) -> AuditContextFileFingerprint {
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    fingerprint_context_file_at(path, &relative)
+}
+
+fn fingerprint_context_file_at(path: &Path, relative: &str) -> AuditContextFileFingerprint {
+    fingerprint_context_file_at_with_hooks(path, relative, || {}, || {})
+}
+
+fn fingerprint_context_file_at_with_hooks(
+    path: &Path,
+    relative: &str,
+    before_open: impl FnOnce(),
+    after_read: impl FnOnce(),
+) -> AuditContextFileFingerprint {
+    before_open();
+    let mut file = match open_context_file(path) {
+        Ok(file) => file,
+        Err(error) => return classify_unopened_context_file(path, relative, error.kind()),
+    };
+    let opened_metadata = match file.metadata() {
+        Ok(metadata) if context_handle_is_regular_file(&metadata) => metadata,
+        Ok(metadata) => {
+            return unreadable_context_file(
+                relative,
+                CONTEXT_SPECIAL_FILE_STATE,
+                Some(SourceFingerprint::from_metadata(&metadata)),
+            );
+        }
+        Err(error) => return unreadable_context_file(relative, error.kind().to_string(), None),
+    };
+    let source = Some(SourceFingerprint::from_metadata(&opened_metadata));
+    if opened_metadata.len() > AUDIT_CONTEXT_FILE_MAX_BYTES {
+        return unreadable_context_file(relative, CONTEXT_OVERSIZED_FILE_STATE, source);
+    }
+
+    let capacity = usize::try_from(opened_metadata.len()).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let read_limit = AUDIT_CONTEXT_FILE_MAX_BYTES.saturating_add(1);
+    if let Err(error) = (&mut file).take(read_limit).read_to_end(&mut bytes) {
+        return unreadable_context_file(relative, error.kind().to_string(), source);
+    }
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > AUDIT_CONTEXT_FILE_MAX_BYTES {
+        return unreadable_context_file(relative, CONTEXT_OVERSIZED_FILE_STATE, source);
+    }
+    after_read();
+    let final_metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => return unreadable_context_file(relative, error.kind().to_string(), source),
+    };
+    if SourceFingerprint::from_metadata(&opened_metadata)
+        != SourceFingerprint::from_metadata(&final_metadata)
+    {
+        return unreadable_context_file(relative, CONTEXT_CHANGED_DURING_READ_STATE, source);
+    }
+
+    AuditContextFileFingerprint {
+        path: relative.to_string(),
+        state: AuditContextPathState::Present,
+        source,
+        content_hash: Some(format!("{:016x}", xxh3_64(&bytes))),
+    }
+}
+
+#[expect(
+    clippy::filetype_is_file,
+    reason = "failed atomic opens are classified conservatively without treating arbitrary non-directories as readable files"
+)]
+fn classify_unopened_context_file(
+    path: &Path,
+    relative: &str,
+    open_error: std::io::ErrorKind,
+) -> AuditContextFileFingerprint {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => unreadable_context_file(
+            relative,
+            CONTEXT_SYMLINK_STATE,
+            Some(SourceFingerprint::from_metadata(&metadata)),
+        ),
+        Ok(metadata) if !metadata.file_type().is_file() => unreadable_context_file(
+            relative,
+            CONTEXT_SPECIAL_FILE_STATE,
+            Some(SourceFingerprint::from_metadata(&metadata)),
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            missing_context_file(relative)
+        }
+        Ok(metadata) => unreadable_context_file(
+            relative,
+            open_error.to_string(),
+            Some(SourceFingerprint::from_metadata(&metadata)),
+        ),
+        Err(_) => unreadable_context_file(relative, open_error.to_string(), None),
+    }
+}
+
+fn open_context_file(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        options.custom_flags(UNIX_CONTEXT_OPEN_FLAGS);
+    }
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "openbsd",
+            target_os = "netbsd"
+        ))
+    ))]
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "atomic no-follow context reads are unavailable on this Unix target",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        options.custom_flags(WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    options.open(path)
+}
+
+#[cfg(windows)]
+#[expect(
+    clippy::filetype_is_file,
+    reason = "security boundary intentionally accepts regular files only and rejects reparse points, directories, and special files"
+)]
+fn context_handle_is_regular_file(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    metadata.file_type().is_file()
+        && metadata.file_attributes() & WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+#[cfg(not(windows))]
+#[expect(
+    clippy::filetype_is_file,
+    reason = "security boundary intentionally accepts regular files only and rejects directories, sockets, devices, and pipes"
+)]
+fn context_handle_is_regular_file(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file()
+}
+
+fn missing_context_file(relative: &str) -> AuditContextFileFingerprint {
+    AuditContextFileFingerprint {
+        path: relative.to_string(),
+        state: AuditContextPathState::Missing,
+        source: None,
+        content_hash: None,
+    }
+}
+
+fn unreadable_context_file(
+    relative: &str,
+    reason: impl Into<String>,
+    source: Option<SourceFingerprint>,
+) -> AuditContextFileFingerprint {
+    AuditContextFileFingerprint {
+        path: relative.to_string(),
+        state: AuditContextPathState::Unreadable(reason.into()),
+        source,
+        content_hash: None,
+    }
+}
+
+fn unavailable_context_file(
+    relative: &str,
+    parent_state: &AuditContextPathState,
+) -> AuditContextFileFingerprint {
+    if matches!(parent_state, AuditContextPathState::Missing) {
+        missing_context_file(relative)
+    } else {
+        unreadable_context_file(relative, CONTEXT_PARENT_UNAVAILABLE_STATE, None)
+    }
+}
+
+#[cfg(unix)]
+fn symlink_dependency_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
+}
+
+#[cfg(windows)]
+fn symlink_dependency_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(source, destination)
 }
 
 /// Register a detached worktree without checking files out, then materialize
@@ -1128,5 +1552,369 @@ mod tests {
 
         assert!(result.is_err(), "symlink parent must be rejected");
         assert!(!outside.join("escaped.txt").exists());
+    }
+
+    #[test]
+    fn audit_context_fingerprint_tracks_bounded_lockfiles_and_markers() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: 9\n").expect("lockfile");
+        fs::create_dir(root.join("node_modules")).expect("node_modules");
+        fs::write(
+            root.join("node_modules/.modules.yaml"),
+            "layoutVersion: 5\n",
+        )
+        .expect("node marker");
+
+        let first = audit_materialized_context_fingerprint(root);
+        let unchanged = audit_materialized_context_fingerprint(root);
+        assert_eq!(
+            first, unchanged,
+            "unchanged context must preserve a warm key"
+        );
+
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: 10\n").expect("mutate lockfile");
+        let lock_changed = audit_materialized_context_fingerprint(root);
+        assert_ne!(
+            first, lock_changed,
+            "lockfile content must invalidate the key"
+        );
+
+        fs::write(
+            root.join("node_modules/.modules.yaml"),
+            "layoutVersion: 6\n",
+        )
+        .expect("mutate node marker");
+        let marker_changed = audit_materialized_context_fingerprint(root);
+        assert_ne!(
+            lock_changed, marker_changed,
+            "bounded dependency markers must invalidate the key"
+        );
+
+        fs::create_dir(root.join(".nuxt")).expect("nuxt context");
+        fs::write(root.join(".nuxt/imports.d.ts"), "export {}\n").expect("nuxt marker");
+        assert_ne!(
+            marker_changed,
+            audit_materialized_context_fingerprint(root),
+            "missing and materialized generated context must differ"
+        );
+    }
+
+    #[test]
+    fn audit_context_fingerprint_tracks_nested_workspace_generated_roots() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"private":true,"workspaces":["packages/*"]}"#,
+        )
+        .expect("root package");
+        let nuxt = root.join("packages/nuxt-app");
+        let astro = root.join("packages/astro-app");
+        fs::create_dir_all(nuxt.join(".nuxt")).expect("nested nuxt context");
+        fs::create_dir_all(astro.join(".astro")).expect("nested astro context");
+        fs::write(nuxt.join("package.json"), r#"{"name":"nuxt-app"}"#).expect("nuxt package");
+        fs::write(astro.join("package.json"), r#"{"name":"astro-app"}"#).expect("astro package");
+        fs::write(nuxt.join(".nuxt/imports.d.ts"), "export {};\n").expect("nuxt marker");
+        fs::write(astro.join(".astro/types.d.ts"), "export {};\n").expect("astro marker");
+
+        let first = audit_materialized_context_fingerprint(root);
+        assert!(
+            first
+                .directories
+                .iter()
+                .any(|directory| directory.name == "packages/nuxt-app/.nuxt")
+        );
+        assert!(
+            first
+                .directories
+                .iter()
+                .any(|directory| directory.name == "packages/astro-app/.astro")
+        );
+
+        fs::write(
+            nuxt.join(".nuxt/imports.d.ts"),
+            "export type Changed = true;\n",
+        )
+        .expect("mutate nuxt marker");
+        assert_ne!(
+            first,
+            audit_materialized_context_fingerprint(root),
+            "nested workspace marker changes must invalidate the audit context"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_base_context_symlinks_nested_workspace_generated_roots() {
+        let host = tempfile::tempdir().expect("host");
+        let worktree = tempfile::tempdir().expect("worktree");
+        fs::write(
+            host.path().join("package.json"),
+            r#"{"private":true,"workspaces":["packages/*"]}"#,
+        )
+        .expect("root package");
+
+        for (workspace, generated, marker) in [
+            ("nuxt-app", ".nuxt", "imports.d.ts"),
+            ("astro-app", ".astro", "types.d.ts"),
+        ] {
+            let host_workspace = host.path().join("packages").join(workspace);
+            let worktree_workspace = worktree.path().join("packages").join(workspace);
+            fs::create_dir_all(host_workspace.join(generated)).expect("host generated context");
+            fs::create_dir_all(&worktree_workspace).expect("worktree workspace");
+            fs::write(
+                host_workspace.join("package.json"),
+                format!(r#"{{"name":"{workspace}"}}"#),
+            )
+            .expect("workspace package");
+            fs::write(host_workspace.join(generated).join(marker), "export {};\n")
+                .expect("generated marker");
+        }
+
+        materialize_base_dependency_context(host.path(), worktree.path());
+
+        for (workspace, generated, marker) in [
+            ("nuxt-app", ".nuxt", "imports.d.ts"),
+            ("astro-app", ".astro", "types.d.ts"),
+        ] {
+            let mirrored = worktree
+                .path()
+                .join("packages")
+                .join(workspace)
+                .join(generated);
+            assert!(
+                fs::symlink_metadata(&mirrored)
+                    .expect("mirrored generated root")
+                    .file_type()
+                    .is_symlink(),
+                "{workspace}/{generated} must reuse the host generated root"
+            );
+            assert!(mirrored.join(marker).is_file());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_base_context_resolves_symlinked_source_directories() {
+        let host = tempfile::tempdir().expect("host");
+        let targets = tempfile::tempdir().expect("targets");
+        let worktree = tempfile::tempdir().expect("worktree");
+
+        for (kind, marker) in [
+            ("node_modules", ".modules.yaml"),
+            (".nuxt", "imports.d.ts"),
+            (".astro", "types.d.ts"),
+        ] {
+            let target = targets.path().join(kind);
+            fs::create_dir(&target).expect("source target");
+            fs::write(target.join(marker), "generated context\n").expect("context marker");
+            std::os::unix::fs::symlink(&target, host.path().join(kind))
+                .expect("source directory symlink");
+        }
+
+        materialize_base_dependency_context(host.path(), worktree.path());
+
+        let fingerprint = audit_materialized_context_fingerprint(host.path());
+        for kind in AUDIT_MATERIALIZED_CONTEXT_DIRS {
+            let target = dunce::canonicalize(targets.path().join(kind)).expect("canonical target");
+            let mirrored = worktree.path().join(kind);
+            assert_eq!(
+                fs::read_link(&mirrored).expect("materialized symlink"),
+                target,
+                "{kind} must link directly to the validated canonical target"
+            );
+            let directory = fingerprint
+                .directories
+                .iter()
+                .find(|directory| directory.name == *kind)
+                .expect("fingerprinted context directory");
+            assert_eq!(directory.state, AuditContextPathState::Present);
+            assert!(directory.markers.iter().any(|marker| {
+                matches!(marker.state, AuditContextPathState::Present)
+                    && marker.content_hash.is_some()
+            }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_base_context_refuses_symlinked_workspace_parent() {
+        let host = tempfile::tempdir().expect("host");
+        let worktree = tempfile::tempdir().expect("worktree");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(
+            host.path().join("package.json"),
+            r#"{"private":true,"workspaces":["packages/*"]}"#,
+        )
+        .expect("root package");
+        let host_workspace = host.path().join("packages/app");
+        fs::create_dir_all(host_workspace.join(".nuxt")).expect("host generated context");
+        fs::write(host_workspace.join("package.json"), r#"{"name":"app"}"#)
+            .expect("workspace package");
+        fs::write(host_workspace.join(".nuxt/imports.d.ts"), "export {};\n")
+            .expect("generated marker");
+
+        let outside_workspace = outside.path().join("app");
+        fs::create_dir_all(&outside_workspace).expect("outside workspace");
+        let outside_generated = outside_workspace.join(".nuxt");
+        std::os::unix::fs::symlink("missing-target", &outside_generated)
+            .expect("outside sentinel symlink");
+        std::os::unix::fs::symlink(outside.path(), worktree.path().join("packages"))
+            .expect("hostile workspace parent symlink");
+
+        materialize_base_dependency_context(host.path(), worktree.path());
+
+        assert_eq!(
+            fs::read_link(&outside_generated).expect("sentinel symlink must survive"),
+            PathBuf::from("missing-target")
+        );
+        assert!(
+            !outside.path().join(".nuxt").exists(),
+            "materialization must not create generated context outside the worktree"
+        );
+    }
+
+    #[test]
+    fn audit_context_fingerprint_rejects_oversized_files_without_reading_them() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("pnpm-lock.yaml");
+        let file = File::create(&path).expect("oversized file");
+        file.set_len(AUDIT_CONTEXT_FILE_MAX_BYTES.saturating_add(1))
+            .expect("set oversized length");
+
+        let fingerprint = fingerprint_context_file_at(&path, "pnpm-lock.yaml");
+
+        assert_eq!(
+            fingerprint.state,
+            AuditContextPathState::Unreadable(CONTEXT_OVERSIZED_FILE_STATE.to_string())
+        );
+        assert!(fingerprint.source.is_some());
+        assert!(fingerprint.content_hash.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_context_fingerprint_rejects_symlinked_files_without_following_them() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let target = temp.path().join("target-lock.yaml");
+        let link = temp.path().join("pnpm-lock.yaml");
+        fs::write(&target, "secret target contents\n").expect("target file");
+        std::os::unix::fs::symlink(&target, &link).expect("lockfile symlink");
+
+        let fingerprint = fingerprint_context_file_at(&link, "pnpm-lock.yaml");
+
+        assert_eq!(
+            fingerprint.state,
+            AuditContextPathState::Unreadable(CONTEXT_SYMLINK_STATE.to_string())
+        );
+        assert!(fingerprint.content_hash.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_context_fingerprint_does_not_follow_symlink_swapped_before_open() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("pnpm-lock.yaml");
+        let target = temp.path().join("target-lock.yaml");
+        fs::write(&path, "original contents\n").expect("original file");
+        fs::write(&target, "secret target contents\n").expect("target file");
+
+        let fingerprint = fingerprint_context_file_at_with_hooks(
+            &path,
+            "pnpm-lock.yaml",
+            || {
+                fs::remove_file(&path).expect("remove original");
+                std::os::unix::fs::symlink(&target, &path).expect("replacement symlink");
+            },
+            || {},
+        );
+
+        assert_eq!(
+            fingerprint.state,
+            AuditContextPathState::Unreadable(CONTEXT_SYMLINK_STATE.to_string())
+        );
+        assert!(fingerprint.content_hash.is_none());
+    }
+
+    #[test]
+    fn audit_context_fingerprint_rejects_file_changed_during_read() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("pnpm-lock.yaml");
+        fs::write(&path, "original contents\n").expect("original file");
+
+        let fingerprint = fingerprint_context_file_at_with_hooks(
+            &path,
+            "pnpm-lock.yaml",
+            || {},
+            || {
+                OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .expect("open replacement")
+                    .set_len(1)
+                    .expect("truncate replacement");
+            },
+        );
+
+        assert_eq!(
+            fingerprint.state,
+            AuditContextPathState::Unreadable(CONTEXT_CHANGED_DURING_READ_STATE.to_string())
+        );
+        assert!(fingerprint.content_hash.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_context_open_does_not_block_on_fifo() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let fifo = temp.path().join("pnpm-lock.yaml");
+        let status = Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the test pipe");
+
+        let fallback_fifo = fifo.clone();
+        let fallback_writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(fallback_fifo)
+                .expect("open fallback FIFO writer")
+        });
+        let started = std::time::Instant::now();
+        let fingerprint = fingerprint_context_file_at(&fifo, "pnpm-lock.yaml");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "nonblocking FIFO open took {elapsed:?}"
+        );
+        assert_eq!(
+            fingerprint.state,
+            AuditContextPathState::Unreadable(CONTEXT_SPECIAL_FILE_STATE.to_string())
+        );
+        assert!(fingerprint.content_hash.is_none());
+        drop(fallback_writer.join().expect("fallback writer"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_context_fingerprint_rejects_special_files_without_opening_them() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let socket = temp.path().join("pnpm-lock.yaml");
+        let _listener = UnixListener::bind(&socket).expect("unix socket");
+
+        let fingerprint = fingerprint_context_file_at(&socket, "pnpm-lock.yaml");
+
+        assert_eq!(
+            fingerprint.state,
+            AuditContextPathState::Unreadable(CONTEXT_SPECIAL_FILE_STATE.to_string())
+        );
+        assert!(fingerprint.content_hash.is_none());
     }
 }

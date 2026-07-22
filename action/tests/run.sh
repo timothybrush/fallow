@@ -74,6 +74,21 @@ assert_json_value() {
   fi
 }
 
+assert_safe_workflow_output() {
+  local output="$1" expected_lines="$2" name="$3"
+  local actual_lines
+  actual_lines=$(printf '%s\n' "$output" | awk 'END { print NR }')
+  if [[ "$output" == *$'\r'* ]]; then
+    fail "$name" "contains a raw carriage return"
+  elif [ "$actual_lines" != "$expected_lines" ]; then
+    fail "$name" "expected $expected_lines command lines, got $actual_lines"
+  elif printf '%s\n' "$output" | grep -qv '^::'; then
+    fail "$name" "contains a non-command continuation line"
+  else
+    pass "$name"
+  fi
+}
+
 # --- Repository config hygiene ---
 
 echo ""
@@ -761,6 +776,32 @@ ISSUES=$(grep '^issues=' "$ANALYZE_TMP/output" | cut -d= -f2)
 
 cat > "$ANALYZE_TMP/bin/fallow" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' '{"command":"audit","verdict":"fail","attribution":{"gate":"new-only","dead_code_introduced":0,"complexity_introduced":0,"duplication_introduced":0,"styling_introduced":1},"summary":{"dead_code_issues":0,"complexity_findings":0,"duplication_clone_groups":0},"complexity":{"styling_findings":[{"effective_severity":"error","introduced":true}]}}'
+SH
+chmod +x "$ANALYZE_TMP/bin/fallow"
+cd "$ANALYZE_TMP/work" && rm -f "$ANALYZE_TMP/output"
+OUT=$(PATH="$ANALYZE_TMP/bin:$PATH" GITHUB_OUTPUT="$ANALYZE_TMP/output" \
+  INPUT_ROOT="." INPUT_COMMAND="audit" INPUT_FORMAT="json" \
+  bash "$DIR/../scripts/analyze.sh" 2>&1) || true
+cd "$DIR"
+ISSUES=$(grep '^issues=' "$ANALYZE_TMP/output" | cut -d= -f2)
+[ "$ISSUES" = "1" ] && pass "analyze: new-only audit counts introduced styling findings" || fail "analyze: new-only styling issues" "expected 1, got '$ISSUES'"
+
+cat > "$ANALYZE_TMP/bin/fallow" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"command":"audit","verdict":"fail","attribution":{"gate":"all"},"summary":{"dead_code_issues":0,"complexity_findings":0,"duplication_clone_groups":0},"complexity":{"styling_findings":[{"effective_severity":"error"},{"effective_severity":"warn"}]}}'
+SH
+chmod +x "$ANALYZE_TMP/bin/fallow"
+cd "$ANALYZE_TMP/work" && rm -f "$ANALYZE_TMP/output"
+OUT=$(PATH="$ANALYZE_TMP/bin:$PATH" GITHUB_OUTPUT="$ANALYZE_TMP/output" \
+  INPUT_ROOT="." INPUT_COMMAND="audit" INPUT_FORMAT="json" \
+  bash "$DIR/../scripts/analyze.sh" 2>&1) || true
+cd "$DIR"
+ISSUES=$(grep '^issues=' "$ANALYZE_TMP/output" | cut -d= -f2)
+[ "$ISSUES" = "2" ] && pass "analyze: all-gate audit counts every styling finding" || fail "analyze: all-gate styling issues" "expected 2, got '$ISSUES'"
+
+cat > "$ANALYZE_TMP/bin/fallow" <<'SH'
+#!/usr/bin/env bash
 case "$*" in
   *"security"*"--gate newly-reachable"*)
     printf '%s\n' '{"kind":"security","gate":{"mode":"newly-reachable","verdict":"fail","new_count":2},"summary":{"security_findings":5},"security_findings":[]}'
@@ -1212,13 +1253,17 @@ OUT_AUDIT=$(jq -n --slurpfile h "$FIXTURES/health.json" --slurpfile c "$FIXTURES
   changed_files_count: 2,
   elapsed_ms: 42,
   summary: {dead_code_issues: 1, complexity_findings: 3, duplication_clone_groups: 1},
-  attribution: {gate: "new-only", dead_code_introduced: 1, dead_code_inherited: 0, complexity_introduced: 2, complexity_inherited: 1, duplication_introduced: 0, duplication_inherited: 1},
+  attribution: {gate: "new-only", dead_code_introduced: 1, dead_code_inherited: 0, complexity_introduced: 2, complexity_inherited: 1, duplication_introduced: 0, duplication_inherited: 1, styling_introduced: 1, styling_inherited: 1},
   dead_code: ($c[0] | .unused_exports |= map(. + {introduced: true}) | .unused_dependencies |= map(. + {introduced: false})),
   complexity: ($h[0]
     | .findings |= [.[0] + {coverage_tier: "partial"}, .[1] + {coverage_tier: "high"}, .[2]]
     | .summary.coverage_model = "istanbul"
     | .summary.istanbul_matched = 8
-    | .summary.istanbul_total = 10),
+    | .summary.istanbul_total = 10
+    | .styling_findings = [
+        {code: "css-selector-complexity", sub_kind: "high-specificity", path: "src/styles.css", line: 4, value: "#app .card .title", effective_severity: "error", introduced: true},
+        {code: "css-important", sub_kind: "important", path: "src/legacy.css", line: 9, value: "!important", effective_severity: "warn", introduced: false}
+      ]),
   duplication: ($d[0] | .clone_groups |= map(. + {introduced: false}))
 }' | jq -r -f "$JQ_DIR/summary-audit.jq" 2>&1)
 assert_valid_markdown "$OUT_AUDIT" "produces audit output"
@@ -1236,6 +1281,28 @@ assert_contains "$OUT_AUDIT" "| high |" "audit: shows alt coverage tier"
 assert_contains "$OUT_AUDIT" "| - |" "audit: missing coverage_tier renders as dash"
 assert_contains "$OUT_AUDIT" "Coverage model: istanbul" "audit: shows istanbul coverage model footer"
 assert_contains "$OUT_AUDIT" "Matched 8/10" "audit: shows istanbul match rate"
+assert_contains "$OUT_AUDIT" "### Styling" "audit: has styling details"
+assert_contains "$OUT_AUDIT" "css-selector-complexity" "audit: lists styling rule"
+assert_contains "$OUT_AUDIT" "src/styles.css:4" "audit: lists styling location"
+
+OUT_AUDIT_STYLE_NEW=$(jq -n '{
+  command: "audit", verdict: "fail", changed_files_count: 1, elapsed_ms: 4,
+  summary: {dead_code_issues: 0, complexity_findings: 0, duplication_clone_groups: 0},
+  attribution: {gate: "new-only", styling_introduced: 1, styling_inherited: 0},
+  complexity: {styling_findings: [{code: "css-important", path: "src/styles.css", line: 2, value: "!important", effective_severity: "error", introduced: true}]}
+}' | jq -r -f "$JQ_DIR/summary-audit.jq" 2>&1)
+assert_contains "$OUT_AUDIT_STYLE_NEW" "| Styling | 1 | 1 | 0 |" "audit: styling-only new-only totals are visible"
+assert_contains "$OUT_AUDIT_STYLE_NEW" "| new |" "audit: styling-only new-only status is visible"
+
+OUT_AUDIT_STYLE_ALL=$(jq -n '{
+  command: "audit", verdict: "fail", changed_files_count: 1, elapsed_ms: 4,
+  summary: {dead_code_issues: 0, complexity_findings: 0, duplication_clone_groups: 0},
+  attribution: {gate: "all"},
+  complexity: {styling_findings: [{code: "css-important", path: null, line: null, value: "!important", effective_severity: "error"}]}
+}' | jq -r -f "$JQ_DIR/summary-audit.jq" 2>&1)
+assert_contains "$OUT_AUDIT_STYLE_ALL" "| Styling | 1 | 0 | 0 |" "audit: styling-only all totals are visible"
+assert_contains "$OUT_AUDIT_STYLE_ALL" '| - | `css-important`' "audit: null styling path uses a safe placeholder"
+assert_contains "$OUT_AUDIT_STYLE_ALL" "Audit gate: all" "audit: styling-only all gate is visible"
 
 # Low match-rate variant: footer should warn about --coverage-root
 OUT_AUDIT_LOWMATCH=$(jq -n --slurpfile h "$FIXTURES/health.json" '{
@@ -1477,6 +1544,9 @@ assert_contains "$OUT" "Move this dependency to the consuming workspace package.
 assert_contains "$OUT" "Empty catalog group" "annotation includes empty catalog group title"
 assert_contains "$OUT" "legacy" "annotation includes empty catalog group name"
 
+OUT_ESCAPED_PATH=$(jq '.unused_files[0].path = "src/a%,b:c\r\nd.ts"' "$FIXTURES/check.json" | jq -r -f "$JQ_DIR/annotations-check.jq" 2>&1)
+assert_contains "$OUT_ESCAPED_PATH" "file=src/a%25%2Cb%3Ac%0D%0Ad.ts" "check annotation escapes workflow-command properties"
+
 OUT_CLEAN=$(jq -r -f "$JQ_DIR/annotations-check.jq" "$FIXTURES/check-clean.json" 2>&1)
 [ -z "$OUT_CLEAN" ] && pass "clean: no annotations" || fail "clean: no annotations" "got output"
 
@@ -1493,6 +1563,9 @@ OUT=$(jq -r -f "$JQ_DIR/annotations-dupes.jq" "$FIXTURES/dupes.json" 2>&1)
 assert_contains "$OUT" "::warning" "emits warning commands"
 assert_contains "$OUT" "Code duplication" "mentions duplication"
 
+OUT_ESCAPED_PATH=$(jq '.clone_groups[0].instances[0].file = "src/a%,b:c\r\nd.ts"' "$FIXTURES/dupes.json" | jq -r -f "$JQ_DIR/annotations-dupes.jq" 2>&1)
+assert_contains "$OUT_ESCAPED_PATH" "file=src/a%25%2Cb%3Ac%0D%0Ad.ts" "dupes annotation escapes workflow-command properties"
+
 echo "  annotations-health.jq:"
 OUT=$(jq -r -f "$JQ_DIR/annotations-health.jq" "$FIXTURES/health.json" 2>&1)
 assert_contains "$OUT" "::error" "critical finding emits ::error annotation"
@@ -1501,9 +1574,111 @@ assert_contains "$OUT" "(critical)" "critical severity in annotation title"
 assert_contains "$OUT" "(high)" "high severity in annotation title"
 assert_contains "$OUT" "parseContentBlocks" "includes function name"
 
+OUT_ESCAPED_PATH=$(jq '.findings[0].path = "src/a%,b:c\r\nd.ts"' "$FIXTURES/health.json" | jq -r -f "$JQ_DIR/annotations-health.jq" 2>&1)
+assert_contains "$OUT_ESCAPED_PATH" "file=src/a%25%2Cb%3Ac%0D%0Ad.ts" "health annotation escapes workflow-command properties"
+
 OUT_PROD_ANN=$(jq '.runtime_coverage = {"verdict":"cold-code-detected","summary":{"functions_tracked":2,"functions_hit":1,"functions_unhit":1,"functions_untracked":0,"coverage_percent":50,"trace_count":1200,"period_days":7,"deployments_seen":2},"findings":[{"path":"src/cold.ts","function":"coldPath","line":14,"verdict":"review_required","invocations":0,"confidence":"medium","evidence":{"static_status":"used","test_coverage":"not_covered","v8_tracking":"tracked"},"actions":[{"description":"Review before deleting."}]},{"path":"src/lazy.ts","function":"lateBound","line":8,"verdict":"coverage_unavailable","confidence":"none","evidence":{"static_status":"used","test_coverage":"not_covered","v8_tracking":"untracked","untracked_reason":"lazy_parsed"}}]}' "$FIXTURES/health-clean.json" | jq -r -f "$JQ_DIR/annotations-health.jq" 2>&1)
 assert_contains "$OUT_PROD_ANN" "Runtime coverage" "prod annotation: title present"
 assert_contains "$OUT_PROD_ANN" "coldPath" "prod annotation: function name present"
+
+render_direct_annotations() {
+  local kind="$1" input="$2"
+  case "$kind" in
+    dead-code) jq -r -f "$JQ_DIR/annotations-check.jq" "$input" ;;
+    dupes) jq -r -f "$JQ_DIR/annotations-dupes.jq" "$input" ;;
+    health) jq -r -f "$JQ_DIR/annotations-health.jq" "$input" ;;
+    audit)
+      {
+        jq '.dead_code // empty' "$input" | jq -r -f "$JQ_DIR/annotations-check.jq"
+        jq '.complexity // empty' "$input" | jq -r -f "$JQ_DIR/annotations-health.jq"
+        jq '.duplication // empty' "$input" | jq -r -f "$JQ_DIR/annotations-dupes.jq"
+      }
+      ;;
+    combined)
+      {
+        jq '.check // empty' "$input" | jq -r -f "$JQ_DIR/annotations-check.jq"
+        jq '.health // empty' "$input" | jq -r -f "$JQ_DIR/annotations-health.jq"
+        jq '.dupes // empty' "$input" | jq -r -f "$JQ_DIR/annotations-dupes.jq"
+      }
+      ;;
+  esac
+}
+
+render_forced_fallback_annotations() {
+  local kind="$1" input="$2" command="$1"
+  [ "$kind" = "combined" ] && command=""
+  HAS_NATIVE_REPORT=false \
+    FALLOW_PR_DECISION_FILE="" \
+    FALLOW_COMMAND="$command" \
+    MAX_ANNOTATIONS="50" \
+    ACTION_JQ_DIR="$JQ_DIR" \
+    FALLOW_RESULTS_FILE="$input" \
+    bash "$DIR/../scripts/annotate.sh" 2>/dev/null
+}
+
+ANNOTATION_SAFETY_DIR=$(mktemp -d)
+ANNOTATION_ATTACK=$'value%\r\n::error::injected'
+ANNOTATION_PATH=$'src/a%,b:c\r\nd.ts'
+ANNOTATION_EXPECTED_PATH="file=src/a%25%2Cb%3Ac%0D%0Ad.ts"
+
+jq -n --arg path "$ANNOTATION_PATH" --arg attack "$ANNOTATION_ATTACK" '{
+  unused_exports: [
+    {path: $path, line: 4, col: 1, export_name: $attack, is_re_export: false, is_type_only: false},
+    {path: null, line: 5, col: 1, export_name: $attack, is_re_export: false, is_type_only: false},
+    {path: 42, line: 6, col: 1, export_name: $attack, is_re_export: false, is_type_only: false}
+  ]
+}' > "$ANNOTATION_SAFETY_DIR/dead-code.json"
+
+jq -n --arg path "$ANNOTATION_PATH" --arg attack "$ANNOTATION_ATTACK" '{
+  clone_groups: [{
+    line_count: $attack,
+    token_count: $attack,
+    instances: [
+      {file: $path, start_line: 1, end_line: 3, start_col: 0},
+      {file: null, start_line: 4, end_line: 6, start_col: 0},
+      {file: 42, start_line: 7, end_line: 9, start_col: 0}
+    ]
+  }]
+}' > "$ANNOTATION_SAFETY_DIR/dupes.json"
+
+jq -n --arg path "$ANNOTATION_PATH" --arg attack "$ANNOTATION_ATTACK" '{
+  summary: {max_cyclomatic_threshold: 20, max_cognitive_threshold: 15, max_crap_threshold: 30},
+  findings: [
+    {path: $path, name: $attack, line: 2, col: 0, cyclomatic: 21, cognitive: 16, line_count: 8, severity: "moderate", exceeded: "both"},
+    {path: null, name: $attack, line: 3, col: 0, cyclomatic: 21, cognitive: 16, line_count: 8, severity: "moderate", exceeded: "both"},
+    {path: 42, name: $attack, line: 4, col: 0, cyclomatic: 21, cognitive: 16, line_count: 8, severity: "moderate", exceeded: "both"}
+  ]
+}' > "$ANNOTATION_SAFETY_DIR/health.json"
+
+jq -n \
+  --slurpfile dead "$ANNOTATION_SAFETY_DIR/dead-code.json" \
+  --slurpfile health "$ANNOTATION_SAFETY_DIR/health.json" \
+  --slurpfile dupes "$ANNOTATION_SAFETY_DIR/dupes.json" \
+  '{dead_code: $dead[0], complexity: $health[0], duplication: $dupes[0]}' \
+  > "$ANNOTATION_SAFETY_DIR/audit.json"
+
+jq -n \
+  --slurpfile dead "$ANNOTATION_SAFETY_DIR/dead-code.json" \
+  --slurpfile health "$ANNOTATION_SAFETY_DIR/health.json" \
+  --slurpfile dupes "$ANNOTATION_SAFETY_DIR/dupes.json" \
+  '{check: $dead[0], health: $health[0], dupes: $dupes[0]}' \
+  > "$ANNOTATION_SAFETY_DIR/combined.json"
+
+for kind in dead-code dupes health audit combined; do
+  expected_lines=1
+  [ "$kind" = "audit" ] || [ "$kind" = "combined" ] && expected_lines=3
+  DIRECT_SAFE=$(render_direct_annotations "$kind" "$ANNOTATION_SAFETY_DIR/$kind.json")
+  assert_contains "$DIRECT_SAFE" "$ANNOTATION_EXPECTED_PATH" "$kind direct renderer preserves property encoding"
+  assert_contains "$DIRECT_SAFE" "value%25%0D%0A::error::injected" "$kind direct renderer escapes message data"
+  assert_safe_workflow_output "$DIRECT_SAFE" "$expected_lines" "$kind direct renderer skips malformed paths without command injection"
+
+  FALLBACK_SAFE=$(render_forced_fallback_annotations "$kind" "$ANNOTATION_SAFETY_DIR/$kind.json")
+  assert_contains "$FALLBACK_SAFE" "$ANNOTATION_EXPECTED_PATH" "$kind forced fallback preserves property encoding"
+  assert_contains "$FALLBACK_SAFE" "value%25%0D%0A::error::injected" "$kind forced fallback escapes message data"
+  assert_safe_workflow_output "$FALLBACK_SAFE" "$expected_lines" "$kind forced fallback skips malformed paths without command injection"
+done
+
+rm -rf "$ANNOTATION_SAFETY_DIR"
 
 # --- Changed-file filter tests ---
 
@@ -2418,6 +2593,18 @@ else
   else
     fail "annotate.sh probe-false keeps the exact jq annotation output" "diverged from the jq render"
   fi
+
+  FASTPATH_ESCAPE_ENVELOPE="$FASTPATH_WORK/escape.json"
+  jq '.unused_files[0].path = "src/a%,b:c\r\nd.ts"' "$FIXTURES/check.json" > "$FASTPATH_ESCAPE_ENVELOPE"
+  FASTPATH_ESCAPED=$(
+    HAS_NATIVE_REPORT=false \
+      FALLOW_COMMAND="dead-code" \
+      MAX_ANNOTATIONS="50" \
+      ACTION_JQ_DIR="$JQ_DIR" \
+      FALLOW_RESULTS_FILE="$FASTPATH_ESCAPE_ENVELOPE" \
+      bash "$FASTPATH_SCRIPTS/annotate.sh" 2>/dev/null
+  )
+  assert_contains "$FASTPATH_ESCAPED" "file=src/a%25%2Cb%3Ac%0D%0Ad.ts" "annotate.sh jq fallback escapes workflow-command properties"
 
   rm -rf "$FASTPATH_WORK"
 fi

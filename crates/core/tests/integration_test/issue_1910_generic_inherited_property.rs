@@ -34,7 +34,16 @@ fn credits_members_reached_through_inherited_base_class_property() {
 
     // The fix: methods reached through an inherited `this.<field>` must be
     // credited, both the generic-substituted and the non-generic case.
-    for credited in ["DerivedClient.getSyntheticRecords", "PlainClient.plainUsed"] {
+    for credited in [
+        "DerivedClient.getSyntheticRecords",
+        "DerivedClient.getDeepRecords",
+        "PlainClient.plainUsed",
+        "UsedSiblingClient.shared",
+        "DeclarationFormClient.separateForm",
+        "DeclarationFormClient.namedExportForm",
+        "DeclarationFormClient.namedDefaultForm",
+        "DeclarationFormClient.anonymousDefaultForm",
+    ] {
         assert!(
             !unused.contains(&credited.to_string()),
             "{credited} is reached through an inherited base-class property and must be \
@@ -47,6 +56,8 @@ fn credits_members_reached_through_inherited_base_class_property() {
         "BaseClient.inheritedMethod",
         "DerivedClient.deadDerivedMethod",
         "PlainClient.plainDead",
+        "UnusedSiblingClient.shared",
+        "DeclarationFormClient.deadFormControl",
     ] {
         assert!(
             unused.contains(&control.to_string()),
@@ -54,4 +65,10 @@ fn credits_members_reached_through_inherited_base_class_property() {
              must not blanket-credit), found: {unused:?}"
         );
     }
+
+    assert!(
+        unused.contains(&"DerivedClient.shadowedByUnresolvedGeneric".to_string()),
+        "an unresolved nearer generic field must shadow the concrete grandparent field, found: \
+         {unused:?}"
+    );
 }
