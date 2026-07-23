@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-07-23
+
 ### Fixed
 
 - **Cloud runtime analysis now preserves the server's evidence floor and
@@ -4860,7 +4862,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.8.1...HEAD
+[3.8.1]: https://github.com/fallow-rs/fallow/compare/v3.8.0...v3.8.1
 [3.8.0]: https://github.com/fallow-rs/fallow/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/fallow-rs/fallow/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/fallow-rs/fallow/compare/v3.6.0...v3.7.0
