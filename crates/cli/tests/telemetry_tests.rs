@@ -133,6 +133,34 @@ fn telemetry_inspect_preserves_command_stdout_json() {
 }
 
 #[test]
+fn impact_statusline_bypasses_telemetry_inspect_output() {
+    let home = tempfile::tempdir().expect("temp home");
+    let root = tempfile::tempdir().expect("temp project");
+    let output = Command::new(fallow_bin())
+        .env("FALLOW_TELEMETRY", "inspect")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("APPDATA", home.path().join("AppData"))
+        .env("RUST_LOG", "")
+        .env("NO_COLOR", "1")
+        .args(["--root", &root.path().to_string_lossy()])
+        .args(["--format", "json", "impact", "statusline"])
+        .output()
+        .expect("failed to run fallow binary");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "fallow impact  off\n"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "statusline stderr should stay empty: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn telemetry_inspect_reports_safe_followup_fields() {
     let mut cmd = Command::new(fallow_bin());
     let home = tempfile::tempdir().expect("temp home");

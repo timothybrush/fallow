@@ -103,7 +103,7 @@ pub fn dispatch_impact(
 /// Render the stable status-bar surface. This deliberately ignores the global
 /// output format and quiet flag so callers always receive exactly one
 /// path-free plain-text line.
-fn render_impact_statusline(root: &Path) -> ExitCode {
+pub fn render_impact_statusline(root: &Path) -> ExitCode {
     let rendered = match impact::load_statusline(root) {
         Ok(store) => impact::render_statusline(&impact::build_report(&store)),
         Err(impact::StatuslineLoadError::DataUnavailable) => {

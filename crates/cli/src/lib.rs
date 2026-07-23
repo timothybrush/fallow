@@ -2637,6 +2637,13 @@ pub fn run() -> ExitCode {
     if let Some(code) = run_telemetry_command_if_requested(&mut cli, fmt.output, fmt.json_style) {
         return code;
     }
+    if is_impact_statusline(&cli) {
+        let (root, _) = match validate_inputs(&cli, fmt.output, fmt.json_style) {
+            Ok(validated) => validated,
+            Err(code) => return code,
+        };
+        return cli_impact::render_impact_statusline(&root);
+    }
     let telemetry_run = start_telemetry_run(&cli, &fmt);
 
     let (root, threads) = match validate_inputs(&cli, fmt.output, fmt.json_style) {
@@ -2680,6 +2687,18 @@ pub fn run() -> ExitCode {
         Err(code) => return code,
     };
     record_run_epilogue(telemetry_run, exit_code, None, cli.parent_run.as_deref())
+}
+
+/// Status bars refresh frequently, so their local read path bypasses telemetry,
+/// update checks, notices, and every other command epilogue.
+fn is_impact_statusline(cli: &Cli) -> bool {
+    matches!(
+        cli.command.as_ref(),
+        Some(Command::Impact {
+            subcommand: Some(ImpactCli::Statusline),
+            ..
+        })
+    )
 }
 
 /// Redirect the rendered report to `--output-file` (ambient sink), dispatch the
@@ -5118,6 +5137,18 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn impact_statusline_bypasses_command_epilogue() {
+        use clap::Parser;
+
+        let statusline =
+            Cli::try_parse_from(["fallow", "impact", "statusline"]).expect("argv parses");
+        assert!(is_impact_statusline(&statusline));
+
+        let status = Cli::try_parse_from(["fallow", "impact", "status"]).expect("argv parses");
+        assert!(!is_impact_statusline(&status));
     }
 
     #[test]
