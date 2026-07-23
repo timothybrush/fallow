@@ -5107,6 +5107,20 @@ mod tests {
     }
 
     #[test]
+    fn impact_statusline_subcommand_parses() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["fallow", "impact", "statusline"]).expect("argv parses");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Impact {
+                subcommand: Some(ImpactCli::Statusline),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn regression_baseline_help_explains_the_default_destination() {
         use clap::CommandFactory;
         let help = Cli::command().render_long_help().to_string();

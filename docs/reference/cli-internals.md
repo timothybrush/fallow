@@ -34,6 +34,8 @@ an exit code.
 - `crates/cli/src/coverage/` and `license/`: runtime coverage and license
   command orchestration.
 - `crates/cli/src/telemetry.rs`: local opt-in telemetry state and spooling.
+- `crates/cli/src/cli_impact.rs` and `impact.rs`: local Impact history,
+  attribution, aggregation, and the status-bar surface.
 - `crates/cli/src/runtime_support.rs`: shared config and ownership helpers.
 
 ## Invariants
@@ -49,6 +51,8 @@ an exit code.
 - Serialized lists and human output use deterministic ordering.
 - `fix` remains preview-first. Non-interactive mutation requires explicit
   confirmation.
+- `fallow impact statusline` stays path-free, read-only, plain text, and
+  epilogue-free. Its trend compares only whole-project scans.
 - New output fields must move schemas, generated TypeScript contracts, MCP,
   LSP, VS Code, GitHub Action, and GitLab consumers together.
 
