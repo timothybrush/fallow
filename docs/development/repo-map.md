@@ -4,18 +4,18 @@ Use this file for a fast architectural map before editing or reviewing.
 
 ## Top-level layout
 
-- `crates/config/`: configuration, framework presets, package and workspace
-  discovery.
+- `crates/config/`: configuration, framework presets, packages, and workspace
+  metadata.
 - `crates/types/`: shared discovery, extraction, reporting, and suppression
   types.
 - `crates/extract/`: Oxc parsing, AST extraction, caches, complexity, and
   component file handling.
 - `crates/graph/`: import resolution, module graph construction, reachability,
   re-export propagation, and cycles.
-- `crates/core/`: analysis orchestration, plugins, duplicate detection, and
+- `crates/core/`: detector backend, built-in plugins, and analysis-specific
   cross-reference logic.
-- `crates/engine/`: command-neutral sessions, typed results, adapters, and
-  health execution.
+- `crates/engine/`: discovery, command-neutral sessions, duplication, health,
+  security orchestration, and typed results.
 - `crates/output/`: typed output contracts, envelopes, schemas, and integration
   helpers.
 - `crates/api/`: public programmatic API and typed run entry points.
@@ -23,7 +23,15 @@ Use this file for a fast architectural map before editing or reviewing.
 - `crates/lsp/`: diagnostics, code actions, code lens, and hover.
 - `crates/mcp/`: agent-facing MCP tools over shared APIs with explicit CLI
   fallbacks.
+- `crates/napi/`: Node.js bindings over the public programmatic API.
+- `crates/multicall/`: packaged binary entry that dispatches CLI, LSP, and MCP
+  modes.
+- `crates/license/`: offline license verification and feature entitlements.
+- `crates/security/`: data-driven security source and sink catalogue.
+- `crates/v8-coverage/`: V8 coverage parsing and normalization.
+- `crates/benchmarks/`: internal Rust benchmark support.
 - `editors/vscode/`: VS Code extension and LSP client.
+- `viz-frontend/`: browser visualization source, tests, and generated assets.
 - `action/`: GitHub Action, scripts, jq filters, and tests.
 - `ci/`: GitLab template, scripts, jq filters, and tests.
 - `tests/fixtures/`: integration fixtures shared across crates.
@@ -70,6 +78,8 @@ Find the first incorrect stage before editing:
 
 - `crates/engine/src/session.rs`: resolved project and session state.
 - `crates/engine/src/results.rs`: engine result carriers.
+- `crates/engine/src/duplicates.rs` and `duplication_detector/`: duplication
+  orchestration and detection.
 - `crates/engine/src/health/`: scoring, hotspots, targets, and coverage gaps.
 - `crates/api/src/runtime/`: typed programmatic run entry points.
 - `crates/output/src/issue_contract.rs`: output-facing issue metadata.
@@ -80,7 +90,11 @@ Find the first incorrect stage before editing:
 - `crates/cli/src/report/`: CLI output formats.
 - `crates/mcp/src/tools/`: MCP tools and adapters.
 - `crates/lsp/src/diagnostics/`: diagnostics by issue family.
+- `crates/napi/src/lib.rs`: Node.js API bindings.
 - `editors/vscode/src/`: editor client and commands.
+- `crates/engine/src/viz.rs`: command-neutral visualization graph data.
+- `crates/cli/src/viz.rs`: visualization command and asset serving.
+- `viz-frontend/src/`: browser rendering and interaction.
 - `action.yml`, `action/scripts/`, `action/jq/`: GitHub Action.
 - `ci/gitlab-ci.yml`, `ci/scripts/`, `ci/jq/`: GitLab CI.
 

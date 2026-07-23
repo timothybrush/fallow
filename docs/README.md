@@ -23,13 +23,16 @@ for contributors and maintainers of the open-source codebase.
   parity.
 - [Review routing](development/review-routing.md): review lenses by changed
   path.
+- [Release security](development/release-security.md): credential boundaries
+  and publication workflow ownership.
 
 ## Architecture and extension points
 
 - [Architecture invariants](architecture-invariants.md): crate boundaries,
   dependency direction, and ownership rules.
 - [Analyzer authoring](analyzer-authoring.md): adding and registering analyzers.
-- [Plugin authoring](plugin-authoring.md): built-in plugin conventions.
+- [Plugin authoring](plugin-authoring.md): external plugin files and built-in
+  extension points.
 - [Core migration](fallow-core-migration.md): migration to the engine and API
   layers.
 - [Backwards compatibility](backwards-compatibility.md): stable CLI, config, and
@@ -73,11 +76,6 @@ for contributors and maintainers of the open-source codebase.
 - [Styling PR smoke](styling-pr-smoke.md): pull-request validation.
 - [Styling release matrix](styling-release-matrix.md): release coverage across
   styling surfaces.
-
-## Release context
-
-- [Fallow v3 release notes draft](v3-release-notes.md): maintained release
-  preparation context. Remove it from this index when it is retired.
 
 ## Placement rule
 

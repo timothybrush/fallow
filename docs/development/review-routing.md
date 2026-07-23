@@ -8,14 +8,19 @@ Apply the review lenses that match the changed paths.
 |---|---|
 | Crate dependencies, shared protocols, output contracts | Architecture invariants, dependency direction, serialization boundary |
 | `crates/config`, `types`, `extract`, `graph`, `core`, `engine` | Rust correctness, accuracy, performance, memory, paths |
+| `crates/security` or security analyzers | Candidate precision, evidence safety, catalogue integrity, agent verification |
+| `crates/license`, runtime coverage, public protocol | Offline verification, version parity, privacy, failure modes |
+| `crates/napi`, `crates/multicall`, npm packaging | API parity, binary dispatch, generated types, package contents |
 | Human CLI output | Scanability, hierarchy, empty states, terminal compatibility |
 | JSON output | Schema stability, actions, determinism, null versus absent |
 | SARIF, CodeClimate, compact, Markdown, badge | Specification compliance, severity, stable identifiers, relative paths |
 | MCP | Tool contracts, parameters, structured errors, safe actions, timeouts |
-| LSP | Protocol compliance, diagnostics, edits, multi-root isolation |
+| LSP | Protocol compliance, diagnostics, edits, workspace-root selection, single-root analysis |
 | VS Code | Binary resolution, lifecycle, lazy work, configuration, UX |
 | GitHub Action | Shell quoting, tokens, jq, annotations, comments |
 | GitLab CI | Shell quoting, tokens, Code Quality, MR comments |
+| Visualization | Data minimization, browser security, accessibility, large-project behavior |
+| Release | Version and changelog parity, artifacts, signatures, registries, companion contracts |
 | Docs, skills, adapters | Canonical ownership, fresh-clone discovery, drift, privacy |
 
 Start cross-crate reviews with

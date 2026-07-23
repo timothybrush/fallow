@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "entryPoints": [
     {
       "path": "AGENTS.md",
@@ -22,6 +22,36 @@
   ],
   "maintainerDocs": {
     "index": "docs/README.md",
+    "rootDocuments": [
+      {
+        "path": "README.md",
+        "section": "public-entry"
+      },
+      {
+        "path": "CONTRIBUTING.md",
+        "section": "contributing"
+      },
+      {
+        "path": "BENCHMARKS.md",
+        "section": "verification"
+      },
+      {
+        "path": "CHANGELOG.md",
+        "section": "release-history"
+      },
+      {
+        "path": "CODE_OF_CONDUCT.md",
+        "section": "community"
+      },
+      {
+        "path": "ROADMAP.md",
+        "section": "roadmap"
+      },
+      {
+        "path": "SECURITY.md",
+        "section": "security"
+      }
+    ],
     "documents": [
       {
         "path": "docs/README.md",
@@ -53,6 +83,10 @@
       },
       {
         "path": "docs/development/review-routing.md",
+        "section": "development"
+      },
+      {
+        "path": "docs/development/release-security.md",
         "section": "development"
       },
       {
@@ -142,10 +176,6 @@
       {
         "path": "docs/telemetry.md",
         "section": "operations"
-      },
-      {
-        "path": "docs/v3-release-notes.md",
-        "section": "release-context"
       }
     ],
     "ignoredWorktreePrefixes": [
@@ -167,21 +197,72 @@
     "generator": "scripts/generate-agent-adapters.mjs",
     "checkCommand": "npm run check:agent-adapters"
   },
+  "hostRules": [
+    {
+      "client": "claude",
+      "root": ".claude/rules",
+      "mode": "scoped-router"
+    }
+  ],
+  "generatedPathContracts": [
+    {
+      "path": "benchmarks/fixtures/real-world",
+      "setupDocument": "BENCHMARKS.md",
+      "setupCommand": [
+        "npm",
+        "--prefix",
+        "benchmarks",
+        "run",
+        "download-fixtures"
+      ]
+    }
+  ],
   "externalSources": [
     {
       "repository": "fallow-rs/docs",
       "role": "canonical-public-user-documentation",
-      "direction": "public-to-consumer"
+      "direction": "public-to-consumer",
+      "revisionSource": "public-content-manifest.json plus consumer lock",
+      "allowedRoot": ".",
+      "processor": {
+        "kind": "generator",
+        "entrypoint": "scripts/public-content.mjs"
+      },
+      "checkCommand": [
+        "npm",
+        "run",
+        "check"
+      ]
     },
     {
       "repository": "fallow-rs/fallow-skills",
       "role": "portable-public-skill-packaging",
-      "direction": "canonical-contract-to-public-consumer"
+      "direction": "canonical-contract-to-public-consumer",
+      "revisionSource": "source-lock.json#commit",
+      "allowedRoot": "npm/fallow/skills/fallow",
+      "processor": {
+        "kind": "validator",
+        "entrypoint": "scripts/check-source-contract.mjs"
+      },
+      "checkCommand": [
+        "node",
+        "scripts/check-source-contract.mjs"
+      ]
     },
     {
       "repository": "fallow-rs/fallow-cov-protocol",
       "role": "public-cloud-facing-runtime-contract",
-      "direction": "public-to-consumer"
+      "direction": "public-to-consumer",
+      "revisionSource": "Cargo.lock",
+      "allowedRoot": "src",
+      "processor": {
+        "kind": "none"
+      },
+      "checkCommand": [
+        "cargo",
+        "test",
+        "--all-targets"
+      ]
     }
   ],
   "trustBoundary": {
@@ -194,7 +275,25 @@
     ],
     "forbiddenReferencePrefixes": [
       ".internal/",
+      "internal/",
       "decisions/"
+    ],
+    "forbiddenReferencePatterns": [
+      {
+        "pattern": "/Users/",
+        "reason": "Machine-local absolute paths are not portable."
+      },
+      {
+        "pattern": "~/.claude/",
+        "reason": "Durable knowledge cannot depend on host-local Claude state."
+      },
+      {
+        "pattern": "~/Sites/",
+        "reason": "Durable knowledge cannot depend on a maintainer checkout layout."
+      }
+    ],
+    "forbiddenRepositories": [
+      "fallow-rs/fallow-cloud"
     ]
   }
 }

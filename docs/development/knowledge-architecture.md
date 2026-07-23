@@ -28,8 +28,9 @@ The machine-readable version of this contract is
 3. A canonical skill defines a repeatable workflow.
 4. Generated host adapters expose that workflow without copying its authored
    content by hand.
-5. Tests and CI reject missing routes, unindexed documents, adapter drift, and
-   discoverability regressions.
+5. Tests and CI reject missing routes, unclassified root or maintainer
+   documents, stale implementation paths, machine-local references, adapter
+   drift, and discoverability regressions.
 
 Auto-loaded routers and rules must contain only high-value constraints and
 routing. Stable explanations belong here so they are read on demand and shared
@@ -63,7 +64,14 @@ Public examples must be generic or come from an explicitly public fixture.
 - Cross-repository gates fail closed in CI. They must not report success merely
   because a sibling checkout is absent.
 - A source manifest identifies the repository, revision, allowed root, and
-  generator for each imported public artifact.
+  processor for each imported public artifact. Its check command is stored as
+  an executable argument array, not shell prose.
+
+The public docs archive records a complete content digest and source commit.
+Private consumers pin both values. The portable skill repository records the
+exact Fallow source commit, source root, target root, and declared transform.
+Protocol consumers pin the public crate in their lockfile and verify published
+sidecar parity.
 
 ## Adding or moving knowledge
 

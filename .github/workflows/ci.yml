@@ -414,6 +414,18 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out public documentation contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fallow-rs/docs
+          path: .companion/fallow-docs
+          persist-credentials: false
+      - name: Check out public skill contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fallow-rs/fallow-skills
+          path: .companion/fallow-skills
+          persist-credentials: false
       - name: Documentation discoverability
         uses: Hedde/trigger_tree@78a801629f0b11f403737e0ae9e5c2bfa827a6bb # v1.23.2
         with:
@@ -432,6 +444,11 @@ jobs:
         run: node --test scripts/*.test.mjs
       - name: Knowledge architecture
         run: npm run check:knowledge-architecture
+      - name: Cross-repository telemetry documentation parity
+        env:
+          FALLOW_DOCS_DIR: ${{ github.workspace }}/.companion/fallow-docs
+          FALLOW_SKILLS_DIR: ${{ github.workspace }}/.companion/fallow-skills
+        run: python3 scripts/check_telemetry_doc_sync.py
       - name: Agent adapter drift
         run: npm run check:agent-adapters
 

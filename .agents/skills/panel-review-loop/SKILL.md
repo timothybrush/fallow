@@ -5,6 +5,10 @@ description: Iteratively review and improve a Fallow user-facing surface across 
 
 # Panel review loop
 
+The real-world corpus is intentionally untracked. Before its first use, follow
+the [benchmark setup](../../../BENCHMARKS.md#comparative-benchmarks) and run
+`npm --prefix benchmarks run download-fixtures`.
+
 1. Define the user-visible surface and success criteria.
 2. Select representative projects from `benchmarks/fixtures/real-world/`.
 3. Capture actual output for each project.
