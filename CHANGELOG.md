@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`fallow impact statusline` exposes a compact, read-only Impact summary for
+  agent status lines.** It reports the latest whole-project issue count, its
+  trend from the prior full scan, and the number of findings cleared while
+  Impact was tracking. The single-line output is path-free, skips normal CLI
+  notices and telemetry, and stays useful in narrow terminals. Legacy
+  changed-file snapshots remain visible but are explicitly labelled and never
+  produce a misleading project-wide trend. ([#2000](https://github.com/fallow-rs/fallow/pull/2000))
+
+### Fixed
+
+- **Cloud `never_called` evidence now keeps its confidence provenance.**
+  Runtime-observed functions can retain the existing high-confidence deletion
+  recommendation, while inventory-backed, missing, and future provenance stays
+  conservative.
+
 ## [3.8.1] - 2026-07-23
 
 ### Fixed
